@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "gemini_api_key": "",
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,   # Enforces isolated git worktrees for agent roles
-    "backend_escalation_path": ["ollama", "gemini", "codex"],
+    "backend_escalation_path": ["ollama", "agy", "codex"],
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
         "gemini": ["gemini-2.5-flash", "gemini-2.5-pro"],
@@ -920,7 +920,7 @@ class AgentOrchestrator:
             return
             
         # If we cannot upgrade model anymore, perform horizontal escalation (switch backend)
-        escalation_path = self.config.get("backend_escalation_path", ["ollama", "gemini", "codex"])
+        escalation_path = self.config.get("backend_escalation_path", ["ollama", "agy", "codex"])
         if current_dev in escalation_path:
             curr_idx = escalation_path.index(current_dev)
             if curr_idx + 1 < len(escalation_path):
