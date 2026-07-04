@@ -518,6 +518,16 @@ class AgentOrchestrator:
         self.state["state"] = "REVIEWING_PLAN"
         self.save_state()
 
+    def escalate_developer_backend(self):
+        """Escalates the developer backend dynamically to a higher capability level if available."""
+        current_dev = self.config["backends"].get("developer", "codex")
+        if current_dev == "ollama":
+            log_warning("[!] Dynamically escalating Developer backend from 'ollama' to 'codex' to handle complex revisions!")
+            self.config["backends"]["developer"] = "codex"
+            # Write it back to config.json
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2)
+
     def step_reviewing_plan(self):
         log_header("3. REVIEWING PLAN (Architect / Reviewer)")
         with open(self.requirements_path, "r", encoding="utf-8") as f:
@@ -552,6 +562,7 @@ class AgentOrchestrator:
             self.save_state()
         else:
             log_warning("Implementation plan REJECTED by Reviewer.")
+            self.escalate_developer_backend()
             max_rev = self.config.get("max_revisions", 2)
             if self.state["plan_revisions"] < max_rev:
                 self.state["plan_revisions"] += 1
@@ -738,6 +749,7 @@ class AgentOrchestrator:
             self.save_state()
         else:
             log_warning("QA verification FAILED!")
+            self.escalate_developer_backend()
             max_rev = self.config.get("max_revisions", 2)
             if self.state["code_revisions"] < max_rev:
                 self.state["code_revisions"] += 1
@@ -796,6 +808,7 @@ class AgentOrchestrator:
             self.save_state()
         else:
             log_warning("Code changes REJECTED by Reviewer.")
+            self.escalate_developer_backend()
             max_rev = self.config.get("max_revisions", 2)
             if self.state["code_revisions"] < max_rev:
                 self.state["code_revisions"] += 1
