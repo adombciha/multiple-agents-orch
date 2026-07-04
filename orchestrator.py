@@ -250,6 +250,26 @@ class AgentOrchestrator:
             raise RuntimeError(f"Claude CLI failed with code {result.returncode}:\n{result.stderr}")
         return result.stdout
 
+    def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
+        backend = self.config["backends"].get("manager", "ollama")
+        log_info(f"Requesting Agent 'manager' (Backend: {backend})...")
+        if backend == "codex":
+            try:
+                return self.call_codex(prompt, system_prompt)
+            except Exception as e:
+                log_warning(f"Codex manager backend failed: {e}")
+                log_warning("Falling back to Ollama backend.")
+                return self.call_ollama(prompt, system_prompt)
+        elif backend == "claude":
+            try:
+                return self.call_claude(prompt, system_prompt)
+            except Exception as e:
+                log_warning(f"Claude manager backend failed: {e}")
+                log_warning("Falling back to Ollama backend.")
+                return self.call_ollama(prompt, system_prompt)
+        else:
+            return self.call_ollama(prompt, system_prompt)
+
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         backend = self.config["backends"].get(role, "ollama")
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
@@ -292,7 +312,7 @@ class AgentOrchestrator:
             "Output ONLY the Markdown content for requirements.md. Do not add any greeting, preamble, or conversational introduction."
         )
         
-        requirements = self.call_ollama(request, system_prompt)
+        requirements = self.call_manager(request, system_prompt)
         
         # Save requirements
         with open(self.requirements_path, "w", encoding="utf-8") as f:
@@ -348,7 +368,7 @@ class AgentOrchestrator:
             f"Respond ONLY with a valid JSON array. Do not include markdown code block syntax (like ```json) or any other text."
         )
         
-        parsed_items_raw = self.call_ollama(parse_prompt, "You are a Project Manager. Output only raw JSON lists of tasks.")
+        parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON lists of tasks.")
         
         # Clean potential markdown wrapping
         clean_json = parsed_items_raw.strip()
@@ -591,7 +611,7 @@ class AgentOrchestrator:
         )
 
         system_prompt = "You are a Project Manager. Write a beautiful project final report."
-        summary = self.call_ollama(prompt, system_prompt)
+        summary = self.call_manager(prompt, system_prompt)
 
         with open(self.final_report_path, "w", encoding="utf-8") as f:
             f.write(summary)
