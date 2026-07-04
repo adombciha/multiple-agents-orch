@@ -16,13 +16,14 @@ import requests
 
 # Default Configuration
 DEFAULT_CONFIG = {
+    "language": "en",
     "ollama_url": "http://localhost:11434",
     "ollama_model": "gemma4:latest",
     "test_command": "git diff --stat",  # Runs a simple check if no test suite exists
     "max_revisions": 2,
     "backends": {
         "manager": "ollama",
-        "developer": "codex",
+        "developer": "ollama",
         "reviewer": "ollama",  # Default to ollama; user can change to 'claude' when ready
         "qa": "ollama"         # Default to ollama QA backend
     },
@@ -187,6 +188,13 @@ TRANSLATIONS = {
         "manager.final_report_system": "あなたはプロジェクトマネージャーです。読みやすいプロジェクト最終レポートを書いてください。",
     },
 }
+
+def normalize_language(language: str | None) -> str:
+    return language if language in TRANSLATIONS else DEFAULT_CONFIG["language"]
+
+def tr(key: str, lang: str | None = None, **kwargs) -> str:
+    text = TRANSLATIONS.get(normalize_language(lang), {}).get(key, TRANSLATIONS["en"].get(key, key))
+    return text.format(**kwargs) if kwargs else text
 
 PONYTAIL_PROMPT = (
     "\n\n[PONYTAIL RULE ACTIVE]\n"
