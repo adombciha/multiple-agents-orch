@@ -855,7 +855,7 @@ class AgentOrchestrator:
         # Ensure model_tier_indices exist in state
         indices = self.state.setdefault("model_tier_indices", {})
         if role == "assistant" and "assistant" not in indices:
-            idx = indices.setdefault(role, 2)  # Default to index 2 (gemma2:9b) for assistant
+            idx = indices.setdefault(role, 1)  # Default to index 1 (gemma2:2b) for assistant
         else:
             idx = indices.setdefault(role, 0)
         
