@@ -309,7 +309,10 @@ def normalize_language(language: str | None) -> str:
 
 def tr(key: str, lang: str | None = None, **kwargs) -> str:
     text = TRANSLATIONS.get(normalize_language(lang), {}).get(key, TRANSLATIONS["en"].get(key, key))
-    return text.format(**kwargs) if kwargs else text
+    if kwargs:
+        for k, v in kwargs.items():
+            text = text.replace(f"{{{k}}}", str(v))
+    return text
 
 PONYTAIL_PROMPT = (
     "\n\n[PONYTAIL RULE ACTIVE]\n"
@@ -767,7 +770,10 @@ class AgentOrchestrator:
             
             code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
             if code != 0:
-                log_error(f"Failed to merge feature branch: {output}")
+                log_error(f"Failed to merge feature branch due to conflict: {output}")
+                log_warning("ABORTING WORKTREE CLEANUP! Please resolve the git merge conflict manually in your root workspace.")
+                log_warning("The 'ai-feature-branch' and your worktree are preserved.")
+                return
             else:
                 log_success("Successfully merged changes to master!")
                 
@@ -914,7 +920,7 @@ class AgentOrchestrator:
             return
             
         # If we cannot upgrade model anymore, perform horizontal escalation (switch backend)
-        escalation_path = self.config.get("backend_escalation_path", ["ollama", "gemini", "codex", "claude"])
+        escalation_path = self.config.get("backend_escalation_path", ["ollama", "gemini", "codex"])
         if current_dev in escalation_path:
             curr_idx = escalation_path.index(current_dev)
             if curr_idx + 1 < len(escalation_path):
