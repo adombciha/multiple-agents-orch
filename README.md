@@ -109,10 +109,14 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ```
 
 ### 7. 更換代理人（Agent）後端
-您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`）：
+您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`、`gemini`）：
 * **將實作者改為 Codex CLI (預設值)**:
   ```bash
   python3 orchestrator.py set-backend developer codex
+  ```
+* **將審查者 (Reviewer) 改為 Gemini Pro**:
+  ```bash
+  python3 orchestrator.py set-backend reviewer gemini
   ```
 * **未來加入 Claude Code 後，將審查者改為 Claude**:
   ```bash
@@ -121,9 +125,36 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 
 ---
 
+## 整合使用 Gemini Pro API
+
+協調器已原生支援 Gemini API，您可以直接將任何一個角色（例如 `reviewer`）切換到 Gemini：
+
+1. **設定 API 金鑰**：
+   有兩種設定方式（擇一即可）：
+   * **方式 A（推薦）**：在環境變數中設定：
+     ```bash
+     export GEMINI_API_KEY="您的_GEMINI_API_KEY"
+     ```
+   * **方式 B**：直接寫入設定檔，編輯 `.ai-company/config.json`，在最外層加入 API 金鑰：
+     ```json
+     {
+       "ollama_url": "http://localhost:11434",
+       "gemini_api_key": "您的_GEMINI_API_KEY",
+       "gemini_model": "gemini-2.5-flash", // 可選，預設為 gemini-2.5-flash
+       ...
+     }
+     ```
+
+2. **切換角色後端**：
+   ```bash
+   python3 orchestrator.py set-backend reviewer gemini
+   ```
+
+---
+
 ## 後端代理人容錯機制 (Graceful Fallback)
 
-為了確保在沒有 Claude Code 或 Codex CLI 可用時流程不中斷：
-* 如果 `claude` 尚未登入或報錯，Reviewer 角色會自動降級（Fallback）使用本機的 **Ollama (gemma4)** 進行審查。
-* 如果 `codex` 出現異常，Developer 角色亦會自動降級使用 **Ollama (gemma4)** 進行回應。
-* 當您日後成功於 WSL 中以 `claude auth` 登入 Claude 帳號後，協調器即可無縫切換，以 Claude CLI 作為高品質審查代理人。
+為了確保在某個後端 API 或 CLI 無法運作時流程不中斷：
+* 如果 `claude`、`codex` 或 `gemini` 尚未登入或設定 API Key 報錯，系統會自動降級（Fallback）使用本機的 **Ollama (gemma4)** 進行對應動作。
+* 當您日後配置完成後，協調器會自動恢復使用您指定的進階 API/CLI。
+
