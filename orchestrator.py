@@ -23,7 +23,8 @@ DEFAULT_CONFIG = {
     "backends": {
         "manager": "ollama",
         "developer": "codex",
-        "reviewer": "ollama"  # Default to ollama; user can change to 'claude' when ready
+        "reviewer": "ollama",  # Default to ollama; user can change to 'claude' when ready
+        "qa": "ollama"         # Default to ollama QA backend
     },
     "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
     "gemini_api_key": ""
@@ -69,6 +70,7 @@ class AgentOrchestrator:
         self.reviewer_output_path = self.ai_dir / "reviewer_output.md"
         self.developer_output_path = self.ai_dir / "developer_output.md"
         self.test_results_path = self.ai_dir / "test_results.txt"
+        self.qa_report_path = self.ai_dir / "qa_report.md"
         self.final_report_path = self.ai_dir / "final_report.md"
 
         self.config = DEFAULT_CONFIG
@@ -612,10 +614,16 @@ class AgentOrchestrator:
             else:
                 prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
             
-            if self.state["code_revisions"] > 0 and self.reviewer_output_path.exists():
-                with open(self.reviewer_output_path, "r", encoding="utf-8") as f:
-                    feedback = f.read()
-                prompt += f"\n\nNote: The previous implementation was REJECTED by code review. Feedback:\n{feedback}\nPlease fix these issues."
+            if self.state["code_revisions"] > 0:
+                feedback = ""
+                if self.qa_report_path.exists():
+                    with open(self.qa_report_path, "r", encoding="utf-8") as f:
+                        feedback += f"\n--- QA Feedback ---\n{f.read()}\n"
+                if self.reviewer_output_path.exists():
+                    with open(self.reviewer_output_path, "r", encoding="utf-8") as f:
+                        feedback += f"\n--- Code Review Feedback ---\n{f.read()}\n"
+                if feedback:
+                    prompt += f"\n\nNote: The previous implementation had issues. Feedback:\n{feedback}\nPlease fix these issues."
 
             # We use Developer backend to make modifications
             system_prompt = "You are an expert AI Developer. Write and edit code to fulfill the task."
@@ -648,7 +656,7 @@ class AgentOrchestrator:
         self.save_state()
 
     def step_testing(self):
-        log_header("5. TESTING & VERIFICATION")
+        log_header("5. TESTING & VERIFICATION (QA Agent)")
         test_cmd = self.config.get("test_command", "git diff --stat")
         log_info(f"Running test command: {test_cmd}")
         
@@ -659,13 +667,57 @@ class AgentOrchestrator:
             f.write(f"Command: {test_cmd}\nExit Code: {code}\nOutput:\n{output}")
             
         log_info(f"Test exit code: {code}")
-        if code == 0:
-            log_success("Tests passed successfully!")
+        
+        # Now run QA agent analysis
+        with open(self.requirements_path, "r", encoding="utf-8") as f:
+            requirements = f.read()
+        with open(self.plan_path, "r", encoding="utf-8") as f:
+            plan = f.read()
+        # get git diff
+        _, git_diff = self.run_command(["git", "diff", "master"], capture=True)
+        if not git_diff.strip():
+            _, git_diff = self.run_command(["git", "diff"], capture=True)
+
+        qa_prompt = (
+            f"You are the QA Engineer. Analyze the test execution results for our changes.\n\n"
+            f"Requirements:\n{requirements}\n\n"
+            f"Implementation Plan:\n{plan}\n\n"
+            f"Git Diff:\n{git_diff}\n\n"
+            f"Raw Test Output:\n{output}\n"
+            f"Test Exit Code: {code}\n\n"
+            f"Generate a detailed QA test report in Markdown. "
+            f"If all tests pass and the implementation looks correct and safe, your report MUST start with 'PASSED'. "
+            f"If there are any test failures, errors, unhandled exceptions, or missing deliverables, your report MUST start with 'FAILED' followed by the details of the issues and suggested fixes."
+        )
+        
+        system_prompt = "You are a Senior Quality Assurance Engineer. Generate a QA report."
+        qa_report = self.call_agent("qa", qa_prompt, system_prompt)
+        
+        with open(self.qa_report_path, "w", encoding="utf-8") as f:
+            f.write(qa_report)
+        log_success(f"QA report generated and saved to {self.qa_report_path}")
+        
+        is_passed = qa_report.strip().upper().startswith("PASSED")
+        
+        if is_passed:
+            log_success("QA verification PASSED!")
+            self.state["state"] = "REVIEWING_CODE"
+            self.save_state()
         else:
-            log_warning("Tests failed or diff returned code non-zero.")
-            
-        self.state["state"] = "REVIEWING_CODE"
-        self.save_state()
+            log_warning("QA verification FAILED!")
+            max_rev = self.config.get("max_revisions", 2)
+            if self.state["code_revisions"] < max_rev:
+                self.state["code_revisions"] += 1
+                self.state["state"] = "IMPLEMENTING"
+                # Mark tasks as pending to trigger re-implementation with QA report feedback
+                for t in self.state["tasks"]:
+                    t["status"] = "pending"
+                self.save_state()
+                log_info(f"Revising code based on QA report (Revision {self.state['code_revisions']}/{max_rev})...")
+            else:
+                log_warning("Reached max code revisions. Proceeding to final architect review.")
+                self.state["state"] = "REVIEWING_CODE"
+                self.save_state()
 
     def step_reviewing_code(self):
         log_header("6. REVIEWING CODE (Architect / Reviewer)")
@@ -805,7 +857,7 @@ def main():
     reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
 
     backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
-    backend_parser.add_argument("role", choices=["manager", "developer", "reviewer"], help="The agent role")
+    backend_parser.add_argument("role", choices=["manager", "developer", "reviewer", "qa"], help="The agent role")
     backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
 
     args = parser.parse_args()
@@ -847,6 +899,7 @@ def main():
             print(f"Ollama Model:       {orchestrator.config['ollama_model']}")
             print(f"Developer Backend:  {orchestrator.config['backends']['developer']}")
             print(f"Reviewer Backend:   {orchestrator.config['backends']['reviewer']}")
+            print(f"QA Backend:         {orchestrator.config['backends'].get('qa', 'ollama')}")
             print(f"Test Command:       {orchestrator.config['test_command']}")
             
             tasks = orchestrator.state.get("tasks", [])
