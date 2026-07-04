@@ -122,10 +122,24 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
   ```bash
   python3 orchestrator.py set-backend reviewer gemini
   ```
-* **未來加入 Claude Code 後，將審查者改為 Claude**:
+* **將審查者 (Reviewer) 改為 Claude**:
   ```bash
   python3 orchestrator.py set-backend reviewer claude
   ```
+
+---
+
+## Ponytail 極簡開發原則 (Minimalist Coding)
+
+本專案支援 **Ponytail** 核心思維。當您在 [.ai-company/config.json](file:///home/oss-gp/multi-agents/.ai-company/config.json) 中啟用：
+```json
+"use_ponytail": true
+```
+
+協調器會在與 **Developer**（實作者）和 **Reviewer**（審查者）對話時，自動在 System Prompts 中注入 `ponytail` 規則。這會強力規範 AI 代理人遵守：
+* **YAGNI (You Aren't Gonna Need It)**：只做當前需要的功能，不進行任何超前部署與猜測性的架構設計。
+* **極簡代碼梯子 (The Ladder)**：優先使用系統原生功能與標準庫（stdlib），避免引入非必要依賴，縮減程式碼行數與變更（Shortest Diff Wins）。
+* **杜絕冗餘封裝**：不使用單一實作的介面、不做預留的工廠模式，保持代碼最簡化。
 
 ---
 
