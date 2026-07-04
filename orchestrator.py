@@ -88,6 +88,44 @@ TRANSLATIONS = {
             "Please generate a Final Report in Markdown. Summarize what was built, files modified, and verify how requirements were met."
         ),
         "manager.final_report_system": "You are a Project Manager. Write a beautiful project final report.",
+        "reviewer.plan_prompt": (
+            "Review the implementation plan against the requirements.\n\n"
+            "Requirements:\n{requirements}\n\n"
+            "Implementation Plan:\n{plan}\n\n"
+            "Check for architectural issues, gaps in requirements, and safety.\n"
+            "If acceptable, start your response with 'APPROVED'.\n"
+            "If issues exist, start your response with 'REJECTED' followed by detailed feedback.\n\n"
+            "Format:\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.plan_system": "You are a Senior Software Architect. Review the implementation plan.",
+        "qa.report_prompt": (
+            "You are the QA Engineer. Analyze the test execution results for our changes.\n\n"
+            "Requirements:\n{requirements}\n\n"
+            "Implementation Plan:\n{plan}\n\n"
+            "Git Diff:\n{git_diff}\n\n"
+            "Raw Test Output:\n{output}\n"
+            "Test Exit Code: {code}\n\n"
+            "Generate a detailed QA test report in Markdown. "
+            "If all tests pass and the implementation looks correct and safe, your report MUST start with 'PASSED'. "
+            "If there are any test failures, errors, unhandled exceptions, or missing deliverables, your report MUST start with 'FAILED' followed by the details of the issues and suggested fixes."
+        ),
+        "qa.report_system": "You are a Senior Quality Assurance Engineer. Generate a QA report.",
+        "reviewer.code_prompt": (
+            "Review the code changes made. Here is the context:\n\n"
+            "Requirements:\n{requirements}\n\n"
+            "Plan:\n{plan}\n\n"
+            "Test Results:\n{test_results}\n\n"
+            "Git Diff:\n{git_diff}\n\n"
+            "Verify if the implementation matches requirements and plan, and if the tests pass.\n"
+            "If acceptable, start your response with 'APPROVED'.\n"
+            "If there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\n"
+            "Format:\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.code_system": "You are a Senior Code Reviewer. Review the git diff and test results.",
     },
     "zh-TW": {
         "status.header": "協調器狀態",
@@ -137,6 +175,44 @@ TRANSLATIONS = {
             "請以 Markdown 產生最終報告，摘要說明完成內容、修改檔案，並驗證需求如何被滿足。"
         ),
         "manager.final_report_system": "你是專案經理。撰寫一份精美的專案最終報告。",
+        "reviewer.plan_prompt": (
+            "請依需求審查實作計畫。\n\n"
+            "需求：\n{requirements}\n\n"
+            "實作計畫：\n{plan}\n\n"
+            "檢查架構問題、需求缺口與安全性。\n"
+            "若可接受，回覆必須以 'APPROVED' 開頭。\n"
+            "若有問題，回覆必須以 'REJECTED' 開頭，後面接詳細回饋。\n\n"
+            "格式：\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.plan_system": "你是資深軟體架構師。請審查實作計畫。",
+        "qa.report_prompt": (
+            "你是 QA 工程師。請分析本次變更的測試執行結果。\n\n"
+            "需求：\n{requirements}\n\n"
+            "實作計畫：\n{plan}\n\n"
+            "Git Diff：\n{git_diff}\n\n"
+            "原始測試輸出：\n{output}\n"
+            "測試結束代碼：{code}\n\n"
+            "請產生詳細的 Markdown QA 測試報告。"
+            "若所有測試通過且實作看起來正確安全，報告必須以 'PASSED' 開頭。"
+            "若有任何測試失敗、錯誤、未處理例外或缺少交付項目，報告必須以 'FAILED' 開頭，後面接問題細節與建議修正。"
+        ),
+        "qa.report_system": "你是資深品質保證工程師。請產生 QA 報告。",
+        "reviewer.code_prompt": (
+            "請審查已完成的程式碼變更。以下是背景：\n\n"
+            "需求：\n{requirements}\n\n"
+            "計畫：\n{plan}\n\n"
+            "測試結果：\n{test_results}\n\n"
+            "Git Diff：\n{git_diff}\n\n"
+            "確認實作是否符合需求與計畫，以及測試是否通過。\n"
+            "若可接受，回覆必須以 'APPROVED' 開頭。\n"
+            "若有 bug、邏輯錯誤、風格問題或失敗，回覆必須以 'REJECTED' 開頭，後面接詳細回饋。\n\n"
+            "格式：\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.code_system": "你是資深程式碼審查者。請審查 git diff 與測試結果。",
     },
     "ja": {
         "status.header": "オーケストレーター状態",
@@ -186,6 +262,44 @@ TRANSLATIONS = {
             "Markdown で最終レポートを生成してください。構築した内容、変更したファイル、要件がどのように満たされたかを要約してください。"
         ),
         "manager.final_report_system": "あなたはプロジェクトマネージャーです。読みやすいプロジェクト最終レポートを書いてください。",
+        "reviewer.plan_prompt": (
+            "要件に照らして実装計画をレビューしてください。\n\n"
+            "要件:\n{requirements}\n\n"
+            "実装計画:\n{plan}\n\n"
+            "アーキテクチャ上の問題、要件の抜け、安全性を確認してください。\n"
+            "問題なければ、回答は必ず 'APPROVED' で始めてください。\n"
+            "問題がある場合、回答は必ず 'REJECTED' で始め、その後に詳細なフィードバックを書いてください。\n\n"
+            "形式:\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.plan_system": "あなたはシニアソフトウェアアーキテクトです。実装計画をレビューしてください。",
+        "qa.report_prompt": (
+            "あなたは QA エンジニアです。今回の変更に対するテスト実行結果を分析してください。\n\n"
+            "要件:\n{requirements}\n\n"
+            "実装計画:\n{plan}\n\n"
+            "Git Diff:\n{git_diff}\n\n"
+            "生のテスト出力:\n{output}\n"
+            "テスト終了コード: {code}\n\n"
+            "Markdown で詳細な QA テストレポートを生成してください。"
+            "すべてのテストが通り、実装が正しく安全に見える場合、レポートは必ず 'PASSED' で始めてください。"
+            "テスト失敗、エラー、未処理例外、または不足した成果物がある場合、レポートは必ず 'FAILED' で始め、その後に問題の詳細と修正案を書いてください。"
+        ),
+        "qa.report_system": "あなたはシニア品質保証エンジニアです。QA レポートを生成してください。",
+        "reviewer.code_prompt": (
+            "実施されたコード変更をレビューしてください。背景は次のとおりです:\n\n"
+            "要件:\n{requirements}\n\n"
+            "計画:\n{plan}\n\n"
+            "テスト結果:\n{test_results}\n\n"
+            "Git Diff:\n{git_diff}\n\n"
+            "実装が要件と計画に合っているか、テストが通っているかを確認してください。\n"
+            "問題なければ、回答は必ず 'APPROVED' で始めてください。\n"
+            "バグ、論理エラー、スタイル問題、失敗がある場合、回答は必ず 'REJECTED' で始め、その後に詳細なフィードバックを書いてください。\n\n"
+            "形式:\n"
+            "[APPROVED or REJECTED]\n"
+            "[Feedback details]"
+        ),
+        "reviewer.code_system": "あなたはシニアコードレビュアーです。git diff とテスト結果をレビューしてください。",
     },
 }
 
@@ -367,7 +481,7 @@ class AgentOrchestrator:
         }
         
         try:
-            response = requests.post(url, json=payload, timeout=180)
+            response = requests.post(url, json=payload, timeout=600)
             response.raise_for_status()
             return response.json()["message"]["content"]
         except requests.exceptions.RequestException as e:
@@ -590,7 +704,8 @@ class AgentOrchestrator:
 
     # Workflow Steps
     def step_planning(self):
-        log_header("1. PLANNING (Ollama Manager)")
+        lang = self.config.get("language")
+        log_header(tr("phase.planning", lang))
         if not self.request_path.exists():
             log_error(f"No request file found at {self.request_path}. Please run 'start' command first.")
             sys.exit(1)
@@ -598,16 +713,7 @@ class AgentOrchestrator:
         with open(self.request_path, "r", encoding="utf-8") as f:
             request = f.read()
 
-        system_prompt = (
-            "You are the Project Manager of an AI software company. Your job is to analyze the user's request "
-            "and write a detailed, clear requirements document in Markdown format.\n"
-            "Requirements must contain:\n"
-            "1. Project Overview & Context\n"
-            "2. Specific Functional Requirements\n"
-            "3. Technical Specifications & Stack constraints\n"
-            "4. Scope boundaries (what is NOT included)\n\n"
-            "Output ONLY the Markdown content for requirements.md. Do not add any greeting, preamble, or conversational introduction."
-        )
+        system_prompt = tr("manager.requirements_system", lang)
         
         requirements = self.call_manager(request, system_prompt)
         
@@ -620,7 +726,8 @@ class AgentOrchestrator:
         self.save_state()
 
     def step_developing_plan(self):
-        log_header("2. DEVELOPING PLAN (Developer)")
+        lang = self.config.get("language")
+        log_header(tr("phase.developing_plan", lang))
         with open(self.requirements_path, "r", encoding="utf-8") as f:
             requirements = f.read()
 
@@ -654,18 +761,9 @@ class AgentOrchestrator:
 
         # Now parse plan into tasks (Action Items) using Manager (Ollama)
         log_info("Parsing implementation plan into structured action items...")
-        parse_prompt = (
-            f"Read this implementation plan:\n\n"
-            f"{plan}\n\n"
-            f"Extract a flat JSON array of tasks representing the steps to be coded.\n"
-            f"Each task must be a JSON object with fields:\n"
-            f"- 'id': unique string ID (e.g. 'TASK-001', 'TASK-002')\n"
-            f"- 'description': concise description of the coding step\n"
-            f"- 'status': 'pending'\n\n"
-            f"Respond ONLY with a valid JSON array. Do not include markdown code block syntax (like ```json) or any other text."
-        )
+        parse_prompt = tr("manager.parse_tasks_prompt", lang, plan=plan)
         
-        parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON lists of tasks.")
+        parsed_items_raw = self.call_manager(parse_prompt, tr("manager.parse_tasks_system", lang))
         
         # Clean potential markdown wrapping
         clean_json = parsed_items_raw.strip()
@@ -754,25 +852,16 @@ class AgentOrchestrator:
         log_warning("[!] Already at highest Developer model and backend escalation tier.")
 
     def step_reviewing_plan(self):
-        log_header("3. REVIEWING PLAN (Architect / Reviewer)")
+        lang = self.config.get("language")
+        log_header(tr("phase.reviewing_plan", lang))
         with open(self.requirements_path, "r", encoding="utf-8") as f:
             requirements = f.read()
         with open(self.plan_path, "r", encoding="utf-8") as f:
             plan = f.read()
 
-        prompt = (
-            f"Review the implementation plan against the requirements.\n\n"
-            f"Requirements:\n{requirements}\n\n"
-            f"Implementation Plan:\n{plan}\n\n"
-            f"Check for architectural issues, gaps in requirements, and safety.\n"
-            f"If acceptable, start your response with 'APPROVED'.\n"
-            f"If issues exist, start your response with 'REJECTED' followed by detailed feedback.\n\n"
-            f"Format:\n"
-            f"[APPROVED or REJECTED]\n"
-            f"[Feedback details]"
-        )
+        prompt = tr("reviewer.plan_prompt", lang, requirements=requirements, plan=plan)
 
-        system_prompt = "You are a Senior Software Architect. Review the implementation plan."
+        system_prompt = tr("reviewer.plan_system", lang)
         review = self.call_agent("reviewer", prompt, system_prompt)
 
         with open(self.reviewer_output_path, "w", encoding="utf-8") as f:
@@ -832,7 +921,8 @@ class AgentOrchestrator:
         return written_files
 
     def step_implementing(self):
-        log_header("4. IMPLEMENTING CODE (Developer)")
+        lang = self.config.get("language")
+        log_header(tr("phase.implementing_code", lang))
         if not self.requirements_path.exists() or not self.plan_path.exists():
             log_error("Requirements or Plan missing. Cannot implement.")
             sys.exit(1)
@@ -925,7 +1015,8 @@ class AgentOrchestrator:
         self.save_state()
 
     def step_testing(self):
-        log_header("5. TESTING & VERIFICATION (QA Agent)")
+        lang = self.config.get("language")
+        log_header(tr("phase.testing_verification", lang))
         test_cmd = self.config.get("test_command", "git diff --stat")
         log_info(f"Running test command: {test_cmd}")
         
@@ -947,19 +1038,9 @@ class AgentOrchestrator:
         if not git_diff.strip():
             _, git_diff = self.run_command(["git", "diff"], capture=True)
 
-        qa_prompt = (
-            f"You are the QA Engineer. Analyze the test execution results for our changes.\n\n"
-            f"Requirements:\n{requirements}\n\n"
-            f"Implementation Plan:\n{plan}\n\n"
-            f"Git Diff:\n{git_diff}\n\n"
-            f"Raw Test Output:\n{output}\n"
-            f"Test Exit Code: {code}\n\n"
-            f"Generate a detailed QA test report in Markdown. "
-            f"If all tests pass and the implementation looks correct and safe, your report MUST start with 'PASSED'. "
-            f"If there are any test failures, errors, unhandled exceptions, or missing deliverables, your report MUST start with 'FAILED' followed by the details of the issues and suggested fixes."
-        )
+        qa_prompt = tr("qa.report_prompt", lang, requirements=requirements, plan=plan, git_diff=git_diff, output=output, code=code)
         
-        system_prompt = "You are a Senior Quality Assurance Engineer. Generate a QA report."
+        system_prompt = tr("qa.report_system", lang)
         qa_report = self.call_agent("qa", qa_prompt, system_prompt)
         
         with open(self.qa_report_path, "w", encoding="utf-8") as f:
@@ -990,7 +1071,8 @@ class AgentOrchestrator:
                 self.save_state()
 
     def step_reviewing_code(self):
-        log_header("6. REVIEWING CODE (Architect / Reviewer)")
+        lang = self.config.get("language")
+        log_header(tr("phase.reviewing_code", lang))
         with open(self.requirements_path, "r", encoding="utf-8") as f:
             requirements = f.read()
         with open(self.plan_path, "r", encoding="utf-8") as f:
@@ -1003,21 +1085,9 @@ class AgentOrchestrator:
         if not git_diff.strip():
             _, git_diff = self.run_command(["git", "diff"], capture=True)
 
-        prompt = (
-            f"Review the code changes made. Here is the context:\n\n"
-            f"Requirements:\n{requirements}\n\n"
-            f"Plan:\n{plan}\n\n"
-            f"Test Results:\n{test_results}\n\n"
-            f"Git Diff:\n{git_diff}\n\n"
-            f"Verify if the implementation matches requirements and plan, and if the tests pass.\n"
-            f"If acceptable, start your response with 'APPROVED'.\n"
-            f"If there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\n"
-            f"Format:\n"
-            f"[APPROVED or REJECTED]\n"
-            f"[Feedback details]"
-        )
+        prompt = tr("reviewer.code_prompt", lang, requirements=requirements, plan=plan, test_results=test_results, git_diff=git_diff)
 
-        system_prompt = "You are a Senior Code Reviewer. Review the git diff and test results."
+        system_prompt = tr("reviewer.code_system", lang)
         review = self.call_agent("reviewer", prompt, system_prompt)
 
         with open(self.reviewer_output_path, "w", encoding="utf-8") as f:
@@ -1049,7 +1119,8 @@ class AgentOrchestrator:
                 self.save_state()
 
     def step_completed(self):
-        log_header("7. GENERATING SUMMARY (Ollama Manager)")
+        lang = self.config.get("language")
+        log_header(tr("phase.generating_summary", lang))
         
         with open(self.request_path, "r", encoding="utf-8") as f:
             request = f.read()
@@ -1059,15 +1130,9 @@ class AgentOrchestrator:
         # Get final git diff stat
         _, diff_stat = self.run_command(["git", "diff", "--stat"])
 
-        prompt = (
-            f"We have successfully completed the tasks.\n"
-            f"Original Request:\n{request}\n\n"
-            f"Requirements:\n{requirements}\n\n"
-            f"Git Diff Stat:\n{diff_stat}\n\n"
-            f"Please generate a Final Report in Markdown. Summarize what was built, files modified, and verify how requirements were met."
-        )
+        prompt = tr("manager.final_report_prompt", lang, request=request, requirements=requirements, diff_stat=diff_stat)
 
-        system_prompt = "You are a Project Manager. Write a beautiful project final report."
+        system_prompt = tr("manager.final_report_system", lang)
         summary = self.call_manager(prompt, system_prompt)
 
         with open(self.final_report_path, "w", encoding="utf-8") as f:
@@ -1163,24 +1228,25 @@ def main():
     elif args.command == "status":
         try:
             orchestrator.load_config_and_state()
-            log_header("ORCHESTRATOR STATUS")
-            print(f"Current State:      {Colors.BOLD}{orchestrator.state['state']}{Colors.ENDC}")
-            print(f"Plan Revisions:     {orchestrator.state['plan_revisions']}/{orchestrator.config['max_revisions']}")
-            print(f"Code Revisions:     {orchestrator.state['code_revisions']}/{orchestrator.config['max_revisions']}")
+            lang = orchestrator.config.get("language")
+            log_header(tr("status.header", lang))
+            print(f"{tr('status.current_state', lang) + ':':<20}{Colors.BOLD}{orchestrator.state['state']}{Colors.ENDC}")
+            print(f"{tr('status.plan_revisions', lang) + ':':<20}{orchestrator.state['plan_revisions']}/{orchestrator.config['max_revisions']}")
+            print(f"{tr('status.code_revisions', lang) + ':':<20}{orchestrator.state['code_revisions']}/{orchestrator.config['max_revisions']}")
             print(f"Ollama Model:       {orchestrator.config['ollama_model']}")
-            print(f"Developer Backend:  {orchestrator.config['backends']['developer']}")
-            print(f"Reviewer Backend:   {orchestrator.config['backends']['reviewer']}")
-            print(f"QA Backend:         {orchestrator.config['backends'].get('qa', 'ollama')}")
-            print(f"Test Command:       {orchestrator.config['test_command']}")
+            print(f"{tr('status.developer_backend', lang) + ':':<20}{orchestrator.config['backends']['developer']}")
+            print(f"{tr('status.reviewer_backend', lang) + ':':<20}{orchestrator.config['backends']['reviewer']}")
+            print(f"{tr('status.qa_backend', lang) + ':':<20}{orchestrator.config['backends'].get('qa', 'ollama')}")
+            print(f"{tr('status.test_command', lang) + ':':<20}{orchestrator.config['test_command']}")
             
             tasks = orchestrator.state.get("tasks", [])
             if tasks:
-                print(f"\nAction Items ({len(tasks)} total):")
+                print(f"\n{tr('status.action_items', lang)} ({len(tasks)} total):")
                 for t in tasks:
                     status_color = Colors.GREEN if t['status'] == 'completed' else Colors.WARNING
                     print(f" - [{status_color}{t['status']}{Colors.ENDC}] {t['id']}: {t['description']}")
             else:
-                print("\nNo tasks parsed yet.")
+                print(f"\n{tr('status.no_tasks', lang)}")
         except FileNotFoundError:
             log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
     elif args.command == "reset":
