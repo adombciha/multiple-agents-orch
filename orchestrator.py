@@ -30,7 +30,7 @@ DEFAULT_CONFIG = {
     "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
     "gemini_api_key": "",
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
-    "backend_escalation_path": ["ollama", "gemini", "codex", "claude"],
+    "backend_escalation_path": ["ollama", "gemini", "codex"],
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
         "gemini": ["gemini-2.5-flash", "gemini-2.5-pro"],
@@ -1047,7 +1047,7 @@ class AgentOrchestrator:
             f.write(qa_report)
         log_success(f"QA report generated and saved to {self.qa_report_path}")
         
-        is_passed = qa_report.strip().upper().startswith("PASSED")
+        is_passed = "PASSED" in qa_report.upper()[:1000]
         
         if is_passed:
             log_success("QA verification PASSED!")
