@@ -528,8 +528,40 @@ class AgentOrchestrator:
                 self.state["state"] = "IMPLEMENTING"
                 self.save_state()
 
+    def parse_and_write_files(self, text: str) -> list[str]:
+        import re
+        pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
+        matches = pattern.findall(text)
+        
+        written_files = []
+        for filepath_str, content in matches:
+            filepath_str = filepath_str.strip()
+            content = content.strip()
+            
+            # Strip potential leading/trailing markdown code block wrappers
+            if content.startswith("```"):
+                lines = content.splitlines()
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                content = "\n".join(lines).strip()
+                
+            target_path = (self.workspace / filepath_str).resolve()
+            # Safety check: ensure it is inside workspace
+            if self.workspace not in target_path.parents and target_path != self.workspace:
+                log_warning(f"Skipping file write outside workspace: {filepath_str}")
+                continue
+                
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            written_files.append(filepath_str)
+            log_success(f"Developer wrote file: {filepath_str}")
+        return written_files
+
     def step_implementing(self):
-        log_header("4. IMPLEMENTING CODE (Codex Developer)")
+        log_header("4. IMPLEMENTING CODE (Developer)")
         if not self.requirements_path.exists() or not self.plan_path.exists():
             log_error("Requirements or Plan missing. Cannot implement.")
             sys.exit(1)
@@ -552,6 +584,7 @@ class AgentOrchestrator:
         
         # We can implement task by task
         developer_logs = []
+        backend = self.config["backends"].get("developer", "codex")
         for task in pending_tasks:
             log_info(f"Implementing Task {task['id']}: {task['description']}")
             
@@ -563,17 +596,38 @@ class AgentOrchestrator:
                 f"Please implement the following task:\n"
                 f"Task ID: {task['id']}\n"
                 f"Description: {task['description']}\n\n"
-                f"Modify the code files directly in the repository. Provide details of the changes you make."
             )
+            
+            if backend in ["ollama", "gemini", "agy"]:
+                prompt += (
+                    "Please write the code for any files that need to be created or modified. "
+                    "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
+                    "[FILE_START: path/to/file.ext]\n"
+                    "// code contents here\n"
+                    "[FILE_END: path/to/file.ext]\n\n"
+                    "Make sure the path is relative to the project root. "
+                    "Only output files wrapped in this format will be modified in the repository. "
+                    "Explain your changes briefly outside these blocks."
+                )
+            else:
+                prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
             
             if self.state["code_revisions"] > 0 and self.reviewer_output_path.exists():
                 with open(self.reviewer_output_path, "r", encoding="utf-8") as f:
                     feedback = f.read()
                 prompt += f"\n\nNote: The previous implementation was REJECTED by code review. Feedback:\n{feedback}\nPlease fix these issues."
 
-            # We use Codex (developer backend) to make modifications
+            # We use Developer backend to make modifications
             system_prompt = "You are an expert AI Developer. Write and edit code to fulfill the task."
             dev_output = self.call_agent("developer", prompt, system_prompt)
+            
+            # If text-based API backend, parse and write files
+            if backend in ["ollama", "gemini", "agy"]:
+                written = self.parse_and_write_files(dev_output)
+                if written:
+                    log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
+                else:
+                    log_warning("No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks.")
             
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")
             
