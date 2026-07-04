@@ -25,7 +25,8 @@ DEFAULT_CONFIG = {
         "manager": "ollama",
         "developer": "ollama",
         "reviewer": "ollama",  # Default to ollama; user can change to 'claude' when ready
-        "qa": "ollama"         # Default to ollama QA backend
+        "qa": "ollama",        # Default to ollama QA backend
+        "assistant": "ollama"  # Default to ollama assistant
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,   # Enforces isolated git worktrees for agent roles
@@ -125,6 +126,8 @@ TRANSLATIONS = {
             "[Feedback details]"
         ),
         "reviewer.code_system": "You are a Senior Code Reviewer. Review the git diff and test results.",
+        "assistant.changelog_prompt": "Please generate a CHANGELOG entry for the following completed task.\n\nSummary:\n{summary}\n\nDiff:\n{diff_patch}",
+        "assistant.changelog_system": "You are the project Assistant. You write concise, professional markdown CHANGELOG entries.",
     },
     "zh-TW": {
         "status.header": "協調器狀態",
@@ -212,6 +215,8 @@ TRANSLATIONS = {
             "[Feedback details]"
         ),
         "reviewer.code_system": "你是資深程式碼審查者。請審查 git diff 與測試結果。",
+        "assistant.changelog_prompt": "請為以下已完成的任務生成一段 CHANGELOG 紀錄。\n\n總結：\n{summary}\n\n差異：\n{diff_patch}",
+        "assistant.changelog_system": "你是專案助理。請撰寫簡潔專業的 Markdown 格式 CHANGELOG 紀錄。",
     },
     "ja": {
         "status.header": "オーケストレーター状態",
@@ -299,6 +304,8 @@ TRANSLATIONS = {
             "[Feedback details]"
         ),
         "reviewer.code_system": "あなたはシニアコードレビュアーです。git diff とテスト結果をレビューしてください。",
+        "assistant.changelog_prompt": "以下の完了したタスクのCHANGELOGエントリを生成してください。\n\n概要：\n{summary}\n\n差分：\n{diff_patch}",
+        "assistant.changelog_system": "あなたはプロジェクトアシスタントです。簡潔で専門的なMarkdown形式のCHANGELOGエントリを作成してください。",
     },
 }
 
@@ -847,7 +854,10 @@ class AgentOrchestrator:
         """Returns the specific active model name for a role/backend based on the current scaling tier index."""
         # Ensure model_tier_indices exist in state
         indices = self.state.setdefault("model_tier_indices", {})
-        idx = indices.setdefault(role, 0)
+        if role == "assistant" and "assistant" not in indices:
+            idx = indices.setdefault(role, 2)  # Default to index 2 (gemma2:9b) for assistant
+        else:
+            idx = indices.setdefault(role, 0)
         
         # Look up model tiers for this backend
         tiers = self.config.get("model_tiers", {}).get(backend, [])
@@ -1183,8 +1193,10 @@ class AgentOrchestrator:
         wt_path = self.ai_dir / "worktree"
         if self.config.get("use_worktree", True) and wt_path.exists():
             _, diff_stat = self.run_command(["git", "diff", "--stat", "master"], cwd=wt_path)
+            _, diff_patch = self.run_command(["git", "diff", "master"], cwd=wt_path)
         else:
             _, diff_stat = self.run_command(["git", "diff", "--stat"])
+            _, diff_patch = self.run_command(["git", "diff"])
 
         prompt = tr("manager.final_report_prompt", lang, request=request, requirements=requirements, diff_stat=diff_stat)
 
@@ -1195,6 +1207,17 @@ class AgentOrchestrator:
             f.write(summary)
             
         log_success(f"Final project report generated at {self.final_report_path}")
+        
+        # Assistant generates CHANGELOG
+        log_info("Asking Assistant to generate CHANGELOG.md...")
+        changelog_prompt = tr("assistant.changelog_prompt", lang, summary=summary, diff_patch=diff_patch[:5000])
+        changelog_system = tr("assistant.changelog_system", lang)
+        changelog = self.call_agent("assistant", changelog_prompt, changelog_system)
+        
+        with open(self.workspace / "CHANGELOG.md", "a", encoding="utf-8") as f:
+            f.write("\n\n" + changelog)
+            
+        log_success("CHANGELOG.md updated successfully!")
         
         # Merge and clean up isolated worktree
         self.cleanup_worktree(merge=True)
