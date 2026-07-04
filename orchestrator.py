@@ -1170,9 +1170,13 @@ class AgentOrchestrator:
             if self.state["code_revisions"] < max_rev:
                 self.state["code_revisions"] += 1
                 self.state["state"] = "IMPLEMENTING"
-                # Mark tasks as pending to trigger re-implementation
-                for t in self.state["tasks"]:
-                    t["status"] = "pending"
+                # Instead of marking all original tasks as pending, append a new task containing Reviewer's feedback
+                fix_task_id = f"FIX-REV-{self.state['code_revisions']}"
+                self.state["tasks"].append({
+                    "id": fix_task_id,
+                    "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
+                    "status": "pending"
+                })
                 self.save_state()
                 log_info(f"Revising implementation (Revision {self.state['code_revisions']}/{max_rev})...")
             else:
