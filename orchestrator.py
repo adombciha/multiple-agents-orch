@@ -27,8 +27,26 @@ DEFAULT_CONFIG = {
         "qa": "ollama"         # Default to ollama QA backend
     },
     "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
-    "gemini_api_key": ""
+    "gemini_api_key": "",
+    "use_ponytail": False  # Enforces minimalist senior developer/reviewer principles (YAGNI)
 }
+
+PONYTAIL_PROMPT = (
+    "\n\n[PONYTAIL RULE ACTIVE]\n"
+    "Enforce the laziest solution that actually works, simplest, shortest, most minimal. "
+    "Channel a senior developer who has seen everything:\n"
+    "- Climb the ladder:\n"
+    "  1. Does this need to exist at all? (YAGNI)\n"
+    "  2. Already in this codebase? Reuse it. Look before you write.\n"
+    "  3. Stdlib does it? Use it.\n"
+    "  4. Native platform feature covers it? Use it.\n"
+    "  5. Already-installed dependency solves it? Use it.\n"
+    "  6. Can it be one line? One line.\n"
+    "  7. Only then: the minimum code that works.\n"
+    "- No unrequested abstractions: no interface with one implementation, no factory for one product, no config for a value that never changes.\n"
+    "- Deletion over addition. Shortest working diff wins.\n"
+    "- Non-trivial logic must leave one runnable check behind."
+)
 
 # ANSI Escape Colors for prettier logging
 class Colors:
@@ -307,6 +325,14 @@ class AgentOrchestrator:
     def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
         backend = self.config["backends"].get("manager", "ollama")
         log_info(f"Requesting Agent 'manager' (Backend: {backend})...")
+        
+        # Inject ponytail prompt if enabled
+        if self.config.get("use_ponytail", False):
+            if system_prompt:
+                system_prompt += PONYTAIL_PROMPT
+            else:
+                system_prompt = PONYTAIL_PROMPT.strip()
+
         if backend == "codex":
             try:
                 return self.call_codex(prompt, system_prompt)
@@ -342,6 +368,13 @@ class AgentOrchestrator:
         backend = self.config["backends"].get(role, "ollama")
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
         
+        # Inject ponytail prompt if enabled and role is developer or reviewer
+        if self.config.get("use_ponytail", False) and role in ["developer", "reviewer"]:
+            if system_prompt:
+                system_prompt += PONYTAIL_PROMPT
+            else:
+                system_prompt = PONYTAIL_PROMPT.strip()
+
         if backend == "claude":
             try:
                 return self.call_claude(prompt, system_prompt)
