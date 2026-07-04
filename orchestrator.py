@@ -279,6 +279,29 @@ class AgentOrchestrator:
         except (KeyError, IndexError) as e:
             raise RuntimeError(f"Unexpected response structure from Gemini API: {e}\n{result_json}")
 
+    def call_agy(self, prompt: str, system_prompt: str | None = None) -> str:
+        # Prepend system prompt to the user prompt if present
+        full_prompt = ""
+        if system_prompt:
+            full_prompt += f"System Instructions:\n{system_prompt}\n\n"
+        full_prompt += prompt
+
+        cmd = ["agy", "--print", full_prompt]
+        log_info("Running agy CLI...")
+        
+        result = subprocess.run(
+            cmd,
+            cwd=self.workspace,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=1800,
+            check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"agy CLI failed with code {result.returncode}:\n{result.stderr}")
+        return result.stdout
+
     def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
         backend = self.config["backends"].get("manager", "ollama")
         log_info(f"Requesting Agent 'manager' (Backend: {backend})...")
@@ -301,6 +324,13 @@ class AgentOrchestrator:
                 return self.call_gemini(prompt, system_prompt)
             except Exception as e:
                 log_warning(f"Gemini manager backend failed: {e}")
+                log_warning("Falling back to Ollama backend.")
+                return self.call_ollama(prompt, system_prompt)
+        elif backend == "agy":
+            try:
+                return self.call_agy(prompt, system_prompt)
+            except Exception as e:
+                log_warning(f"agy manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_ollama(prompt, system_prompt)
         else:
@@ -329,6 +359,13 @@ class AgentOrchestrator:
                 return self.call_gemini(prompt, system_prompt)
             except Exception as e:
                 log_warning(f"Gemini backend failed: {e}")
+                log_warning("Falling back to Ollama backend.")
+                return self.call_ollama(prompt, system_prompt)
+        elif backend == "agy":
+            try:
+                return self.call_agy(prompt, system_prompt)
+            except Exception as e:
+                log_warning(f"agy backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_ollama(prompt, system_prompt)
         else:
@@ -715,7 +752,7 @@ def main():
 
     backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
     backend_parser.add_argument("role", choices=["manager", "developer", "reviewer"], help="The agent role")
-    backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini"], help="The backend to use")
+    backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
 
     args = parser.parse_args()
 
