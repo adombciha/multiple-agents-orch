@@ -17,7 +17,7 @@ import requests
 # Default Configuration
 DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
-    "ollama_model": "gemma4:latest",
+    "ollama_model": "gemma2:2b",
     "test_command": "git diff --stat",  # Runs a simple check if no test suite exists
     "max_revisions": 2,
     "backends": {
@@ -28,7 +28,14 @@ DEFAULT_CONFIG = {
     },
     "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
     "gemini_api_key": "",
-    "use_ponytail": False  # Enforces minimalist senior developer/reviewer principles (YAGNI)
+    "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
+    "backend_escalation_path": ["ollama", "gemini", "codex", "claude"],
+    "model_tiers": {
+        "ollama": ["gemma2:2b", "gemma2:9b", "gemma4:latest"],
+        "gemini": ["gemini-2.5-flash", "gemini-2.5-pro"],
+        "codex": ["gpt-4o-mini", "o3-mini", "gpt-5.5"],
+        "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"]
+    }
 }
 
 PONYTAIL_PROMPT = (
@@ -96,6 +103,12 @@ class AgentOrchestrator:
             "state": "PLANNING",
             "plan_revisions": 0,
             "code_revisions": 0,
+            "model_tier_indices": {
+                "developer": 0,
+                "reviewer": 0,
+                "manager": 0,
+                "qa": 0
+            },
             "tasks": []
         }
 
@@ -180,15 +193,17 @@ class AgentOrchestrator:
             return -1, f"Error running command: {e}"
 
     # Agent backends callers
-    def call_ollama(self, prompt: str, system_prompt: str | None = None) -> str:
+    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         url = f"{self.config['ollama_url']}/api/chat"
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         
+        model = self.get_active_model_for_role(role, "ollama") or self.config.get("ollama_model", "gemma2:2b")
+        log_info(f"Ollama calling model: {model}")
         payload = {
-            "model": self.config["ollama_model"],
+            "model": model,
             "messages": messages,
             "stream": False
         }
@@ -202,7 +217,7 @@ class AgentOrchestrator:
             log_error(f"Error detail: {e}")
             raise RuntimeError(f"Ollama connection failed: {e}")
 
-    def call_codex(self, prompt: str, system_prompt: str | None = None) -> str:
+    def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         # Prepend system prompt to the user prompt if present
         full_prompt = ""
         if system_prompt:
@@ -217,9 +232,13 @@ class AgentOrchestrator:
         cmd = [
             "codex", "exec", 
             "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-            "-"
+            "--skip-git-repo-check"
         ]
+        
+        model = self.get_active_model_for_role(role, "codex")
+        if model:
+            cmd.extend(["-m", model])
+        cmd.append("-")
         
         log_info(f"Running Codex: {' '.join(cmd)}")
         try:
@@ -248,17 +267,19 @@ class AgentOrchestrator:
                 temp_prompt_file.unlink()
             raise e
 
-    def call_claude(self, prompt: str, system_prompt: str | None = None) -> str:
-        # Check Claude availability / authentication
-        # Try running with print flag
+    def call_claude(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         full_prompt = ""
         if system_prompt:
             full_prompt += f"{system_prompt}\n\n"
         full_prompt += prompt
 
-        cmd = ["claude", "--print", "--dangerously-skip-permissions", full_prompt]
-        log_info("Running Claude Code CLI...")
+        cmd = ["claude", "--print", "--dangerously-skip-permissions"]
+        model = self.get_active_model_for_role(role, "claude")
+        if model:
+            cmd.extend(["--model", model])
+        cmd.append(full_prompt)
         
+        log_info(f"Running Claude Code: {' '.join(cmd[:-1])} ...")
         result = subprocess.run(
             cmd,
             cwd=self.workspace,
@@ -272,7 +293,7 @@ class AgentOrchestrator:
             raise RuntimeError(f"Claude CLI failed with code {result.returncode}:\n{result.stderr}")
         return result.stdout
 
-    def call_gemini(self, prompt: str, system_prompt: str | None = None) -> str:
+    def call_gemini(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         api_key = self.config.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise ValueError(
@@ -280,7 +301,7 @@ class AgentOrchestrator:
                 "or export it in your environment as GEMINI_API_KEY."
             )
         
-        model = self.config.get("gemini_model", "gemini-2.5-flash")
+        model = self.get_active_model_for_role(role, "gemini") or self.config.get("gemini_model", "gemini-2.5-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         
         contents = {"parts": [{"text": prompt}]}
@@ -299,16 +320,19 @@ class AgentOrchestrator:
         except (KeyError, IndexError) as e:
             raise RuntimeError(f"Unexpected response structure from Gemini API: {e}\n{result_json}")
 
-    def call_agy(self, prompt: str, system_prompt: str | None = None) -> str:
-        # Prepend system prompt to the user prompt if present
+    def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         full_prompt = ""
         if system_prompt:
             full_prompt += f"System Instructions:\n{system_prompt}\n\n"
         full_prompt += prompt
 
-        cmd = ["agy", "--print", full_prompt]
-        log_info("Running agy CLI...")
+        cmd = ["agy"]
+        model = self.get_active_model_for_role(role, "gemini")  # agy is gemini backend
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--print", full_prompt])
         
+        log_info(f"Running agy: {' '.join(cmd[:-1])} ...")
         result = subprocess.run(
             cmd,
             cwd=self.workspace,
@@ -335,34 +359,34 @@ class AgentOrchestrator:
 
         if backend == "codex":
             try:
-                return self.call_codex(prompt, system_prompt)
+                return self.call_codex(prompt, system_prompt, role="manager")
             except Exception as e:
                 log_warning(f"Codex manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role="manager")
         elif backend == "claude":
             try:
-                return self.call_claude(prompt, system_prompt)
+                return self.call_claude(prompt, system_prompt, role="manager")
             except Exception as e:
                 log_warning(f"Claude manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role="manager")
         elif backend == "gemini":
             try:
-                return self.call_gemini(prompt, system_prompt)
+                return self.call_gemini(prompt, system_prompt, role="manager")
             except Exception as e:
                 log_warning(f"Gemini manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role="manager")
         elif backend == "agy":
             try:
-                return self.call_agy(prompt, system_prompt)
+                return self.call_agy(prompt, system_prompt, role="manager")
             except Exception as e:
                 log_warning(f"agy manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role="manager")
         else:
-            return self.call_ollama(prompt, system_prompt)
+            return self.call_ollama(prompt, system_prompt, role="manager")
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         backend = self.config["backends"].get(role, "ollama")
@@ -377,34 +401,34 @@ class AgentOrchestrator:
 
         if backend == "claude":
             try:
-                return self.call_claude(prompt, system_prompt)
+                return self.call_claude(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"Claude backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role=role)
         elif backend == "codex":
             try:
-                return self.call_codex(prompt, system_prompt)
+                return self.call_codex(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"Codex backend failed: {e}")
                 log_warning("Falling open to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role=role)
         elif backend == "gemini":
             try:
-                return self.call_gemini(prompt, system_prompt)
+                return self.call_gemini(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"Gemini backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role=role)
         elif backend == "agy":
             try:
-                return self.call_agy(prompt, system_prompt)
+                return self.call_agy(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"agy backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt)
+                return self.call_ollama(prompt, system_prompt, role=role)
         else:
-            return self.call_ollama(prompt, system_prompt)
+            return self.call_ollama(prompt, system_prompt, role=role)
 
     # Workflow Steps
     def step_planning(self):
@@ -518,15 +542,58 @@ class AgentOrchestrator:
         self.state["state"] = "REVIEWING_PLAN"
         self.save_state()
 
+    def get_active_model_for_role(self, role: str, backend: str) -> str | None:
+        """Returns the specific active model name for a role/backend based on the current scaling tier index."""
+        # Ensure model_tier_indices exist in state
+        indices = self.state.setdefault("model_tier_indices", {})
+        idx = indices.setdefault(role, 0)
+        
+        # Look up model tiers for this backend
+        tiers = self.config.get("model_tiers", {}).get(backend, [])
+        if not tiers:
+            return None
+            
+        # Bound index to tiers list
+        if idx < len(tiers):
+            return tiers[idx]
+        return tiers[-1]
+
     def escalate_developer_backend(self):
-        """Escalates the developer backend dynamically to a higher capability level if available."""
+        """Escalates the developer dynamically (vertical model upgrade first, then horizontal backend upgrade)."""
         current_dev = self.config["backends"].get("developer", "codex")
-        if current_dev == "ollama":
-            log_warning("[!] Dynamically escalating Developer backend from 'ollama' to 'codex' to handle complex revisions!")
-            self.config["backends"]["developer"] = "codex"
-            # Write it back to config.json
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, indent=2)
+        
+        # Ensure tracking variables exist
+        indices = self.state.setdefault("model_tier_indices", {})
+        idx = indices.get("developer", 0)
+        
+        # Check if we can upgrade the model within the current backend (vertical scaling)
+        tiers = self.config.get("model_tiers", {}).get(current_dev, [])
+        if idx + 1 < len(tiers):
+            # Upgrade model tier
+            indices["developer"] = idx + 1
+            new_model = tiers[idx + 1]
+            log_warning(f"[!] Dynamic Vertical Scale: Upgraded developer model on '{current_dev}' to '{new_model}' (Tier {idx + 1})")
+            self.save_state()
+            return
+            
+        # If we cannot upgrade model anymore, perform horizontal escalation (switch backend)
+        escalation_path = self.config.get("backend_escalation_path", ["ollama", "gemini", "codex", "claude"])
+        if current_dev in escalation_path:
+            curr_idx = escalation_path.index(current_dev)
+            if curr_idx + 1 < len(escalation_path):
+                new_dev = escalation_path[curr_idx + 1]
+                log_warning(f"[!] Dynamic Horizontal Scale: Escalated Developer backend from '{current_dev}' to '{new_dev}'")
+                self.config["backends"]["developer"] = new_dev
+                # Reset model tier for the new backend
+                indices["developer"] = 0
+                
+                # Save updated config and state
+                with open(self.config_path, "w", encoding="utf-8") as f:
+                    json.dump(self.config, f, indent=2)
+                self.save_state()
+                return
+
+        log_warning("[!] Already at highest Developer model and backend escalation tier.")
 
     def step_reviewing_plan(self):
         log_header("3. REVIEWING PLAN (Architect / Reviewer)")
