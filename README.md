@@ -11,19 +11,20 @@
                    ↓
          [ Python Orchestrator ]
                    ↓
-         [ Ollama (gemma4) ]
-         角色：Manager (負責分析需求、拆解任務、產生 Final Report)
+         [ Manager (負責分析需求、拆解任務) ]
                    ↓
   ┌────────────────┬────────────────┐
-  │   Codex CLI    │  Claude Code   │ (或使用 Ollama 作為 Fallback Reviewer)
-  │   角色：Developer│  角色：Reviewer │
+  │   Developer    │    Reviewer    │
+  │ (負責實作任務) │ (負責代碼審核) │
   └────────────────┴────────────────┘
                    ↓
-         [ Orchestrator 執行測試 ] (e.g. npm test / pytest / git diff)
+         [ QA Agent 進行自動化驗證 ]
                    ↓
          [ Reviewer 進行代碼審核 ]
-          ├── 通過 → 結束並產生 Final Report
-          └── 退回 → 重新修改實作 (最多兩輪)
+          ├── 通過 → 合併分支並產生 Final Report
+          └── 退回 → 產生修復任務單 (FIX-TASK) 交回 Developer 單點修改
+                   ↓
+         [ Assistant (自動生成 CHANGELOG.md) ]
 ```
 
 ---
@@ -34,7 +35,7 @@
 
 ```text
 .ai-company/
-├── config.json             # 系統設定檔 (API URL, 模型名稱, 測試指令, 代理人後端)
+├── config.json             # 系統設定檔 (模型名稱, 測試指令, 代理人後端, 語系)
 ├── state.json              # 狀態記錄檔 (記錄當前執行狀態與任務清單)
 ├── request.md              # 你的原始自然語言需求
 ├── requirements.md         # Manager 產生的詳細功能需求說明書
@@ -44,6 +45,9 @@
 ├── reviewer_output.md      # Reviewer 針對計畫與程式碼的審查意見
 ├── test_results.txt        # 測試指令執行的輸出結果
 └── final_report.md         # 專案完成後的總結報告
+
+# 專案根目錄
+└── CHANGELOG.md            # Assistant 自動即時更新的變更日誌
 ```
 
 ---
@@ -109,22 +113,22 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ```
 
 ### 7. 更換代理人（Agent）後端
-您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`、`gemini`、`agy`）：
+您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`、`agy`）：
 * **將實作者改為 Codex CLI (預設值)**:
   ```bash
   python3 orchestrator.py set-backend developer codex
   ```
-* **將審查者 (Reviewer) 改為 agy (使用您已透過 OAuth2 登入的 Gemini Pro)**:
+* **將審查者 (Reviewer) 改為 agy (使用您已透過 OAuth2 登入的 Gemini)**:
   ```bash
   python3 orchestrator.py set-backend reviewer agy
   ```
-* **將審查者 (Reviewer) 改為 Gemini Pro API Key 版本**:
+* **將 QA 測試員改為 Ollama**:
   ```bash
-  python3 orchestrator.py set-backend reviewer gemini
+  python3 orchestrator.py set-backend qa ollama
   ```
-* **將審查者 (Reviewer) 改為 Claude**:
+* **將 Assistant 改為 Ollama**:
   ```bash
-  python3 orchestrator.py set-backend reviewer claude
+  python3 orchestrator.py set-backend assistant ollama
   ```
 
 ---
@@ -143,43 +147,38 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 
 ---
 
-## 整合使用 agy CLI (Gemini Pro OAuth 2.0)
+## 核心亮點功能
 
-本專案原生支援直接呼叫您在 WSL 中已登入的 `agy` (Antigravity CLI)。
+### 1. Git Worktree 隔離開發 (Zero-Risk)
+預設開啟 `"use_worktree": true`。
+協調器會在背景自動建立一個獨立的 Git 分支與 Worktree (`.ai-company/worktree`) 進行開發與測試。這代表您的主分支 (`master`) 完全不會被未經 Review 的程式碼污染。只有在 QA 與 Reviewer 雙雙核准 (`APPROVED`) 後，系統才會安全地自動將修改合併回主分支。
 
-1. **認證說明**：
-   只要您已經在 WSL 中執行過 `agy` 登入您的 Google 帳戶，協調器在執行時就會自動調用 `agy --print` 命令。這能直接取得您授權的 Gemini Pro 模型回應，**完全不需要填寫或暴露任何 API Key 金鑰**，安全且方便！
+### 2. 單點精準修復任務 (Targeted Fixes)
+當 QA 驗證失敗或 Reviewer 退件時，系統不會愚蠢地強迫 Developer 重新撰寫所有程式碼。而是會將錯誤報告包裝成單一修復任務單 (`FIX-QA-1` 或 `FIX-REV-1`)，交回給 Developer 進行精準修改，大幅節省時間與運算資源。
 
-2. **切換角色後端**：
-   ```bash
-   python3 orchestrator.py set-backend reviewer agy
-   ```
+### 3. 多國語系支援 (Multilingual Interface)
+在 `.ai-company/config.json` 中設定：
+```json
+"language": "zh-TW"
+```
+支援 `en` (英文)、`zh-TW` (繁體中文)、`ja` (日文)。所有終端機日誌、提示詞 (Prompt) 以及輸出的報告與 Changelog 都會依照您的語系偏好自動切換。
+
+### 4. Assistant 自動生成 CHANGELOG
+預設開啟 `"assistant": "ollama"` (指向 `gemma2:2b` 等輕量模型)。
+當專案開發順利完成合併後，Assistant 代理人會自動分析 Manager 的總結報告與 Git Diff，並「即時」為您寫下一筆專業的 Markdown 格式 `CHANGELOG.md` 變更紀錄。
 
 ---
 
-## 整合使用 Gemini Pro API (API Key 版本)
+## 整合使用 agy CLI (Gemini OAuth 2.0)
 
-如果您偏好使用傳統的 API Key 存取 Gemini：
+本專案原生支援直接呼叫您在系統中已登入的 `agy` (Antigravity CLI)，**嚴格禁止使用明文 API Key**，全面落實 OAuth 2.0 安全規範。
 
-1. **設定 API 金鑰**：
-   有兩種設定方式（擇一即可）：
-   * **方式 A（推薦）**：在環境變數中設定：
-     ```bash
-     export GEMINI_API_KEY="您的_GEMINI_API_KEY"
-     ```
-   * **方式 B**：直接寫入設定檔，編輯 `.ai-company/config.json`，在最外層加入 API 金鑰：
-     ```json
-     {
-       "ollama_url": "http://localhost:11434",
-       "gemini_api_key": "您的_GEMINI_API_KEY",
-       "gemini_model": "gemini-2.5-flash", // 可選，預設為 gemini-2.5-flash
-       ...
-     }
-     ```
+1. **認證說明**：
+   只要您已經登入您的 Google 帳戶，協調器在執行時就會自動調用 `agy --print` 命令取得模型回應。完全不需要填寫或暴露任何 API 金鑰，保證極致安全。
 
-2. **切換角色後端**：
+2. **切換角色後端為 Gemini (agy)**：
    ```bash
-   python3 orchestrator.py set-backend reviewer gemini
+   python3 orchestrator.py set-backend developer agy
    ```
 
 ---
