@@ -660,6 +660,19 @@ class AgentOrchestrator:
         else:
             return self.call_ollama(prompt, system_prompt, role="manager")
 
+    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+        """Helper to call Ollama and append format instructions if missing for the developer role."""
+        if role == "developer" and "[FILE_START:" not in prompt:
+            prompt += (
+                "\n\nCRITICAL: You do not have access to terminal tools. "
+                "To modify files, you must output your changes using this exact block format:\n"
+                "[FILE_START: path/to/file.ext]\n"
+                "full file content here\n"
+                "[FILE_END: path/to/file.ext]\n\n"
+                "Any modifications outside this format will be ignored. Write only complete file contents inside the blocks."
+            )
+        return self.call_ollama(prompt, system_prompt, role=role)
+
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         backend = self.config["backends"].get(role, "ollama")
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
@@ -677,30 +690,30 @@ class AgentOrchestrator:
             except Exception as e:
                 log_warning(f"Claude backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role=role)
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "codex":
             try:
                 return self.call_codex(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"Codex backend failed: {e}")
                 log_warning("Falling open to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role=role)
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "gemini":
             try:
                 return self.call_gemini(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"Gemini backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role=role)
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "agy":
             try:
                 return self.call_agy(prompt, system_prompt, role=role)
             except Exception as e:
                 log_warning(f"agy backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role=role)
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         else:
-            return self.call_ollama(prompt, system_prompt, role=role)
+            return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
     # Workflow Steps
     def step_planning(self):
@@ -1255,6 +1268,12 @@ def main():
             orchestrator.state["state"] = args.state
             orchestrator.state["plan_revisions"] = 0
             orchestrator.state["code_revisions"] = 0
+            orchestrator.state["model_tier_indices"] = {
+                "developer": 0,
+                "reviewer": 0,
+                "manager": 0,
+                "qa": 0
+            }
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")
         except FileNotFoundError:
