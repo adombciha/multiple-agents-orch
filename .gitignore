@@ -3,5 +3,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Temporary prompt files
-.ai-company/temp_codex_prompt.txt
+# Temporary prompt and agent state files
+.ai-company/
+
