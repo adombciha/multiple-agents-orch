@@ -17,7 +17,7 @@ import requests
 # Default Configuration
 DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
-    "ollama_model": "gemma2:2b",
+    "ollama_model": "gemma4:latest",
     "test_command": "git diff --stat",  # Runs a simple check if no test suite exists
     "max_revisions": 2,
     "backends": {
@@ -31,11 +31,161 @@ DEFAULT_CONFIG = {
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "backend_escalation_path": ["ollama", "gemini", "codex", "claude"],
     "model_tiers": {
-        "ollama": ["gemma2:2b", "gemma2:9b", "gemma4:latest"],
+        "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
         "gemini": ["gemini-2.5-flash", "gemini-2.5-pro"],
         "codex": ["gpt-4o-mini", "o3-mini", "gpt-5.5"],
         "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"]
     }
+}
+
+TRANSLATIONS = {
+    "en": {
+        "status.header": "ORCHESTRATOR STATUS",
+        "status.current_state": "Current State",
+        "status.current_state_is": "Current state is: {state}",
+        "status.plan_revisions": "Plan Revisions",
+        "status.code_revisions": "Code Revisions",
+        "status.developer_backend": "Developer Backend",
+        "status.reviewer_backend": "Reviewer Backend",
+        "status.qa_backend": "QA Backend",
+        "status.test_command": "Test Command",
+        "status.action_items": "Action Items",
+        "status.no_tasks": "No tasks parsed yet.",
+        "phase.planning": "1. PLANNING (Ollama Manager)",
+        "phase.developing_plan": "2. DEVELOPING PLAN (Developer)",
+        "phase.reviewing_plan": "3. REVIEWING PLAN (Architect / Reviewer)",
+        "phase.implementing_code": "4. IMPLEMENTING CODE (Developer)",
+        "phase.testing_verification": "5. TESTING & VERIFICATION (QA Agent)",
+        "phase.reviewing_code": "6. REVIEWING CODE (Architect / Reviewer)",
+        "phase.generating_summary": "7. GENERATING SUMMARY (Ollama Manager)",
+        "manager.requirements_system": (
+            "You are the Project Manager of an AI software company. Your job is to analyze the user's request "
+            "and write a detailed, clear requirements document in Markdown format.\n"
+            "Requirements must contain:\n"
+            "1. Project Overview & Context\n"
+            "2. Specific Functional Requirements\n"
+            "3. Technical Specifications & Stack constraints\n"
+            "4. Scope boundaries (what is NOT included)\n\n"
+            "Output ONLY the Markdown content for requirements.md. Do not add any greeting, preamble, or conversational introduction."
+        ),
+        "manager.parse_tasks_prompt": (
+            "Read this implementation plan:\n\n"
+            "{plan}\n\n"
+            "Extract a flat JSON array of tasks representing the steps to be coded.\n"
+            "Each task must be a JSON object with fields:\n"
+            "- 'id': unique string ID (e.g. 'TASK-001', 'TASK-002')\n"
+            "- 'description': concise description of the coding step\n"
+            "- 'status': 'pending'\n\n"
+            "Respond ONLY with a valid JSON array. Do not include markdown code block syntax (like ```json) or any other text."
+        ),
+        "manager.parse_tasks_system": "You are a Project Manager. Output only raw JSON lists of tasks.",
+        "manager.final_report_prompt": (
+            "We have successfully completed the tasks.\n"
+            "Original Request:\n{request}\n\n"
+            "Requirements:\n{requirements}\n\n"
+            "Git Diff Stat:\n{diff_stat}\n\n"
+            "Please generate a Final Report in Markdown. Summarize what was built, files modified, and verify how requirements were met."
+        ),
+        "manager.final_report_system": "You are a Project Manager. Write a beautiful project final report.",
+    },
+    "zh-TW": {
+        "status.header": "協調器狀態",
+        "status.current_state": "目前狀態",
+        "status.current_state_is": "目前狀態：{state}",
+        "status.plan_revisions": "計畫修訂次數",
+        "status.code_revisions": "程式碼修訂次數",
+        "status.developer_backend": "開發者後端",
+        "status.reviewer_backend": "審查者後端",
+        "status.qa_backend": "QA 後端",
+        "status.test_command": "測試命令",
+        "status.action_items": "待辦項目",
+        "status.no_tasks": "尚未解析任何任務。",
+        "phase.planning": "1. 規劃（Ollama 專案經理）",
+        "phase.developing_plan": "2. 制定計畫（開發者）",
+        "phase.reviewing_plan": "3. 審查計畫（架構師 / 審查者）",
+        "phase.implementing_code": "4. 實作程式碼（開發者）",
+        "phase.testing_verification": "5. 測試與驗證（QA 代理）",
+        "phase.reviewing_code": "6. 審查程式碼（架構師 / 審查者）",
+        "phase.generating_summary": "7. 產生摘要（Ollama 專案經理）",
+        "manager.requirements_system": (
+            "你是 AI 軟體公司的專案經理。你的工作是分析使用者需求，"
+            "並以 Markdown 格式撰寫詳細且清楚的需求文件。\n"
+            "需求必須包含：\n"
+            "1. 專案概觀與背景\n"
+            "2. 具體功能需求\n"
+            "3. 技術規格與技術限制\n"
+            "4. 範圍邊界（不包含哪些內容）\n\n"
+            "只輸出 requirements.md 的 Markdown 內容。不要加入問候、前言或對話式介紹。"
+        ),
+        "manager.parse_tasks_prompt": (
+            "閱讀以下實作計畫：\n\n"
+            "{plan}\n\n"
+            "擷取一個扁平 JSON array，代表需要撰寫程式碼的步驟。\n"
+            "每個任務必須是 JSON object，並包含欄位：\n"
+            "- 'id': 唯一字串 ID（例如 'TASK-001'、'TASK-002'）\n"
+            "- 'description': 精簡描述此程式碼步驟\n"
+            "- 'status': 'pending'\n\n"
+            "只回覆有效的 JSON array。不要包含 markdown code block 語法（例如 ```json）或任何其他文字。"
+        ),
+        "manager.parse_tasks_system": "你是專案經理。只輸出 raw JSON 任務列表。",
+        "manager.final_report_prompt": (
+            "我們已成功完成這些任務。\n"
+            "原始需求：\n{request}\n\n"
+            "需求文件：\n{requirements}\n\n"
+            "Git Diff 統計：\n{diff_stat}\n\n"
+            "請以 Markdown 產生最終報告，摘要說明完成內容、修改檔案，並驗證需求如何被滿足。"
+        ),
+        "manager.final_report_system": "你是專案經理。撰寫一份精美的專案最終報告。",
+    },
+    "ja": {
+        "status.header": "オーケストレーター状態",
+        "status.current_state": "現在の状態",
+        "status.current_state_is": "現在の状態: {state}",
+        "status.plan_revisions": "計画の修正回数",
+        "status.code_revisions": "コードの修正回数",
+        "status.developer_backend": "開発者バックエンド",
+        "status.reviewer_backend": "レビュアーバックエンド",
+        "status.qa_backend": "QA バックエンド",
+        "status.test_command": "テストコマンド",
+        "status.action_items": "アクション項目",
+        "status.no_tasks": "解析済みのタスクはまだありません。",
+        "phase.planning": "1. 計画（Ollama マネージャー）",
+        "phase.developing_plan": "2. 計画作成（開発者）",
+        "phase.reviewing_plan": "3. 計画レビュー（アーキテクト / レビュアー）",
+        "phase.implementing_code": "4. コード実装（開発者）",
+        "phase.testing_verification": "5. テストと検証（QA エージェント）",
+        "phase.reviewing_code": "6. コードレビュー（アーキテクト / レビュアー）",
+        "phase.generating_summary": "7. サマリー生成（Ollama マネージャー）",
+        "manager.requirements_system": (
+            "あなたは AI ソフトウェア会社のプロジェクトマネージャーです。ユーザーの依頼を分析し、"
+            "Markdown 形式で詳細かつ明確な要件定義書を書くことが仕事です。\n"
+            "要件には必ず以下を含めてください:\n"
+            "1. プロジェクト概要と背景\n"
+            "2. 具体的な機能要件\n"
+            "3. 技術仕様と技術スタック上の制約\n"
+            "4. スコープ境界（含まないもの）\n\n"
+            "requirements.md の Markdown 内容だけを出力してください。挨拶、前置き、会話的な導入は追加しないでください。"
+        ),
+        "manager.parse_tasks_prompt": (
+            "次の実装計画を読んでください:\n\n"
+            "{plan}\n\n"
+            "コーディングする手順を表すフラットな JSON array を抽出してください。\n"
+            "各タスクは次のフィールドを持つ JSON object である必要があります:\n"
+            "- 'id': 一意の文字列 ID（例: 'TASK-001', 'TASK-002'）\n"
+            "- 'description': コーディング手順の簡潔な説明\n"
+            "- 'status': 'pending'\n\n"
+            "有効な JSON array だけを返してください。markdown code block 構文（```json など）やその他の文字は含めないでください。"
+        ),
+        "manager.parse_tasks_system": "あなたはプロジェクトマネージャーです。raw JSON のタスクリストだけを出力してください。",
+        "manager.final_report_prompt": (
+            "タスクは正常に完了しました。\n"
+            "元の依頼:\n{request}\n\n"
+            "要件:\n{requirements}\n\n"
+            "Git Diff 統計:\n{diff_stat}\n\n"
+            "Markdown で最終レポートを生成してください。構築した内容、変更したファイル、要件がどのように満たされたかを要約してください。"
+        ),
+        "manager.final_report_system": "あなたはプロジェクトマネージャーです。読みやすいプロジェクト最終レポートを書いてください。",
+    },
 }
 
 PONYTAIL_PROMPT = (
