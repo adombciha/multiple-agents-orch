@@ -109,12 +109,16 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ```
 
 ### 7. 更換代理人（Agent）後端
-您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`、`gemini`）：
+您可以隨時更換個別角色的執行後端（支援 `ollama`、`codex`、`claude`、`gemini`、`agy`）：
 * **將實作者改為 Codex CLI (預設值)**:
   ```bash
   python3 orchestrator.py set-backend developer codex
   ```
-* **將審查者 (Reviewer) 改為 Gemini Pro**:
+* **將審查者 (Reviewer) 改為 agy (使用您已透過 OAuth2 登入的 Gemini Pro)**:
+  ```bash
+  python3 orchestrator.py set-backend reviewer agy
+  ```
+* **將審查者 (Reviewer) 改為 Gemini Pro API Key 版本**:
   ```bash
   python3 orchestrator.py set-backend reviewer gemini
   ```
@@ -125,9 +129,23 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 
 ---
 
-## 整合使用 Gemini Pro API
+## 整合使用 agy CLI (Gemini Pro OAuth 2.0)
 
-協調器已原生支援 Gemini API，您可以直接將任何一個角色（例如 `reviewer`）切換到 Gemini：
+本專案原生支援直接呼叫您在 WSL 中已登入的 `agy` (Antigravity CLI)。
+
+1. **認證說明**：
+   只要您已經在 WSL 中執行過 `agy` 登入您的 Google 帳戶，協調器在執行時就會自動調用 `agy --print` 命令。這能直接取得您授權的 Gemini Pro 模型回應，**完全不需要填寫或暴露任何 API Key 金鑰**，安全且方便！
+
+2. **切換角色後端**：
+   ```bash
+   python3 orchestrator.py set-backend reviewer agy
+   ```
+
+---
+
+## 整合使用 Gemini Pro API (API Key 版本)
+
+如果您偏好使用傳統的 API Key 存取 Gemini：
 
 1. **設定 API 金鑰**：
    有兩種設定方式（擇一即可）：
