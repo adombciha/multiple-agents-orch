@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
     "gemini_api_key": "",
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
+    "use_worktree": True,   # Enforces isolated git worktrees for agent roles
     "backend_escalation_path": ["ollama", "gemini", "codex"],
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
@@ -443,12 +444,23 @@ class AgentOrchestrator:
             pass
         return "127.0.0.1"
 
-    def run_command(self, cmd: list[str], timeout: int = 1800, capture: bool = True) -> tuple[int, str]:
+    def run_command(self, cmd: list[str], timeout: int = 1800, capture: bool = True, cwd: Path | None = None) -> tuple[int, str]:
         """Runs a subprocess command safety and returns (returncode, output)."""
+        exec_cwd = cwd or self.workspace
+        
+        # If use_worktree is active and we are executing in implementing/testing states,
+        # redirect default cwd to the worktree path
+        if self.config.get("use_worktree", True) and not cwd:
+            current_state = self.state.get("state", "PLANNING")
+            if current_state in ["IMPLEMENTING", "TESTING", "REVIEWING_CODE"]:
+                wt_path = self.ai_dir / "worktree"
+                if wt_path.exists():
+                    exec_cwd = wt_path
+
         try:
             result = subprocess.run(
                 cmd,
-                cwd=self.workspace,
+                cwd=exec_cwd,
                 stdout=subprocess.PIPE if capture else None,
                 stderr=subprocess.PIPE if capture else None,
                 text=True,
@@ -716,9 +728,65 @@ class AgentOrchestrator:
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
     # Workflow Steps
+    def setup_worktree(self):
+        """Creates an isolated git worktree for development and QA testing."""
+        if not self.config.get("use_worktree", True):
+            return
+            
+        wt_path = self.ai_dir / "worktree"
+        
+        # 1. Clean up any existing worktree/branch first
+        self.cleanup_worktree()
+        
+        # 2. Add worktree
+        log_info(f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'...")
+        wt_path.parent.mkdir(exist_ok=True, parents=True)
+        
+        # Run git worktree add
+        code, output = self.run_command(["git", "worktree", "add", "-b", "ai-feature-branch", str(wt_path)], cwd=self.workspace)
+        if code != 0:
+            log_error(f"Failed to create git worktree: {output}")
+            raise RuntimeError("Git worktree setup failed.")
+        log_success("Git worktree successfully established.")
+
+    def cleanup_worktree(self, merge=False):
+        """Cleans up the git worktree, optionally merging the changes back first."""
+        if not self.config.get("use_worktree", True):
+            return
+            
+        wt_path = self.ai_dir / "worktree"
+        
+        # If merge is requested, merge the branch in root
+        if merge:
+            log_info("Merging 'ai-feature-branch' back into master...")
+            
+            # Commit any changes inside the worktree first if they are not committed
+            # We want to add and commit
+            self.run_command(["git", "add", "."], cwd=wt_path)
+            self.run_command(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path)
+            
+            code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
+            if code != 0:
+                log_error(f"Failed to merge feature branch: {output}")
+            else:
+                log_success("Successfully merged changes to master!")
+                
+        # Remove worktree
+        wt_list = self.run_command(["git", "worktree", "list"], capture=True)[1]
+        if "worktree" in wt_list:
+            log_info("Removing Git worktree...")
+            self.run_command(["git", "worktree", "remove", "--force", str(wt_path)], cwd=self.workspace)
+            
+        # Delete branch
+        self.run_command(["git", "branch", "-D", "ai-feature-branch"], cwd=self.workspace)
+
     def step_planning(self):
         lang = self.config.get("language")
         log_header(tr("phase.planning", lang))
+        
+        # Setup clean worktree
+        self.setup_worktree()
+        
         if not self.request_path.exists():
             log_error(f"No request file found at {self.request_path}. Please run 'start' command first.")
             sys.exit(1)
@@ -920,10 +988,17 @@ class AgentOrchestrator:
                     lines = lines[:-1]
                 content = "\n".join(lines).strip()
                 
-            target_path = (self.workspace / filepath_str).resolve()
-            # Safety check: ensure it is inside workspace
-            if self.workspace not in target_path.parents and target_path != self.workspace:
-                log_warning(f"Skipping file write outside workspace: {filepath_str}")
+            # Determine base directory
+            base_dir = self.workspace
+            if self.config.get("use_worktree", True):
+                wt_path = self.ai_dir / "worktree"
+                if wt_path.exists():
+                    base_dir = wt_path
+
+            target_path = (base_dir / filepath_str).resolve()
+            # Safety check: ensure it is inside base_dir
+            if base_dir not in target_path.parents and target_path != base_dir:
+                log_warning(f"Skipping file write outside target directory: {filepath_str}")
                 continue
                 
             target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1141,7 +1216,11 @@ class AgentOrchestrator:
             requirements = f.read()
         
         # Get final git diff stat
-        _, diff_stat = self.run_command(["git", "diff", "--stat"])
+        wt_path = self.ai_dir / "worktree"
+        if self.config.get("use_worktree", True) and wt_path.exists():
+            _, diff_stat = self.run_command(["git", "diff", "--stat", "master"], cwd=wt_path)
+        else:
+            _, diff_stat = self.run_command(["git", "diff", "--stat"])
 
         prompt = tr("manager.final_report_prompt", lang, request=request, requirements=requirements, diff_stat=diff_stat)
 
@@ -1152,6 +1231,10 @@ class AgentOrchestrator:
             f.write(summary)
             
         log_success(f"Final project report generated at {self.final_report_path}")
+        
+        # Merge and clean up isolated worktree
+        self.cleanup_worktree(merge=True)
+        
         log_success("Multi-agent workflow process has finished successfully!")
 
     # Flow Controller
@@ -1274,6 +1357,7 @@ def main():
                 "manager": 0,
                 "qa": 0
             }
+            orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")
         except FileNotFoundError:
