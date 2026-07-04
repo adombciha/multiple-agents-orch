@@ -27,14 +27,12 @@ DEFAULT_CONFIG = {
         "reviewer": "ollama",  # Default to ollama; user can change to 'claude' when ready
         "qa": "ollama"         # Default to ollama QA backend
     },
-    "gemini_model": "gemini-2.5-flash",  # Default to gemini-2.5-flash which is very fast and capable
-    "gemini_api_key": "",
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,   # Enforces isolated git worktrees for agent roles
     "backend_escalation_path": ["ollama", "agy", "codex"],
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
-        "gemini": ["gemini-2.5-flash", "gemini-2.5-pro"],
+        "agy": ["gemini-2.5-flash", "gemini-2.5-pro"],
         "codex": ["gpt-4o-mini", "o3-mini", "gpt-5.5"],
         "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"]
     }
@@ -580,32 +578,6 @@ class AgentOrchestrator:
             raise RuntimeError(f"Claude CLI failed with code {result.returncode}:\n{result.stderr}")
         return result.stdout
 
-    def call_gemini(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
-        api_key = self.config.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "GEMINI_API_KEY not found. Please set it in .ai-company/config.json as 'gemini_api_key' "
-                "or export it in your environment as GEMINI_API_KEY."
-            )
-        
-        model = self.get_active_model_for_role(role, "gemini") or self.config.get("gemini_model", "gemini-2.5-flash")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        
-        contents = {"parts": [{"text": prompt}]}
-        payload = {"contents": [contents]}
-        if system_prompt:
-            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-            
-        headers = {"Content-Type": "application/json"}
-        log_info(f"Calling Gemini API (Model: {model})...")
-        response = requests.post(url, json=payload, headers=headers, timeout=120)
-        response.raise_for_status()
-        
-        result_json = response.json()
-        try:
-            return result_json["candidates"][0]["content"]["parts"][0]["text"]
-        except (KeyError, IndexError) as e:
-            raise RuntimeError(f"Unexpected response structure from Gemini API: {e}\n{result_json}")
 
     def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         full_prompt = ""
@@ -614,7 +586,7 @@ class AgentOrchestrator:
         full_prompt += prompt
 
         cmd = ["agy"]
-        model = self.get_active_model_for_role(role, "gemini")  # agy is gemini backend
+        model = self.get_active_model_for_role(role, "agy")
         if model:
             cmd.extend(["--model", model])
         cmd.extend(["--print", full_prompt])
@@ -656,13 +628,6 @@ class AgentOrchestrator:
                 return self.call_claude(prompt, system_prompt, role="manager")
             except Exception as e:
                 log_warning(f"Claude manager backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role="manager")
-        elif backend == "gemini":
-            try:
-                return self.call_gemini(prompt, system_prompt, role="manager")
-            except Exception as e:
-                log_warning(f"Gemini manager backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_ollama(prompt, system_prompt, role="manager")
         elif backend == "agy":
@@ -712,13 +677,6 @@ class AgentOrchestrator:
             except Exception as e:
                 log_warning(f"Codex backend failed: {e}")
                 log_warning("Falling open to Ollama backend.")
-                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
-        elif backend == "gemini":
-            try:
-                return self.call_gemini(prompt, system_prompt, role=role)
-            except Exception as e:
-                log_warning(f"Gemini backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "agy":
             try:
