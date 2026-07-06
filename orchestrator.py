@@ -923,7 +923,7 @@ class AgentOrchestrator:
             f.write(review)
         log_info(f"Reviewer response saved. Preview:\n{review[:200]}...")
 
-        is_approved = review.strip().upper().startswith("APPROVED")
+        is_approved = review.strip().upper().replace("*", "").startswith("APPROVED")
         
         if is_approved:
             log_success("Implementation plan APPROVED by Reviewer!")
@@ -1161,7 +1161,7 @@ class AgentOrchestrator:
             
         log_info(f"Code Review response saved. Preview:\n{review[:200]}...")
 
-        is_approved = review.strip().upper().startswith("APPROVED")
+        is_approved = review.strip().upper().replace("*", "").startswith("APPROVED")
         
         if is_approved:
             log_success("Code changes APPROVED by Reviewer!")
