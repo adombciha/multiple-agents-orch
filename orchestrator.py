@@ -85,6 +85,25 @@ class AgentOrchestrator:
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.ai_dir = workspace / ".ai-company"
+        
+        # Check if we are in a git repository
+        import subprocess
+        try:
+            result = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=self.workspace, capture_output=True, text=True)
+            self.has_git = (result.returncode == 0 and result.stdout.strip() == "true")
+        except Exception:
+            self.has_git = False
+            
+        self.base_branch = "master"
+        if self.has_git:
+            try:
+                result = subprocess.run(["git", "branch", "--show-current"], cwd=self.workspace, capture_output=True, text=True)
+                if result.returncode == 0 and result.stdout.strip():
+                    self.base_branch = result.stdout.strip()
+                else:
+                    self.base_branch = "HEAD"
+            except Exception:
+                self.base_branch = "HEAD"
         self.config_path = self.ai_dir / "config.json"
         self.state_path = self.ai_dir / "state.json"
         
@@ -418,7 +437,7 @@ class AgentOrchestrator:
     # Workflow Steps
     def setup_worktree(self):
         """Creates an isolated git worktree for development and QA testing."""
-        if not self.config.get("use_worktree", True):
+        if not self.config.get("use_worktree", True) or not self.has_git:
             return
             
         wt_path = self.ai_dir / "worktree"
@@ -439,7 +458,7 @@ class AgentOrchestrator:
 
     def cleanup_worktree(self, merge=False):
         """Cleans up the git worktree, optionally merging the changes back first."""
-        if not self.config.get("use_worktree", True):
+        if not self.config.get("use_worktree", True) or not self.has_git:
             return
             
         wt_path = self.ai_dir / "worktree"
@@ -811,9 +830,13 @@ class AgentOrchestrator:
         with open(self.plan_path, "r", encoding="utf-8") as f:
             plan = f.read()
         # get git diff
-        _, git_diff = self.run_command(["git", "diff", "master"], capture=True)
-        if not git_diff.strip():
-            _, git_diff = self.run_command(["git", "diff"], capture=True)
+        if self.has_git:
+            _, git_diff = self.run_command(["git", "diff", self.base_branch], capture=True)
+            if not git_diff.strip():
+                _, git_diff = self.run_command(["git", "diff"], capture=True)
+        else:
+            git_diff = "No git repository, changes are directly in workspace."
+
 
         qa_prompt = f"""You are the QA Engineer. Analyze the test execution results for our changes.\n\nRequirements:\n{requirements}\n\nImplementation Plan:\n{plan}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA test report in Markdown. If all tests pass and the implementation looks correct and safe, your report MUST start with 'PASSED'. If there are any test failures, errors, unhandled exceptions, or missing deliverables, your report MUST start with 'FAILED' followed by the details of the issues and suggested fixes."""
         
@@ -861,9 +884,13 @@ class AgentOrchestrator:
             test_results = f.read()
 
         # Get git diff
-        _, git_diff = self.run_command(["git", "diff", "master"], capture=True)
-        if not git_diff.strip():
-            _, git_diff = self.run_command(["git", "diff"], capture=True)
+        if self.has_git:
+            _, git_diff = self.run_command(["git", "diff", self.base_branch], capture=True)
+            if not git_diff.strip():
+                _, git_diff = self.run_command(["git", "diff"], capture=True)
+        else:
+            git_diff = "No git repository, changes are directly in workspace."
+
 
         prompt = f"""Review the code changes made. Here is the context:\n\nRequirements:\n{requirements}\n\nPlan:\n{plan}\n\nTest Results:\n{test_results}\n\nGit Diff:\n{git_diff}\n\nVerify if the implementation matches requirements and plan, and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
 
@@ -912,12 +939,16 @@ class AgentOrchestrator:
         
         # Get final git diff stat
         wt_path = self.ai_dir / "worktree"
-        if self.config.get("use_worktree", True) and wt_path.exists():
-            _, diff_stat = self.run_command(["git", "diff", "--stat", "master"], cwd=wt_path)
-            _, diff_patch = self.run_command(["git", "diff", "master"], cwd=wt_path)
+        if self.config.get("use_worktree", True) and wt_path.exists() and self.has_git:
+            _, diff_stat = self.run_command(["git", "diff", "--stat", self.base_branch], cwd=wt_path)
+            _, diff_patch = self.run_command(["git", "diff", self.base_branch], cwd=wt_path)
+        elif self.has_git:
+            _, diff_stat = self.run_command(["git", "diff", "--stat", self.base_branch])
+            _, diff_patch = self.run_command(["git", "diff", self.base_branch])
         else:
-            _, diff_stat = self.run_command(["git", "diff", "--stat"])
-            _, diff_patch = self.run_command(["git", "diff"])
+            diff_stat = "No git repository."
+            diff_patch = "No git repository."
+
 
         prompt = f"""We have successfully completed the tasks.\nOriginal Request:\n{request}\n\nRequirements:\n{requirements}\n\nGit Diff Stat:\n{diff_stat}\n\nPlease generate a Final Report in Markdown. Summarize what was built, files modified, and verify how requirements were met."""
 
