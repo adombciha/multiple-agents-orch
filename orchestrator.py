@@ -465,21 +465,24 @@ class AgentOrchestrator:
         
         # If merge is requested, merge the branch in root
         if merge:
-            log_info("Merging 'ai-feature-branch' back into master...")
-            
-            # Commit any changes inside the worktree first if they are not committed
-            # We want to add and commit
-            self.run_command(["git", "add", "."], cwd=wt_path)
-            self.run_command(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path)
-            
-            code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
-            if code != 0:
-                log_error(f"Failed to merge feature branch due to conflict: {output}")
-                log_warning("ABORTING WORKTREE CLEANUP! Please resolve the git merge conflict manually in your root workspace.")
-                log_warning("The 'ai-feature-branch' and your worktree are preserved.")
-                return
-            else:
-                log_success("Successfully merged changes to master!")
+            code, _ = self.run_command(["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"], cwd=self.workspace)
+            branch_exists = (code == 0)
+            if branch_exists:
+                log_info(f"Merging 'ai-feature-branch' back into {self.base_branch}...")
+                
+                # Commit any changes inside the worktree first if they are not committed
+                # We want to add and commit
+                self.run_command(["git", "add", "."], cwd=wt_path)
+                self.run_command(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path)
+                
+                code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
+                if code != 0:
+                    log_error(f"Failed to merge feature branch due to conflict: {output}")
+                    log_warning("ABORTING WORKTREE CLEANUP! Please resolve the git merge conflict manually in your root workspace.")
+                    log_warning("The 'ai-feature-branch' and your worktree are preserved.")
+                    return
+                else:
+                    log_success(f"Successfully merged changes to {self.base_branch}!")
                 
         # Remove worktree
         wt_list = self.run_command(["git", "worktree", "list"], capture=True)[1]
