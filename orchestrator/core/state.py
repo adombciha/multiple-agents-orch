@@ -241,9 +241,9 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.get_active_model_for_role(self, role, backend)
 
-    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, image_paths: list[str] | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_ollama(self, prompt, system_prompt, role, model)
+        return backends.call_ollama(self, prompt, system_prompt, role, model, image_paths)
 
     def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
@@ -284,7 +284,7 @@ class AgentOrchestrator:
                 backends.mark_backend_quota_exhausted(self, "agy")
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None, model: str | None = None) -> str:
+    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None, model: str | None = None, image_paths: list[str] | None = None) -> str:
         if role.startswith("developer") and "[FILE_START:" not in prompt:
             prompt += (
                 "\n\nCRITICAL: You do not have access to terminal tools. "
@@ -296,8 +296,8 @@ class AgentOrchestrator:
             )
         try:
             if model is None:
-                return self.call_ollama(prompt, system_prompt, role=role)
-            return self.call_ollama(prompt, system_prompt, role=role, model=model)
+                return self.call_ollama(prompt, system_prompt, role=role, **({"image_paths": image_paths} if image_paths else {}))
+            return self.call_ollama(prompt, system_prompt, role=role, model=model, **({"image_paths": image_paths} if image_paths else {}))
         except Exception:
             if role.startswith("qa") and model is None:
                 return self.call_ollama(
@@ -306,7 +306,7 @@ class AgentOrchestrator:
                 )
             raise
 
-    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None) -> str | None:
+    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str | None:
         from orchestrator.core import backends
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
@@ -318,7 +318,7 @@ class AgentOrchestrator:
             try:
                 log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
                 if backend == "ollama":
-                    return self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model)
+                    return self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                 if backend == "codex":
                     return self.call_codex(prompt, system_prompt, role=role, model=model)
                 if backend == "agy":
@@ -335,14 +335,14 @@ class AgentOrchestrator:
                 log_warning(f"{backend}/{model} failed; trying next route.")
         raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str:
         from orchestrator.core import backends
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
         system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
 
-        routed = self.call_role_model_routes(role, prompt, system_prompt)
+        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths)
         if routed is not None:
             return routed
 

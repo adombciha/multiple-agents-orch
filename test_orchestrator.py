@@ -291,6 +291,19 @@ def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, mo
     assert post.call_args.kwargs["json"]["model"] == "fallback-model"
 
 
+def test_call_ollama_encodes_local_image(initialized_orchestrator, monkeypatch, tmp_path):
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"image")
+    response = Mock()
+    response.json.return_value = {"message": {"content": "review"}}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(orchestrator.requests, "post", post)
+
+    initialized_orchestrator.call_ollama("review", image_paths=[str(image)])
+
+    assert post.call_args.kwargs["json"]["messages"][-1]["images"] == ["aW1hZ2U="]
+
+
 def test_call_ollama_request_exception_raises_runtime_error(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(
         orchestrator.requests,

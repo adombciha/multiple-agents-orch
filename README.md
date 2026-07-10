@@ -74,7 +74,7 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
 
-UI/UX Visual Review 已可被 PM 選擇；目前 review context 為文字描述。將 screenshot 檔案附送至 Ollama vision API 會在後續的影像輸入功能中實作。
+UI/UX Visual Review 可從 specialist context 的 `[IMAGE: /absolute/path/to/screenshot.png]` marker 讀取本機圖片並送至 Ollama vision API；不存在或無法讀取的檔案會略過，並維持文字 review。
 
 ## Grok specialists 說明
 

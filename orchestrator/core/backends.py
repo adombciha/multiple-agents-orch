@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import base64
 import subprocess
 import requests
 from pathlib import Path
@@ -40,7 +41,7 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
         return tiers[idx]
     return tiers[-1]
 
-def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, image_paths: list[str] | None = None) -> str:
     from orchestrator.core.state import log_info, log_error
     url = f"{orchestrator.config['ollama_url']}/api/chat"
     messages = []
@@ -56,6 +57,8 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
         "stream": False,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
+    if image_paths:
+        payload["messages"][-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
 
     try:
         response = requests.post(url, json=payload, timeout=600)
