@@ -11,6 +11,7 @@
 ```text
                你输入需求 (User Input)
                     ↓
+<<<<<<< HEAD
           [ Python Orchestrator ]
                     ↓
           [ PM (负责分析需求、拆解任务) ]
@@ -26,6 +27,23 @@
            └── REJECTED → 生成修复任务单 (FIX-TASK) 交回 Developer 单点修改
                     ↓
           [ Assistant (自动生成 CHANGELOG.md) ]
+=======
+           [ Python Orchestrator ]
+                    ↓
+           [ PM (负责分析需求、拆解任务) ]
+                    ↓
+           [ Architect (负责计划与架构审查) ]
+                    ↓
+        [ RD 团队 (Senior / Middle / Junior) ]
+                    ↓
+           [ QA 团队 (Senior / Middle / Junior) ]
+                    ↓
+           [ Reviewer (负责代码审查) ]
+            ├── APPROVED → 合并分支并生成 Final Report
+            └── REJECTED → 生成修复任务单 (FIX-TASK) 交回 Developer 单点修改
+                     ↓
+           [ Assistant (自动生成 CHANGELOG.md) ]
+>>>>>>> ai-feature-branch
 ```
 
 ---
@@ -73,7 +91,11 @@ graph LR
 
 对于企业级和高度合规要求的软件开发，系统能扩充为一支完整的虚拟团队：
 
+<<<<<<< HEAD
 * **跨领域协作与合规把关**：AI Business 提出需求，AI PM 转化为工程规格。在合并前，由 AI Security Guard（安全守门员）和 AI RA (Regulatory Affairs，法规审查员) 检查合规性。
+=======
+* **跨领域协作与合规把关**：AI Business 提出需求，AI PM 转化为工程规格。在合并前，由 AI Security Guard（安全守门员） and AI RA (Regulatory Affairs，法规审查员) 检查合规性。
+>>>>>>> ai-feature-branch
 * **核心实现与交付**：AI RD 负责实现，AI Reviewer 检视质量，最后交由 AI SRE 编写 CI/CD 与部署脚本。
 * **辅助与高频任务**：AI QA 负责编写测试用例，AI Assistant 使用轻量模型处理文档生成，以节省计算资源。
 
@@ -137,7 +159,10 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ### 7. 更换代理人 (Agent) 后端
 ```bash
 python3 orchestrator.py set-backend developer codex
+<<<<<<< HEAD
 python3 orchestrator.py set-backend reviewer agy
+=======
+>>>>>>> ai-feature-branch
 ```
 
 ---
@@ -157,4 +182,8 @@ python3 orchestrator.py set-backend reviewer agy
 1. **Git Worktree 隔离开发 (零风险)**：所有 AI 操作都在独立的分支与工作区中进行 (`.ai-company/worktree`)。
 2. **单点精准修复**：当 QA 验证失败时，仅针对具体失败的逻辑进行修复。
 3. **多语言支持**：支持 `en`、`zh-TW`、`ja` 和 `zh-CN`。可在 `config.json` 中修改 `"language"` 设置。
+<<<<<<< HEAD
 4. **自动生成 CHANGELOG**：Assistant 代理人在项目完成后会自动生成 `CHANGELOG.md`。
+=======
+4. **自动生成 CHANGELOG**：Assistant 代理人在项目完成后会自动生成 `CHANGELOG.md`。
+>>>>>>> ai-feature-branch
