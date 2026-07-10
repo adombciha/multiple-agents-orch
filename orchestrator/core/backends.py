@@ -53,7 +53,8 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
     payload = {
         "model": model,
         "messages": messages,
-        "stream": False
+        "stream": False,
+        "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
 
     try:

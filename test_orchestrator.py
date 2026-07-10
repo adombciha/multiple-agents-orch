@@ -270,6 +270,7 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(initialized_
                 {"role": "user", "content": "do it"},
             ],
             "stream": False,
+            "keep_alive": 0,
         },
         timeout=600,
     )
@@ -329,6 +330,7 @@ def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
 
     assert app.get_backend("developer_junior") == "codex"
     assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-sol"
+    assert app.config["ollama_keep_alive"] == 0
 
 
 def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator):
