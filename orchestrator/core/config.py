@@ -10,13 +10,13 @@ DEFAULT_CONFIG = {
         "architect": "agy",
         "developer": "codex",
         "reviewer": "codex",
-        "qa": "codex",
+        "qa": "agy",
         "developer_senior": "codex",
         "developer_middle": "codex",
         "developer_junior": "agy",
-        "qa_senior": "codex",
-        "qa_middle": "codex",
-        "qa_junior": "agy",
+        "qa_senior": "agy",
+        "qa_middle": "agy",
+        "qa_junior": "ollama",
         "assistant": "ollama",
         "ra": "grok",
         "security": "ollama",
@@ -39,9 +39,9 @@ DEFAULT_CONFIG = {
         "developer_senior": "gpt-5.6-terra",
         "developer_middle": "gpt-5.6-luna",
         "developer_junior": "gemini-3.5-flash",
-        "qa_senior": "gpt-5.6-terra",
-        "qa_middle": "gpt-5.6-luna",
-        "qa_junior": "gemini-3.5-flash",
+        "qa_senior": "gemini-3.1-pro",
+        "qa_middle": "gpt-oss-120b",
+        "qa_junior": "gemma4:latest",
         "assistant": "gemma4:latest",
         "architect": "gemini-3.1-pro",
         "ra": "grok-4.5",
@@ -55,9 +55,9 @@ DEFAULT_CONFIG = {
         "developer_senior": "codex",
         "developer_middle": "codex",
         "developer_junior": "agy",
-        "qa_senior": "codex",
-        "qa_middle": "codex",
-        "qa_junior": "agy",
+        "qa_senior": "agy",
+        "qa_middle": "agy",
+        "qa_junior": "ollama",
         "assistant": "ollama",
         "architect": "agy",
         "ra": "grok",
@@ -68,13 +68,16 @@ DEFAULT_CONFIG = {
     "role_model_tiers": {
         "manager": ["gpt-5.6-sol", "gpt-5.6-terra"],
         "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"],
+        "qa_senior": ["gemini-3.1-pro", "gpt-oss-120b"],
+        "qa_middle": ["gpt-oss-120b"],
         "ra": ["grok-4.5"],
         "sales": ["grok-4.5"]
     },
     "staffing_limits": {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
         "qa": {"senior": 1, "middle": 2, "junior": 3}
-    }
+    },
+    "qa_ollama_fallback_model": "deepseek-r1:latest",
 }
 
 

@@ -231,9 +231,9 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.get_active_model_for_role(self, role, backend)
 
-    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_ollama(self, prompt, system_prompt, role)
+        return backends.call_ollama(self, prompt, system_prompt, role, model)
 
     def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
@@ -284,7 +284,15 @@ class AgentOrchestrator:
                 "[FILE_END: path/to/file.ext]\n\n"
                 "Any modifications outside this format will be ignored. Write only complete file contents inside the blocks."
             )
-        return self.call_ollama(prompt, system_prompt, role=role)
+        try:
+            return self.call_ollama(prompt, system_prompt, role=role)
+        except Exception:
+            if role.startswith("qa"):
+                return self.call_ollama(
+                    prompt, system_prompt, role=role,
+                    model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:latest"),
+                )
+            raise
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         from orchestrator.core import backends
@@ -339,6 +347,12 @@ class AgentOrchestrator:
             try:
                 return self.call_agy(prompt, system_prompt, role=role)
             except Exception as e:
+                fallback_model = self.token_fallback_model(role, e)
+                if fallback_model:
+                    try:
+                        return self.call_agy(prompt, system_prompt, role=role, model=fallback_model)
+                    except Exception as retry_error:
+                        e = retry_error
                 if backends.quota_exhausted(e):
                     backends.mark_backend_quota_exhausted(self, "agy")
                 log_warning(f"agy backend failed: {e}")

@@ -40,7 +40,7 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
         return tiers[idx]
     return tiers[-1]
 
-def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
     from orchestrator.core.state import log_info, log_error
     url = f"{orchestrator.config['ollama_url']}/api/chat"
     messages = []
@@ -48,7 +48,7 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    model = orchestrator.get_active_model_for_role(role, "ollama") or orchestrator.config.get("ollama_model", "gemma2:2b")
+    model = model or orchestrator.get_active_model_for_role(role, "ollama") or orchestrator.config.get("ollama_model", "gemma2:2b")
     log_info(f"Ollama calling model: {model}")
     payload = {
         "model": model,
@@ -181,12 +181,12 @@ def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role:
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
     message = str(error).lower()
-    if not any(marker in message for marker in ("token limit", "context length", "maximum context", "too many tokens")):
+    if not quota_exhausted(error) and not any(marker in message for marker in ("token limit", "context length", "maximum context", "too many tokens")):
         return None
     tiers = orchestrator.config.get("role_model_tiers", {}).get(role, [])
     if len(tiers) < 2:
         return None
-    log_warning(f"[!] Retrying {role} with {tiers[1]} after token-limit failure.")
+    log_warning(f"[!] Retrying {role} with {tiers[1]} after capacity failure.")
     return tiers[1]
 
 def quota_exhausted(error: Exception) -> bool:

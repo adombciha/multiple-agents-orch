@@ -2,244 +2,173 @@
 
 [繁體中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md)
 
-This project is a lightweight Multi-Agent Orchestrator written in Python. It uses a deterministic state machine for requirements planning, architecture review, implementation, verification, code review, and release notes. Each task is routed to a role and model tier based on its complexity and domain risk.
+A Python multi-agent development workflow with a deterministic state machine for planning, implementation, QA, code review, and final reporting.
 
----
+## Requirements and installation
 
-## System Requirements and Getting the Source
-
-- Python 3 plus the `requests` Python package; basic verification also needs `pytest`.
-- Git is required when using the default Git worktree; set `use_worktree` to `false` to disable it.
-- Install and sign in to the service for each enabled backend: an Ollama server or the `codex`, `agy`, `claude`, or `grok` CLI. You do not need every CLI when not running its AI workflow.
-
-After obtaining the source from Git, run these commands at the project root:
+Run these commands from a shell. Git is required for the default Git worktree workflow; Python 3 is required. The project uses `requests`; tests also use `pytest`.
 
 ```bash
-git clone https://github.com/adombciha/multiple-agents-orch.git multi-agents
-cd multi-agents
+git clone https://github.com/adombciha/multiple-agents-orch.git
+cd multiple-agents-orch
 python3 -m pip install requests pytest
 python3 orchestrator.py --help
 ```
 
-The final command only verifies CLI loading and does not call AI or create a worktree.
+The final command verifies that the CLI loads. It does not contact an AI backend or create a worktree. There is no `--version` option.
 
----
+To run an AI workflow, install and authenticate each CLI backend selected in `.ai-company/config.json` (`grok`, `codex`, `agy`, or `claude`), or run an Ollama service for an `ollama` role. The orchestrator defines no extra Grok API-key environment variable: authenticate the `grok` CLI according to that CLI's requirements. Set `use_worktree` to `false` in the config only if Git worktree isolation is unavailable or unwanted.
+
+## Workflow and files
+
+`start` stores the request and resets the state to `PLANNING`. The normal state flow is:
+
+```text
+PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
+→ TESTING → REVIEWING_CODE → COMPLETED
+```
+
+The PM analyzes requirements and staffs optional specialists. Their findings are passed to the Architect for plan review. RD implements the tasks, QA runs the configured test command and reports results, Reviewer evaluates the requirements, plan, tests, specialist findings, and Git diff, and Assistant creates `CHANGELOG.md` when complete.
+
+`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`.
 
 ## Configuration
 
-`init` creates `.ai-company/config.json`; unspecified keys are filled from the defaults in `orchestrator/core/config.py`.
+Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Missing keys use the defaults in `orchestrator/core/config.py`.
 
-| Key | Purpose |
+| Key | Purpose and default behavior |
 | --- | --- |
-| `ollama_url`, `ollama_model` | Ollama service URL and default model. |
-| `test_command`, `max_revisions` | QA test command and plan/code revision limit. |
-| `backends` | Backend for each role; `set-backend` updates supported roles. |
-| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Backend model lists, role models, and model routing. |
-| `use_ponytail`, `use_worktree` | Enable minimalist prompting or Git-worktree isolation. |
-| `backend_escalation_path`, `staffing_limits` | Backend escalation order and RD/QA staffing limits. |
+| `ollama_url`, `ollama_model` | Ollama endpoint and default model (`http://localhost:11434`, `gemma4:latest`). |
+| `test_command`, `max_revisions` | QA command and automatic plan/code revision limit; defaults are `python3 -m pytest -q` and `2`. |
+| `backends` | Backend assigned to roles. |
+| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing. |
+| `use_ponytail`, `use_worktree` | Minimalist prompting and Git-worktree isolation; both default to `false` and `true` respectively. |
+| `backend_escalation_path`, `staffing_limits` | Backend escalation and RD/QA staffing limits. |
 
----
+## Grok specialists
 
-## System Architecture
+Grok is an external CLI backend for dynamic RA and Sales specialists, both configured as `grok` by default. It is neither a top-level workflow state nor a direct replacement for PM, Architect, RD, QA, or Reviewer. The PM selects RA or Sales during requirements analysis and staffing only when the task calls for the specialist; the resulting analysis informs the Architect's plan review.
 
-```text
-               User Input
-                   ↓
-         [ Python Orchestrator ]
-                   ↓
-         [ PM (Requirements and task allocation) ]
-                   ↓
-       [ Specialists (RA / Sales → Grok CLI) ]
-                   ↓
-         [ Architect (Plan review) ]
-                   ↓
-      [ RD Team (Senior / Middle / Junior) ]
-                   ↓
-         [ QA Team (Senior / Middle / Junior) ]
-                   ↓
-         [ Reviewer (Code review) ]
-          ├── APPROVED → Merge branch and generate Final Report
-          └── REJECTED → Generate fix tasks (FIX-TASK) back to Developer for targeted fixes
-                   ↓
-         [ Assistant (Auto-generates CHANGELOG.md) ]
-```
-
----
-
-## Highly Customizable & Dynamic Role Allocation
-
-The orchestrator always enables PM, Architect, RD, Reviewer, QA, and Assistant. The PM also selects domain specialists only when the project warrants them, then their findings are supplied to the Architect before plan approval.
-
-| Role | When used | Default model route |
-| --- | --- | --- |
-| PM | Every project: requirements and task allocation | Codex `gpt-5.6-sol` |
-| Architect | Every project: plan and architecture approval | AGY Gemini `gemini-3.1-pro` |
-| RD / QA senior | Architecture, security, migrations, or ambiguous work | Codex `gpt-5.6-terra` |
-| RD / QA middle | Standard feature and integration work | Codex `gpt-5.6-luna` |
-| RD / QA junior | Isolated, repetitive routine work | AGY Gemini `gemini-3.5-flash` |
-| Reviewer | Every project: code and test-result review | Codex `gpt-5.6-sol` |
-| Assistant | Every project: CHANGELOG and routine documentation | Local Ollama `gemma4:latest` |
-| Grok | Domain analysis when RA or Sales specialists are needed | Grok CLI `grok-4.5` |
-
-### Dynamic Specialists
-
-The PM may activate the following specialists only when their trigger applies:
-
-| Specialist | Trigger | Default model route |
-| --- | --- | --- |
-| Sales | Business scope or acceptance criteria are unclear | Grok CLI `grok-4.5` |
-| Security | Authentication, secrets, payments, PII, or an attack surface is involved | Local Ollama `deepseek-r1:latest` |
-| RA | Laws, regulations, healthcare, financial compliance, or privacy obligations apply | Grok CLI `grok-4.5` |
-| SRE | CI/CD, containers, deployment, monitoring, or operational reliability is in scope | AGY Gemini `gemini-3.1-pro` |
-
-RA provides a model review, not verified legal research. Production compliance work should add authoritative-source search and citations.
-
-### This README Acceptance & System Roles
-
-Sales is a system specialist dynamically activated by the PM as needed; the fact that Sales is not involved in the acceptance process of this README modification does not mean that Sales is removed or deactivated. QA is responsible for verifying the Markdown structure, the commands and paths listed in the README, and the safely executable check results; after QA passes, the Reviewer reviews the document correctness, modification scope, and first-time user workflow based on requirements, implementation, and QA results, and decides whether to approve or reject for fixes.
-
-### Grok agent
-
-Grok is an external CLI agent selected by the orchestrator for domain analysis by the RA (regulatory) and Sales specialists. It is not an additional workflow stage and does not replace PM, Architect, RD, QA, or Reviewer. The PM uses Grok only when a specialist trigger applies, then the result is supplied to the Architect for plan review.
-
-Before use, install the `grok` CLI and make it executable in the runtime environment. Grok is already the default backend for RA and Sales in a newly initialized project:
-
-```bash
-python3 orchestrator.py init
-```
-
-The orchestrator invokes the configured role through this interface:
+Install a working, authenticated `grok` CLI before a workflow selects either role. The direct interface used by the project is:
 
 ```bash
 grok -p "<prompt>" -m grok-4.5
 ```
 
-Grok currently supports only `grok-4.5`, which is also the default model for RA and Sales; there is no second Grok model for fallback. When using the `grok` CLI directly, pass a model with `-m`; the orchestrator selects the RA or Sales model from `.ai-company/config.json`, in order: `role_model_tiers.ra[0]` or `role_model_tiers.sales[0]`, `role_models.ra` or `role_models.sales`, then `grok-4.5`. `set-backend` supports the `ra` and `sales` roles, but does not accept `grok` as a backend argument. If the Grok CLI or request fails, the role falls back in order to AGY with `gpt-oss-120b`, then Ollama with its configured model. If those backends also fail, the error is propagated. Grok's RA output is a model review, not verified legal research.
+The supported configured Grok model is `grok-4.5`. Configure the backend and model in `.ai-company/config.json` with `backends.ra` / `backends.sales`, `role_models.ra` / `role_models.sales`, `role_model_backends.ra` / `role_model_backends.sales`, `role_model_tiers.ra` / `role_model_tiers.sales`, and `model_tiers.grok`. The role model resolves from `role_model_tiers`, then `role_models`, then `grok-4.5`.
 
-### 🚀 Minimalist Configuration (For: small tools, single scripts, fast iteration)
-
-For small, clear tasks, you can deploy a single role for maximum speed:
-
-```mermaid
-graph LR
-    classDef role fill:#e1f5fe,stroke:#03a9f4,stroke-width:2px,color:#01579b;
-    classDef model_light fill:#e8f5e9,stroke:#4caf50,stroke-width:2px,color:#1b5e20;
-
-    RD_Min["👨‍💻 AI RD<br>(Fast Generation / Debugging)"]:::role --> M_Min(("Lightweight Model<br>(e.g. Gemma 4B)<br>⚡ Ultra-fast")):::model_light
-```
-
-### 🏢 Ultimate Max Configuration (For: enterprise, full-lifecycle DevSecOps)
-
-For enterprise-level and highly compliant software development, the system can scale into a complete virtual team:
-
-* **Cross-domain Collaboration & Compliance**: AI Business proposes requirements, AI PM converts them into specs. Before merging, an AI Security Guard and an AI RA (Regulatory Affairs) check compliance.
-* **Core Implementation & Delivery**: AI RD implements, AI Reviewer checks quality, and AI SRE writes CI/CD and deployment scripts.
-* **Auxiliary & High-frequency Tasks**: AI QA writes test cases, AI Assistant handles documentation using lightweight models to save resources.
-
----
-
-## Directory Structure
-
-After execution, the tool creates an `.ai-company/` folder containing:
+`set-backend` can select the `ra` and `sales` roles, but its backend choices do not include `grok`; configure Grok by editing the JSON file. If Grok is unavailable or its request fails, the role falls back in this order:
 
 ```text
-.ai-company/
-├── config.json             # System config
-├── state.json              # State tracker and task list
-├── request.md              # Your original request
-├── requirements.md         # Manager's detailed requirements
-├── implementation_plan.md  # Developer's step-by-step plan
-├── action_items.json       # Task list in JSON
-├── developer_output.md     # Developer's logs
-├── reviewer_output.md      # Reviewer's feedback
-├── test_results.txt        # Output of test commands
-├── qa_report.md            # QA verification report
-├── human_report.md         # Report while waiting for owner review
-├── specialist_reviews.md   # Dynamic-specialist consultation results
-└── final_report.md         # Final summary report
-
-# Project Root
-└── CHANGELOG.md            # Auto-updated by Assistant
+grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
 ```
 
----
+RA output is a model review, not verified legal research. The project does not provide a direct CLI subcommand to force a specialist or set a backend to `grok`.
 
-## Quick Start Commands
+## Automatic and human review
 
-The following main examples use the wrapper entry point `python3 orchestrator.py` in the project root. The module entry point `python3 -m orchestrator.main <command>` is equivalent and can be used as an alternative if python module execution is preferred; please choose one and stick with it throughout the workflow.
+Automatic review and owner review use different result names and transitions.
 
-### 1. Initialize Environment
+| Producer | Result | Effect |
+| --- | --- | --- |
+| QA | `PASSED` | Continue from `TESTING` to `REVIEWING_CODE`. |
+| QA | `FAILED` | Create a QA fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`. |
+| Reviewer | `APPROVED` | Continue to completion. |
+| Reviewer | `REJECTED` | Create a reviewer fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`. |
+| Architect | plan revision | Revise the plan until `max_revisions`; then continue to `IMPLEMENTING`, without creating human review. |
+
+`max_revisions` defaults to `2`, but the active `.ai-company/config.json` controls it. QA and Reviewer failures increment `code_revisions`; their retry limit is the condition that creates owner review. An AI backend failure, non-zero test-command exit status, or other command error is an execution failure. It is not the same as the owner's explicit `reject` decision.
+
+In `WAITING_FOR_OWNER`, use `approve` or `review`:
+
+| Decision | Meaning | Next behavior |
+| --- | --- | --- |
+| `pass` | Accept the saved passing path. | Resume at the recorded `pass_state`, then optionally continue with `--run`. |
+| `revise` | Request another implementation pass. | Increment `code_revisions`, add `HUMAN-REVIEW-N`, and move to `IMPLEMENTING`; it is not blocked by the previous automatic retry threshold. |
+| `reject` | Reject this workflow result. | Move to `FAILED`; normal execution stops. |
+
+`approve` is the shortcut for the paused passing path. Successful `review` output is identifiable as:
+
+```text
+Human review '<decision>' recorded; workflow moved to <STATE>.
+```
+
+Use `python3 orchestrator.py status` to see the current state and revision counts. `--run` continues the loop only when the selected decision leaves a runnable workflow; it does not run after `reject`.
+
+## CLI reference
+
+Run `python3 orchestrator.py --help` for the current command list. Every command below is run from the repository root; commands other than `init`, `start`, and `--help` require an initialized `.ai-company/` directory.
+
+| Command | Syntax | Required arguments | Optional arguments / defaults | Output, prerequisites, and example |
+| --- | --- | --- | --- | --- |
+| Help | `python3 orchestrator.py --help` | None | `-h`, `--help` | Prints commands and exits. `python3 orchestrator.py --help` |
+| `init` | `python3 orchestrator.py init` | None | None | Creates `.ai-company/config.json` and state files. `python3 orchestrator.py init` |
+| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | Initializes, saves the request, resets to `PLANNING`; it does not run agents. `python3 orchestrator.py start "Add a command and tests"` |
+| `step` | `python3 orchestrator.py step` | None | None | Runs one state-machine step; selected AI CLIs, Ollama, and Git worktree support may be needed. `python3 orchestrator.py step` |
+| `run` | `python3 orchestrator.py run` | None | None | Runs until `COMPLETED`, `WAITING_FOR_OWNER`, or `FAILED`. `python3 orchestrator.py run` |
+| `status` | `python3 orchestrator.py status` | None | None | Prints state, revision counters, selected backends, test command, and action items. `python3 orchestrator.py status` |
+| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: continue after approval; default off | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run` |
+| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. `python3 orchestrator.py review revise --run` |
+| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`; default `PLANNING`, accepts a string state value | Clears revision/runtime routing data, removes the worktree without merging it, and stores the selected state. `python3 orchestrator.py reset --state DEVELOPING_PLAN` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `claude`, `gemini`, `agy`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
+
+Each subcommand also supports `--help`, for example `python3 orchestrator.py review --help`. Invalid role/backend/decision values are rejected by argparse. `status`, `approve`, `review`, `reset`, and `set-backend` report that initialization is required when `.ai-company/` is absent; `approve` and `review` also reject states other than `WAITING_FOR_OWNER`.
+
+### Common CLI sequences
+
+Minimal local setup and a task:
+
 ```bash
 python3 orchestrator.py init
-```
-
-### 2. Start a New Task
-```bash
-python3 orchestrator.py start "Add contact search feature and write tests in search.py"
-```
-
-### 3. Step Execution (Recommended for debugging)
-```bash
+python3 orchestrator.py start "Add contact search and tests"
 python3 orchestrator.py step
+python3 orchestrator.py status
 ```
 
-### 4. Fully Automated Run
+Run the normal automated workflow (requires the configured backends and, by default, Git):
+
 ```bash
 python3 orchestrator.py run
 ```
 
-### 5. Check Status
-```bash
-python3 orchestrator.py status
-```
+Set a supported backend, or configure Grok for a specialist by editing its config entries before running the workflow:
 
-### 6. Reset State
 ```bash
-python3 orchestrator.py reset --state DEVELOPING_PLAN
-```
-
-### 7. Change Agent Backends
-```bash
-python3 orchestrator.py set-backend developer codex
+python3 orchestrator.py init
 python3 orchestrator.py set-backend reviewer agy
+# Edit .ai-company/config.json: keep backends.ra or backends.sales as "grok".
+grok -p "Summarize the regulatory risks" -m grok-4.5
 ```
 
-### 8. Approve a Paused Workflow
-```bash
-python3 orchestrator.py approve --run
-```
+Resolve a paused review:
 
-`approve` applies only when the current state is `WAITING_FOR_OWNER`; without `--run`, it resumes the state without continuing execution.
-
-### 9. Human Review Decision (Advanced)
 ```bash
 python3 orchestrator.py review pass --run
+python3 orchestrator.py review revise --run
+python3 orchestrator.py review reject
 ```
 
-`review` applies only in `WAITING_FOR_OWNER`: `pass` continues along the recorded approval path, `revise` creates a revision task and returns to `IMPLEMENTING`, and `reject` moves to `FAILED`; `--run` continues execution only after `pass` or `revise`.
+## Tests and verification
 
-### 10. Basic Verification
+From the repository root, install test dependencies and run the available checks:
+
 ```bash
+python3 -m pip install requests pytest
 python3 -m pytest -q
+python3 -m pytest -q test_orchestrator.py
+python3 -m pytest -q test_orchestrator.py::test_initialized_orchestrator_fixture_loads_temp_config_and_state
+python3 verify_alignment.py
+git diff --check
 ```
 
-`run`, `step`, and `approve --run` may call external AI CLIs, modify Git worktrees, or incur charges; without external services configured, safely verify first with `--help`, `verify_alignment.py`, and the test command above.
+The tests use mocks, fixtures, and temporary directories, so they require no real Grok or other external AI credential. A successful pytest run ends with a passing summary and exit code `0`; `verify_alignment.py` reports that all translation files are structurally aligned and exits `0`. The repository has no separate configured lint, type-check, or formatter command, so none is documented. `git diff --check` is the available basic whitespace/patch check.
 
----
+Real workflow execution still needs the selected backend CLI and login, an accessible Ollama server for `ollama` roles, and Git worktree support when `use_worktree` is true. Test commands can be changed with `test_command` in `.ai-company/config.json` when the target project needs a different command.
 
-## Ponytail Minimalist Principle (Minimalist Coding)
+## Scope and limitations
 
-Enable ponytail mode in `.ai-company/config.json`:
-```json
-"use_ponytail": true
-```
-This enforces YAGNI (You Aren't Gonna Need It) and pushes the AI to use the shortest possible diffs without over-engineering.
-
----
-
-## Core Features
-
-1. **Git Worktree Isolation (Zero-Risk)**: All AI operations happen in a separate branch (`.ai-company/worktree`).
-2. **Targeted Fixes**: When QA fails, only the specific failed logic is targeted for repair.
-3. **Multilingual Documentation**: Provides README files in `en`, `zh-TW`, `ja`, and `zh-CN`.
-4. **Auto CHANGELOG**: Assistant automatically generates `CHANGELOG.md` upon completion.
+- Specialist selection is dynamic; no CLI command forces Grok, RA, or Sales for a task.
+- Grok's configured model list contains `grok-4.5`; it has no configured second Grok-model fallback.
+- `set-backend` supports only its documented roles and backend values, and cannot set `grok`.
+- `reset --state` accepts a string; use valid workflow states to resume meaningful work.
+- AI workflow commands can modify the target project's Git worktree and can incur provider usage or charges.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import re
 from orchestrator.roles.base_agent import BaseAgent
 
 class QAAgent(BaseAgent):
@@ -63,7 +64,10 @@ class QAAgent(BaseAgent):
             f.write(qa_report)
         log_success(f"QA report generated and saved to {self.orchestrator.qa_report_path}")
 
-        is_passed = code == 0 and bool(qa_reports) and all(report.strip().upper().replace("*", "").startswith("PASSED") for _, _, report in qa_reports)
+        is_passed = code == 0 and bool(qa_reports) and all(
+            re.match(r"\s*(?:#+\s*)?PASSED\b", report.replace("*", ""), re.IGNORECASE)
+            for _, _, report in qa_reports
+        )
 
         if is_passed:
             log_success("QA verification PASSED!")

@@ -1,245 +1,174 @@
-# Multi-Agent 流程協調器 (Orchestrator)
+# Multi-Agent Orchestrator
 
 [繁體中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md)
 
-本專案是一個用 Python 撰寫的輕量級 Multi-Agent 流程協調器。它使用確定性狀態機（State Machine）進行需求規劃、架構審查、程式實作、驗證、代碼審查和發佈說明。每個任務都會根據其複雜度和領域風險路由到相應角色和模型層級。
+這是一個基於 Python 的多代理開發流程，使用確定性狀態機完成規劃、實作、QA、程式碼審查和最終報告。
 
----
+## 系統要求與安裝
 
-## 系統需求與取得方式
-
-- Python 3，以及 Python 套件 `requests`；執行基本驗證另需 `pytest`。
-- 使用預設 Git worktree 時需要 Git；將 `use_worktree` 設為 `false` 可停用。
-- 依啟用的後端安裝並登入對應服務：Ollama 伺服器，或 `codex`、`agy`、`claude`、`grok` CLI。未執行 AI 工作流程時不需要安裝所有 CLI。
-
-從 Git 儲存庫取得原始碼後，在專案根目錄執行：
+請在 shell 中執行以下命令。預設 Git worktree 流程需要 Git；專案需要 Python 3。專案使用 `requests`，測試也使用 `pytest`。
 
 ```bash
-git clone https://github.com/adombciha/multiple-agents-orch.git multi-agents
-cd multi-agents
+git clone https://github.com/adombciha/multiple-agents-orch.git
+cd multiple-agents-orch
 python3 -m pip install requests pytest
 python3 orchestrator.py --help
 ```
 
-最後一行只驗證 CLI 載入，不會呼叫 AI 或建立 worktree。
+最後一條命令只驗證 CLI 能載入，不會連線至 AI backend 或建立 worktree。專案沒有 `--version` 選項。
 
----
+要執行 AI workflow，請安裝並登入 `.ai-company/config.json` 中選定的 CLI backend（`grok`、`codex`、`agy` 或 `claude`），或為 `ollama` role 執行 Ollama 服務。協調器不定義額外的 Grok API-key 環境變數；請按照 `grok` CLI 的要求完成認證。只有在 Git worktree 隔離不可用或不需要時，才將設定中的 `use_worktree` 設為 `false`。
 
-## 設定檔
+## Workflow 與檔案
 
-`init` 會建立 `.ai-company/config.json`；未指定的鍵值會由 `orchestrator/core/config.py` 的預設設定補齊。
-
-| 設定鍵 | 用途 |
-| --- | --- |
-| `ollama_url`、`ollama_model` | Ollama 服務位址與預設模型。 |
-| `test_command`、`max_revisions` | QA 執行的測試命令與計畫／程式碼修訂上限。 |
-| `backends` | 每個角色使用的後端；可用 `set-backend` 更新支援的角色。 |
-| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | 後端模型清單、角色模型與模型路由。 |
-| `use_ponytail`、`use_worktree` | 啟用極簡提示或 Git worktree 隔離。 |
-| `backend_escalation_path`、`staffing_limits` | 後端升級順序與 RD／QA 人力上限。 |
-
----
-
-## 系統架構
+`start` 儲存 request 並將 state 重設為 `PLANNING`。正常 state 流程如下：
 
 ```text
-               你輸入需求 (User Input)
-                    ↓
-           [ Python Orchestrator ]
-                    ↓
-           [ PM (負責分析需求、拆解任務) ]
-                    ↓
-       [ 專家 (RA / Sales → Grok CLI) ]
-                    ↓
-           [ Architect (負責計畫與架構審查) ]
-                    ↓
-        [ RD 團隊 (Senior / Middle / Junior) ]
-                    ↓
-           [ QA 團隊 (Senior / Middle / Junior) ]
-                    ↓
-           [ Reviewer (負責代碼審核) ]
-            ├── APPROVED → 合併分支並產生 Final Report
-            └── REJECTED → 產生修復任務單 (FIX-TASK) 交回 Developer 單點修改
-                     ↓
-           [ Assistant (自動生成 CHANGELOG.md) ]
+PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
+→ TESTING → REVIEWING_CODE → COMPLETED
 ```
 
----
+PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進行 plan review。RD 實作任務，QA 執行設定的 test command 並報告結果，Reviewer 評估需求、計畫、測試、specialist 結果和 Git diff，Assistant 在完成後建立 `CHANGELOG.md`。
 
-## 角色高度自訂化與動態分配 (Highly Customizable & Dynamic Role Allocation)
+`init` 建立 `.ai-company/`，其中包括 `config.json`、`state.json`、`request.md`、`requirements.md`、`implementation_plan.md`、`action_items.json`、agent 輸出、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md` 和 `final_report.md`。
 
-此協調器一律啟用 PM、Architect、RD、Reviewer、QA 和 Assistant。PM 只有在專案需要時才會選擇領域專家（Specialists），然後他們的分析結果會在計畫批准前提供給 Architect。
+## 設定
 
-| 角色 | 使用時機 | 預設模型路由 |
-| --- | --- | --- |
-| PM | 每個專案：需求與任務分配 | Codex `gpt-5.6-sol` |
-| Architect | 每個專案：計畫與架構審查 | AGY Gemini `gemini-3.1-pro` |
-| RD / QA senior | 架構、資安、遷移或模糊的工作 | Codex `gpt-5.6-terra` |
-| RD / QA middle | 標準功能與整合工作 | Codex `gpt-5.6-luna` |
-| RD / QA junior | 孤立、重複的常規工作 | AGY Gemini `gemini-3.5-flash` |
-| Reviewer | 每個專案：代碼與測試結果審查 | Codex `gpt-5.6-sol` |
-| Assistant | 每個專案：CHANGELOG 與常規文件 | Local Ollama `gemma4:latest` |
-| Grok | RA 與 Sales 專家需要時的領域分析 | Grok CLI `grok-4.5` |
+編輯 `.ai-company/config.json` 前先執行 `python3 orchestrator.py init`。缺少的鍵會使用 `orchestrator/core/config.py` 中的預設值。
 
-### 動態專家 (Dynamic Specialists)
+| Key | 用途與預設行為 |
+| --- | --- |
+| `ollama_url`、`ollama_model` | Ollama endpoint 與預設 model（`http://localhost:11434`、`gemma4:latest`）。 |
+| `test_command`、`max_revisions` | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。 |
+| `backends` | 分配給各 role 的 backend。 |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 清單及每個 role 的 model/backend 路由。 |
+| `use_ponytail`、`use_worktree` | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。 |
+| `backend_escalation_path`、`staffing_limits` | backend 升級路徑及 RD/QA staffing 限制。 |
 
-PM 僅在適用其觸發條件時啟用以下專家：
+## Grok specialists 說明
 
-| 專家 | 觸發條件 | 預設模型路由 |
-| --- | --- | --- |
-| Sales (業務) | 業務範圍或驗收標準不明確 | Grok CLI `grok-4.5` |
-| Security (資安) | 涉及身分驗證、金鑰、支付、PII（個人識別資訊）或攻擊面 | Local Ollama `deepseek-r1:latest` |
-| RA (法規) | 適用法律、法規、醫療保健、財務合規或隱私義務 | Grok CLI `grok-4.5` |
-| SRE | CI/CD、容器、部署、監控或運維可靠性在範圍內 | AGY Gemini `gemini-3.1-pro` |
+Grok 是動態 RA 和 Sales specialists 使用的外部 CLI backend，預設兩者都設定為 `grok`。它不是頂層 workflow state，也不替代 PM、Architect、RD、QA 或 Reviewer。PM 只在任務需要時於需求分析和 staffing 階段選擇 RA 或 Sales；分析結果會提供給 Architect 進行 plan review。
 
-RA 提供的是模型審查，而非經證實的法律研究。生產環境的合規工作應增加權威來源的檢索與引用。
-
-### 本次 README 驗收與系統角色
-
-Sales 是由 PM 視需求動態啟用的系統專家；本次 README 修改的驗收流程不安排 Sales 參與，並不代表移除或停用 Sales。QA 負責驗證 Markdown 結構、README 所列命令與路徑，以及安全可執行的檢查結果；QA 通過後，Reviewer 依需求、實作與 QA 結果審查文件正確性、修改範圍和首次使用者流程，並決定核准或退回修正。
-
-### Grok agent
-
-Grok 是由協調器選擇的外部 CLI agent，負責 RA（法規）與 Sales（業務）專家的領域分析；它不是額外的流程階段，也不會取代 PM、Architect、RD、QA 或 Reviewer。PM 只會在需求觸發對應專家時使用 Grok，分析結果再交給 Architect 納入計畫審查。
-
-使用前必須在執行環境安裝並可執行 `grok` CLI。新初始化的專案已將 Grok 設為 RA 與 Sales 的預設後端：
-
-```bash
-python3 orchestrator.py init
-```
-
-協調器會以目前角色的設定呼叫下列介面：
+在 workflow 選擇任一 role 前，請安裝可用且已認證的 `grok` CLI。專案使用的直接介面是：
 
 ```bash
 grok -p "<prompt>" -m grok-4.5
 ```
 
-目前 Grok 僅支援 `grok-4.5`，也是 RA 與 Sales 的預設模型；沒有第二個 Grok 模型可供 fallback。直接使用 `grok` CLI 時可透過 `-m` 傳入模型；協調器則從 `.ai-company/config.json` 選擇 RA 或 Sales 的模型，依序採用 `role_model_tiers.ra[0]` 或 `role_model_tiers.sales[0]`、`role_models.ra` 或 `role_models.sales`，最後使用 `grok-4.5`。`set-backend` 可設定 `ra` 與 `sales` 角色，但不接受 `grok` 作為後端參數。若 Grok CLI 或請求失敗，該角色會依序改用 AGY 的 `gpt-oss-120b`，再改用 Ollama（使用其設定的模型）；若後續後端也失敗，錯誤會向上回報。Grok 的 RA 輸出是模型審查，不等同於已驗證的法律研究。
+支援設定的 Grok model 是 `grok-4.5`。請在 `.ai-company/config.json` 中設定 `backends.ra` / `backends.sales`、`role_models.ra` / `role_models.sales`、`role_model_backends.ra` / `role_model_backends.sales`、`role_model_tiers.ra` / `role_model_tiers.sales` 和 `model_tiers.grok`。role model 依序從 `role_model_tiers`、`role_models`，最後從 `grok-4.5` 解析。
 
-### 🚀 最小化配置 (適合：小型工具、單一腳本、快速迭代)
-
-面對明確且範圍小的任務，可以僅配置單一角色，以極速產出為主：
-
-```mermaid
-graph LR
-    classDef role fill:#e1f5fe,stroke:#03a9f4,stroke-width:2px,color:#01579b;
-    classDef model_light fill:#e8f5e9,stroke:#4caf50,stroke-width:2px,color:#1b5e20;
-
-    RD_Min["👨‍💻 AI RD<br>(快速代碼生成 / 除錯)"]:::role --> M_Min(("輕量級模型<br>(如: Gemma 4B)<br>⚡ 極速回應")):::model_light
-```
-
-### 🏢 終極最大化配置 (適合：企業級、全生命週期 DevSecOps)
-
-對於企業級和高度合規要求的軟體開發，系統能擴充為一支完整的虛擬團隊：
-
-* **跨領域協作與合規把關**：AI Business 提出需求，AI PM 轉化為工程規格。在合併前，由 AI Security Guard（資安守門員）和 AI RA (Regulatory Affairs，法規審查員) 檢查合規性。
-* **核心實作與交付**：AI RD 負責實作，AI Reviewer 檢視品質，最後交由 AI SRE 撰寫 CI/CD 與部署腳本。
-* **輔助與高頻任務**：AI QA 負責撰寫測試案例，AI Assistant 使用輕量模型處理文件生成，以節省運算資源。
-
----
-
-## 檔案目錄結構
-
-本工具執行後，會自動在當前目錄下建立 `.ai-company/` 資料夾，並包含以下檔案：
+`set-backend` 可以選擇 `ra` 和 `sales` roles，但 backend choices 不包含 `grok`；請編輯 JSON 檔案設定 Grok。若 Grok 不可用或請求失敗，role 按以下順序 fallback：
 
 ```text
-.ai-company/
-├── config.json             # 系統設定檔
-├── state.json              # 狀態記錄與任務清單
-├── request.md              # 您的原始需求
-├── requirements.md         # Manager 產生的詳細功能需求說明書
-├── implementation_plan.md  # Developer 產生的步驟化實作計畫
-├── action_items.json       # 結構化 JSON 任務清單
-├── developer_output.md     # Developer 的日誌與輸出
-├── reviewer_output.md      # Reviewer 的審查意見
-├── test_results.txt        # 測試指令執行的輸出結果
-├── qa_report.md            # QA 的驗證報告
-├── human_report.md         # 等待擁有者審核時的報告
-├── specialist_reviews.md   # 動態專家的諮詢結果
-└── final_report.md         # 專案完成後的總結報告
-
-# 專案根目錄
-└── CHANGELOG.md            # Assistant 自動即時更新的變更日誌
+grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
 ```
 
----
+RA 輸出是 model review，不是經過驗證的法律研究。專案沒有直接強制選擇 specialist 或將 backend 設為 `grok` 的 CLI 子命令。
 
-## 快速上手指令
+## 自動 review 與 human review
 
-以下主要範例使用專案根目錄的包裝入口 `python3 orchestrator.py`。模組入口 `python3 -m orchestrator.main <command>` 與其等效，可在偏好 Python 模組執行方式時替代使用；請在同一流程中擇一使用。
+Automatic review 與 owner review 使用不同的 result 名稱和 transition。
 
-### 1. 初始化環境
+| 產生者 | Result | 影響 |
+| --- | --- | --- |
+| QA | `PASSED` | 從 `TESTING` 繼續到 `REVIEWING_CODE`。 |
+| QA | `FAILED` | 建立 QA fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。 |
+| Reviewer | `APPROVED` | 繼續完成流程。 |
+| Reviewer | `REJECTED` | 建立 reviewer fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。 |
+| Architect | plan revision | 修訂計畫直到 `max_revisions`；之後繼續到 `IMPLEMENTING`，不會建立 human review。 |
+
+`max_revisions` 預設是 `2`，但實際值由目前 `.ai-company/config.json` 控制。QA 和 Reviewer 失敗會增加 `code_revisions`；達到 retry limit 後才建立 owner review。AI backend failure、test command 非零 exit status 或其他 command error 屬於 execution failure，不等同於 owner 明確作出的 `reject` decision。
+
+在 `WAITING_FOR_OWNER` 中使用 `approve` 或 `review`：
+
+| Decision | 含義 | 後續行為 |
+| --- | --- | --- |
+| `pass` | 接受儲存的通過路徑。 | 從記錄的 `pass_state` 恢復，然後可選擇使用 `--run` 繼續。 |
+| `revise` | 請求再次實作。 | 增加 `code_revisions`，新增 `HUMAN-REVIEW-N`，並移到 `IMPLEMENTING`；不受之前 automatic retry threshold 阻擋。 |
+| `reject` | 拒絕本次 workflow 結果。 | 移到 `FAILED`；正常執行停止。 |
+
+`approve` 是暫停的通過路徑的快捷方式。成功的 `review` 輸出可透過以下內容識別：
+
+```text
+Human review '<decision>' recorded; workflow moved to <STATE>.
+```
+
+使用 `python3 orchestrator.py status` 查看目前 state 和 revision counters。`--run` 只有在所選 decision 留下可執行 workflow 時才繼續；`reject` 後不會執行。
+
+## CLI 參考
+
+執行 `python3 orchestrator.py --help` 查看目前 command list。以下每條命令都從 repository root 執行；除 `init`、`start` 和 `--help` 外，其他命令都需要已初始化的 `.ai-company/` 目錄。
+
+| Command | Syntax | 必填 arguments | 選填 arguments / 預設值 | Output、前置條件與範例 |
+| --- | --- | --- | --- | --- |
+| Help | `python3 orchestrator.py --help` | None | `-h`、`--help` | 輸出 commands 並結束。`python3 orchestrator.py --help` |
+| `init` | `python3 orchestrator.py init` | None | None | 建立 `.ai-company/config.json` 和 state files。`python3 orchestrator.py init` |
+| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | 初始化、儲存 request 並重設為 `PLANNING`；不會執行 agents。`python3 orchestrator.py start "Add a command and tests"` |
+| `step` | `python3 orchestrator.py step` | None | None | 執行一個 state-machine step；可能需要選定的 AI CLIs、Ollama 和 Git worktree。`python3 orchestrator.py step` |
+| `run` | `python3 orchestrator.py run` | None | None | 執行直到 `COMPLETED`、`WAITING_FOR_OWNER` 或 `FAILED`。`python3 orchestrator.py run` |
+| `status` | `python3 orchestrator.py status` | None | None | 輸出 state、revision counters、選定 backends、test command 和 action items。`python3 orchestrator.py status` |
+| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`：approval 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；從記錄的 state 恢復。`python3 orchestrator.py approve --run` |
+| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；輸出 recorded-decision message。`python3 orchestrator.py review revise --run` |
+| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`；預設 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合併，並儲存選定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`claude`、`gemini`、`agy`。`developer` 和 `qa` 會更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
+
+每個 subcommand 也支援 `--help`，例如 `python3 orchestrator.py review --help`。無效的 role/backend/decision 值會被 argparse 拒絕。`.ai-company/` 缺失時，`status`、`approve`、`review`、`reset` 和 `set-backend` 會報告需要初始化；`approve` 和 `review` 也會拒絕非 `WAITING_FOR_OWNER` state。
+
+### 常見 CLI 序列
+
+最小本機設定與任務：
+
 ```bash
 python3 orchestrator.py init
-```
-
-### 2. 啟動新任務
-```bash
-python3 orchestrator.py start "Add contact search feature and write tests in search.py"
-```
-
-### 3. 單步執行 (推薦用於除錯)
-```bash
+python3 orchestrator.py start "Add contact search and tests"
 python3 orchestrator.py step
+python3 orchestrator.py status
 ```
 
-### 4. 全自動執行到結束
+執行正常的 automatic workflow（需要已設定的 backends，預設也需要 Git）：
+
 ```bash
 python3 orchestrator.py run
 ```
 
-### 5. 檢視當前狀態
-```bash
-python3 orchestrator.py status
-```
+設定受支援的 backend，或在執行 workflow 前透過設定項為 specialist 設定 Grok：
 
-### 6. 重設狀態
 ```bash
-python3 orchestrator.py reset --state DEVELOPING_PLAN
-```
-
-### 7. 更換代理人 (Agent) 後端
-```bash
-python3 orchestrator.py set-backend developer codex
+python3 orchestrator.py init
 python3 orchestrator.py set-backend reviewer agy
+# Edit .ai-company/config.json: keep backends.ra or backends.sales as "grok".
+grok -p "Summarize the regulatory risks" -m grok-4.5
 ```
 
-### 8. 核准暫停的工作流程
-```bash
-python3 orchestrator.py approve --run
-```
+處理暫停的 review：
 
-`approve` 僅適用於目前狀態為 `WAITING_FOR_OWNER` 的任務；省略 `--run` 時只恢復狀態，不會繼續執行。
-
-### 9. 人工審核決定（進階）
 ```bash
 python3 orchestrator.py review pass --run
+python3 orchestrator.py review revise --run
+python3 orchestrator.py review reject
 ```
 
-`review` 只適用於 `WAITING_FOR_OWNER`：`pass` 依記錄的核准路徑繼續、`revise` 建立修訂任務並回到 `IMPLEMENTING`、`reject` 轉為 `FAILED`；`--run` 只會在 `pass` 或 `revise` 後繼續執行。
+## 測試與驗證
 
-### 10. 基本驗證
+從 repository root 安裝測試相依套件並執行可用檢查：
+
 ```bash
+python3 -m pip install requests pytest
 python3 -m pytest -q
+python3 -m pytest -q test_orchestrator.py
+python3 -m pytest -q test_orchestrator.py::test_initialized_orchestrator_fixture_loads_temp_config_and_state
+python3 verify_alignment.py
+git diff --check
 ```
 
-`run`、`step`、`approve --run` 可能呼叫外部 AI CLI、修改 Git worktree 或產生費用；未設定外部服務時，請先使用 `--help`、`verify_alignment.py` 與上述測試進行安全驗證。
+測試使用 mocks、fixtures 和 temporary directories，因此不需要真實 Grok 或其他 external AI credential。pytest 成功時會顯示通過摘要並以 exit code `0` 結束；`verify_alignment.py` 會報告所有翻譯檔案結構對齊並以 `0` 結束。repository 沒有獨立設定的 lint、type-check 或 formatter command，因此不額外記錄虛構命令；`git diff --check` 是可用的基本 whitespace/patch 檢查。
 
----
+真實 workflow 執行仍需要選定的 backend CLI 和登入狀態、可存取的 `ollama` role 所需 Ollama server，以及 `use_worktree` 為 true 時的 Git worktree 支援。目標專案需要其他測試時，可在 `.ai-company/config.json` 中透過 `test_command` 修改 test command。
 
-## Ponytail 極簡開發原則 (極簡代碼)
+## 範圍與限制
 
-在 `.ai-company/config.json` 中啟用 ponytail 模式：
-```json
-"use_ponytail": true
-```
-這會強制執行 YAGNI (You Aren't Gonna Need It)，並推動 AI 在不進行過度設計的情況下使用盡可能短的程式碼變更（Shortest Diff Wins）。
-
----
-
-## 核心亮點功能
-
-1. **Git Worktree 隔離開發 (零風險)**：所有 AI 操作都在獨立的分支與工作區中進行 (`.ai-company/worktree`)。
-2. **單點精準修復**：當 QA 驗證失敗時，僅針對具體失敗的邏輯進行修復。
-3. **多國語系文件**：提供 `en`、`zh-TW`、`ja` 和 `zh-CN` README。
-4. **自動生成 CHANGELOG**：Assistant 代理人在專案完成後會自動生成 `CHANGELOG.md`。
+- Specialist 選擇是動態的；沒有 CLI command 可以強制選擇 Grok、RA 或 Sales。
+- Grok 的設定 model list 包含 `grok-4.5`；沒有第二個設定的 Grok-model fallback。
+- `set-backend` 只支援文件列出的 roles 和 backend values，不能設定 `grok`。
+- `reset --state` 接受 string；請使用有效 workflow states 才能恢復有意義的工作。
+- AI workflow commands 可能修改目標專案的 Git worktree，並可能產生 provider 使用費用。
