@@ -43,6 +43,7 @@ def write_ai_company(
             "qa": 0,
         },
         "tasks": [],
+        "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}},
     }
     if state_overrides:
         state.update(state_overrides)
@@ -283,6 +284,49 @@ def test_call_ollama_request_exception_raises_runtime_error(initialized_orchestr
 
     with pytest.raises(RuntimeError, match="Ollama connection failed: down"):
         initialized_orchestrator.call_ollama("hello")
+
+
+def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
+    initialized_orchestrator.state["staffing"] = {"qa": {"senior": 4, "junior": -1}}
+
+    assert initialized_orchestrator.staffing("qa") == {"senior": 1, "middle": 0, "junior": 0}
+
+
+def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
+    assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
+    assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
+    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
+    assert initialized_orchestrator.get_active_model_for_role("ra", "ollama") == "deepseek-r1:latest"
+
+
+def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "status": "pending", "complexity": "routine", "assignee_level": "junior"}], "staffing": {"rd": {"senior": 1, "junior": 2}, "qa": {"senior": 1, "junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["staffing"]["rd"] == {"senior": 1, "junior": 2}
+    assert initialized_orchestrator.state["staffing"]["qa"] == {"senior": 1, "junior": 1}
+    assert initialized_orchestrator.state["tasks"][0]["assignee_level"] == "junior"
+
+
+def test_consult_specialists_only_calls_manager_selected_roles(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["specialists"] = [
+        {"role": "security", "reason": "handles credentials"},
+        {"role": "unknown", "reason": "must be ignored"},
+    ]
+    call_agent = Mock(return_value="review")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    notes = initialized_orchestrator.consult_specialists("requirements", "plan")
+
+    assert "## Security" in notes
+    assert call_agent.call_args.args[0] == "security"
 
 
 @pytest.mark.parametrize(

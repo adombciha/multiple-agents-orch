@@ -2,7 +2,7 @@
 
 [繁體中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md)
 
-This project is a lightweight Multi-Agent Orchestrator written in Python. It coordinates local Ollama models (Manager and Reviewer), Codex CLI (Developer), and Claude Code to automatically execute a closed-loop development process—including requirements planning, code implementation, unit testing, and code review—using a deterministic State Machine.
+This project is a lightweight Multi-Agent Orchestrator written in Python. It uses a deterministic state machine for requirements planning, architecture review, implementation, verification, code review, and release notes. Each task is routed to a role and model tier based on its complexity and domain risk.
 
 ---
 
@@ -13,16 +13,15 @@ This project is a lightweight Multi-Agent Orchestrator written in Python. It coo
                    ↓
          [ Python Orchestrator ]
                    ↓
-         [ Manager (Analyzes requirements, breaks down tasks) ]
+         [ PM (Requirements and task allocation) ]
                    ↓
-  ┌────────────────┬────────────────┐
-  │   Developer    │    Reviewer    │
-  │ (Implements)   │ (Reviews Code) │
-  └────────────────┴────────────────┘
+         [ Architect (Plan review) ]
                    ↓
-         [ QA Agent (Automated Verification) ]
+      [ RD Team (Senior / Middle / Junior) ]
                    ↓
-         [ Reviewer (Code Review) ]
+         [ QA Team (Senior / Middle / Junior) ]
+                   ↓
+         [ Reviewer (Code review) ]
           ├── APPROVED → Merge branch and generate Final Report
           └── REJECTED → Generate fix tasks (FIX-TASK) back to Developer for targeted fixes
                    ↓
@@ -33,7 +32,30 @@ This project is a lightweight Multi-Agent Orchestrator written in Python. It coo
 
 ## Highly Customizable & Dynamic Role Allocation
 
-The core design philosophy of this system is **"highly customizable and dynamic role allocation"**, allowing it to dynamically configure different AI roles and underlying models based on the project scale to optimize compute resources and output efficiency.
+The orchestrator always enables PM, Architect, RD, Reviewer, QA, and Assistant. The PM also selects domain specialists only when the project warrants them, then their findings are supplied to the Architect before plan approval.
+
+| Role | When used | Default model route |
+| --- | --- | --- |
+| PM | Every project: requirements and task allocation | Codex `gpt-5.6-sol` |
+| Architect | Every project: plan and architecture approval | AGY Gemini `gemini-3.1-pro` |
+| RD / QA senior | Architecture, security, migrations, or ambiguous work | Codex `gpt-5.6-terra` |
+| RD / QA middle | Standard feature and integration work | Codex `gpt-5.6-luna` |
+| RD / QA junior | Isolated, repetitive routine work | AGY Gemini `gemini-3.5-flash` |
+| Reviewer | Every project: code and test-result review | Codex `gpt-5.6-sol` |
+| Assistant | Every project: CHANGELOG and routine documentation | Local Ollama `gemma4:latest` |
+
+### Dynamic Specialists
+
+The PM may activate the following specialists only when their trigger applies:
+
+| Specialist | Trigger | Default model route |
+| --- | --- | --- |
+| Sales | Business scope or acceptance criteria are unclear | Local Ollama `qwen2.5:latest` |
+| Security | Authentication, secrets, payments, PII, or an attack surface is involved | Local Ollama `deepseek-r1:latest` |
+| RA | Laws, regulations, healthcare, financial compliance, or privacy obligations apply | AGY Gemini `gemini-3.1-pro` |
+| SRE | CI/CD, containers, deployment, monitoring, or operational reliability is in scope | AGY Gemini `gemini-3.1-pro` |
+
+RA provides a model review, not verified legal research. Production compliance work should add authoritative-source search and citations.
 
 ### 🚀 Minimalist Configuration (For: small tools, single scripts, fast iteration)
 
