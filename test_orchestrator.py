@@ -521,6 +521,21 @@ def test_consult_specialists_only_calls_manager_selected_roles(initialized_orche
     assert call_agent.call_args.args[0] == "security"
 
 
+def test_consult_specialists_dispatches_new_role_modules(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["specialists"] = [
+        {"role": role, "reason": "needed"}
+        for role in ("devops", "uiux", "uiux_visual_review", "fae", "integration")
+    ]
+    call_agent = Mock(return_value="review")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    notes = initialized_orchestrator.consult_specialists("requirements", "plan")
+
+    expected_roles = {"devops", "uiux", "uiux_visual_review", "fae", "integration"}
+    assert {call.args[0] for call in call_agent.call_args_list} == expected_roles
+    assert all(f"## {role.title()}" in notes for role in expected_roles)
+
+
 @pytest.mark.parametrize(
     ("state", "method_name"),
     [

@@ -25,7 +25,7 @@ class ReviewerAgent(BaseAgent):
             requirements,
             plan,
             context=f"Git Diff:\n{git_diff}",
-            roles={"security", "ra", "sre"},
+            roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
         )
 
         prompt = f"""Review the code changes made. Here is the context:\n\nRequirements:\n{requirements}\n\nPlan:\n{plan}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nGit Diff:\n{git_diff}\n\nVerify if the implementation matches requirements and plan, and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""

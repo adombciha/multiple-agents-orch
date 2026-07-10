@@ -98,6 +98,11 @@ class AgentOrchestrator:
         from orchestrator.roles.qa import QAAgent
         from orchestrator.roles.reviewer import ReviewerAgent
         from orchestrator.roles.assistant import AssistantAgent
+        from orchestrator.roles.devops import DevOpsAgent
+        from orchestrator.roles.uiux import UIUXAgent
+        from orchestrator.roles.uiux_visual_review import UIUXVisualReviewAgent
+        from orchestrator.roles.fae import FAEAgent
+        from orchestrator.roles.integration import IntegrationAgent
 
         self.manager = ManagerAgent(self)
         self.architect = ArchitectAgent(self)
@@ -105,6 +110,11 @@ class AgentOrchestrator:
         self.qa = QAAgent(self)
         self.reviewer = ReviewerAgent(self)
         self.assistant = AssistantAgent(self)
+        self.devops = DevOpsAgent(self)
+        self.uiux = UIUXAgent(self)
+        self.uiux_visual_review = UIUXVisualReviewAgent(self)
+        self.fae = FAEAgent(self)
+        self.integration = IntegrationAgent(self)
 
     def init_project(self):
         """Initializes the .ai-company folder and configuration files."""
@@ -500,8 +510,17 @@ class AgentOrchestrator:
         reports = []
         for specialist in self.state.get("specialists", []):
             role = specialist.get("role")
-            if role not in {"sales", "security", "ra", "sre"} or roles is not None and role not in roles:
+            if role not in {"sales", "security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"} or roles is not None and role not in roles:
                 continue
+            specialist_agent = getattr(self, role, None)
+            if specialist_agent:
+                try:
+                    report = specialist_agent.review(requirements, plan, context)
+                    reports.append(f"## {role.title()}\n{report}")
+                    continue
+                except Exception as e:
+                    log_warning(f"Optional {role} specialist failed: {e}")
+                    continue
             prompt = f"Review this project only for your specialty.\n\nRequirements:\n{requirements}\n\nPlan:\n{plan}\n\nAdditional Context:\n{context or 'None'}\n\nReturn concise risks, missing requirements, and concrete acceptance criteria."
             try:
                 report = self.call_agent(role, prompt, f"You are the project's {role.title()} specialist.")

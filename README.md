@@ -49,7 +49,7 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 ## 建議角色與模型路由
 
-下表是既有角色的實作路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡的 backend 會在本次 workflow 跳過。DevOps、UI/UX、FAE 和 Integration 是後續才會新增的 specialist，不在目前 runtime 範圍。
+下表是已實作角色與 specialist 的路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡的 backend 會在本次 workflow 跳過。
 
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
@@ -72,9 +72,9 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | Integration | 外部 API、設備協定、第三方平台 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
 | Assistant | changelog、摘要、文件整理 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
 
-`DevOps`、`UI/UX`、`UI/UX Visual Review`、`FAE` 與 `Integration` 為規劃中的 specialist；其餘列已由 `role_model_routes` 實作。
-
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
+
+UI/UX Visual Review 已可被 PM 選擇；目前 review context 為文字描述。將 screenshot 檔案附送至 Ollama vision API 會在後續的影像輸入功能中實作。
 
 ## Grok specialists 說明
 

@@ -27,7 +27,7 @@ def main():
     reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
 
     backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
-    backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre"], help="The agent role")
+    backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"], help="The agent role")
     backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
 
     args = parser.parse_args()
