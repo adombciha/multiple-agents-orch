@@ -316,6 +316,34 @@ def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator)
     assert initialized_orchestrator.get_active_model_for_role("manager", "ollama") == "gemma4:latest"
 
 
+def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
+    codex = Mock(side_effect=[RuntimeError("maximum context length"), RuntimeError("unavailable")])
+    ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
+    monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
+
+    assert initialized_orchestrator.call_manager("prompt") == "fallback"
+    assert codex.call_args_list == [
+        call("prompt", None, role="manager"),
+        call("prompt", None, role="manager", model="gpt-5.6-terra"),
+    ]
+    ollama.assert_called_once_with("prompt", None, role="manager")
+
+
+def test_reviewer_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
+    codex = Mock(side_effect=[RuntimeError("maximum context length"), RuntimeError("unavailable")])
+    ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
+
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
+    assert codex.call_args_list == [
+        call("prompt", None, role="reviewer"),
+        call("prompt", None, role="reviewer", model="gpt-5.6-terra"),
+    ]
+    ollama.assert_called_once_with("reviewer", "prompt", None)
+
+
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
     initialized_orchestrator.state["staffing"] = {
         "rd": {"senior": 0, "middle": 0, "junior": 2},
@@ -356,11 +384,13 @@ def test_rd_and_qa_can_use_different_levels(initialized_orchestrator):
 def test_developer_promotion_is_state_only(initialized_orchestrator):
     original_model = initialized_orchestrator.config["role_models"]["developer_junior"]
     initialized_orchestrator.state["last_developer_role"] = "developer_junior"
+    initialized_orchestrator.state["last_qa_level"] = "junior"
 
     initialized_orchestrator.escalate_developer_backend()
 
     assert initialized_orchestrator.state["developer_promotions"]["developer_junior"] == "developer_middle"
     assert initialized_orchestrator.config["role_models"]["developer_junior"] == original_model
+    assert initialized_orchestrator.fix_task_levels() == {"rd_level": "middle", "qa_level": "junior"}
 
 
 def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):
@@ -377,6 +407,34 @@ def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkey
     assert initialized_orchestrator.state["staffing"]["rd"] == {"senior": 1, "junior": 2}
     assert initialized_orchestrator.state["staffing"]["qa"] == {"senior": 1, "junior": 1}
     assert initialized_orchestrator.state["tasks"][0]["assignee_level"] == "junior"
+
+
+def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+
+
+def test_developing_plan_rejects_staffing_that_cannot_cover_tasks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 0}, "qa": {"junior": 0}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"] == [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending", "rd_level": "senior", "qa_level": "senior"}]
 
 
 def test_consult_specialists_only_calls_manager_selected_roles(initialized_orchestrator, monkeypatch):
@@ -446,12 +504,25 @@ def test_step_reviewing_plan_rejected_revises_until_max(initialized_orchestrator
 def test_step_testing_passed_moves_to_reviewing_code(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
     monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(0, "tests ok")))
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="PASSED\nok"))
 
     initialized_orchestrator.step_testing()
 
     assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
+
+
+def test_step_testing_failed_command_cannot_pass_on_qa_response(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed")))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="PASSED\nok"))
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
 
 
 def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeypatch):
@@ -466,6 +537,8 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
     assert initialized_orchestrator.state["code_revisions"] == 1
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
     assert initialized_orchestrator.state["tasks"][-1]["id"] == "FIX-QA-1"
+    assert initialized_orchestrator.state["tasks"][-1]["rd_level"] == "senior"
+    assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "senior"
 
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_testing()
@@ -496,6 +569,8 @@ def test_step_reviewing_code_rejected_revises_until_max(initialized_orchestrator
     assert initialized_orchestrator.state["code_revisions"] == 1
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
     assert initialized_orchestrator.state["tasks"][-1]["id"] == "FIX-REV-1"
+    assert initialized_orchestrator.state["tasks"][-1]["rd_level"] == "senior"
+    assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "senior"
 
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_reviewing_code()

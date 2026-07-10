@@ -705,6 +705,7 @@ class AgentOrchestrator:
             for task in tasks:
                 if not isinstance(task, dict) or not task.get("id") or not task.get("description"):
                     raise ValueError("each task requires id and description")
+                task["status"] = "pending"
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
                 legacy_level = task.get("assignee_level", "senior")
@@ -728,10 +729,10 @@ class AgentOrchestrator:
             log_warning(f"Could not parse tasks as JSON. Saving raw output. Error: {e}")
             log_warning(f"Raw manager output was: {parsed_items_raw}")
             # Write a fallback task
-            fallback_tasks = [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending"}]
+            fallback_tasks = [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending", "rd_level": "senior", "qa_level": "senior"}]
             self.state["tasks"] = fallback_tasks
             self.state["specialists"] = []
-            self.state["staffing"] = {}
+            self.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
             self.allocate_workers("rd", fallback_tasks)
             self.allocate_workers("qa", fallback_tasks)
             self.save_state()
@@ -794,12 +795,10 @@ class AgentOrchestrator:
         """Assign tasks to configured workers without concurrent workspace writes."""
         levels = ("senior", "middle", "junior")
         level_key = f"{role}_level"
-        selected = self.state.setdefault("staffing", {}).setdefault(role, {})
-        limits = self.config.get("staffing_limits", {}).get(role, {})
         required = {task.get(level_key, task.get("assignee_level", "senior")) for task in tasks}
         for level in required:
-            if level in levels and not self.staffing(role)[level] and int(limits.get(level, 0)):
-                selected[level] = 1
+            if level not in levels or not self.staffing(role)[level]:
+                raise ValueError(f"Manager staffing has no {role} {level} capacity")
 
         workers = [
             (f"{role}-{level}-{number}", level)
@@ -819,6 +818,13 @@ class AgentOrchestrator:
 
         self.state.setdefault("worker_assignments", {})[role] = assignments
         return workers, assignments
+
+    def fix_task_levels(self) -> dict[str, str]:
+        role = self.state.get("last_developer_role", "developer_senior")
+        role = self.state.get("developer_promotions", {}).get(role, role)
+        level = role.rsplit("_", 1)[-1]
+        qa_level = self.state.get("last_qa_level", level)
+        return {"rd_level": level, "qa_level": qa_level if qa_level in {"junior", "middle", "senior"} else level}
 
     def consult_specialists(self, requirements: str, plan: str, context: str = "", roles: set[str] | None = None) -> str:
         """Collect only the specialist reviews selected by the manager."""
@@ -1081,12 +1087,17 @@ class AgentOrchestrator:
             f"## {worker_id} ({level})\n{report}"
             for worker_id, level, report in qa_reports
         )
+        if qa_reports:
+            self.state["last_qa_level"] = max(
+                (level for _, level, _ in qa_reports),
+                key=("junior", "middle", "senior").index,
+            )
         
         with open(self.qa_report_path, "w", encoding="utf-8") as f:
             f.write(qa_report)
         log_success(f"QA report generated and saved to {self.qa_report_path}")
         
-        is_passed = bool(qa_reports) and all(report.strip().upper().replace("*", "").startswith("PASSED") for _, _, report in qa_reports)
+        is_passed = code == 0 and bool(qa_reports) and all(report.strip().upper().replace("*", "").startswith("PASSED") for _, _, report in qa_reports)
         
         if is_passed:
             log_success("QA verification PASSED!")
@@ -1104,7 +1115,8 @@ class AgentOrchestrator:
                 self.state["tasks"].append({
                     "id": fix_task_id,
                     "description": f"Fix QA verification issues. Feedback from QA:\n{qa_report[:2000]}",
-                    "status": "pending"
+                    "status": "pending",
+                    **self.fix_task_levels(),
                 })
                 self.save_state()
                 log_info(f"Revising code based on QA report (Revision {self.state['code_revisions']}/{max_rev})...")
@@ -1165,7 +1177,8 @@ class AgentOrchestrator:
                 self.state["tasks"].append({
                     "id": fix_task_id,
                     "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
-                    "status": "pending"
+                    "status": "pending",
+                    **self.fix_task_levels(),
                 })
                 self.save_state()
                 log_info(f"Revising implementation (Revision {self.state['code_revisions']}/{max_rev})...")
@@ -1308,6 +1321,7 @@ def main():
             "staffing": {},
             "worker_assignments": {},
             "last_developer_role": "developer_senior",
+            "last_qa_level": "senior",
             "developer_promotions": {},
         }
         orchestrator.save_state()
@@ -1355,6 +1369,7 @@ def main():
             orchestrator.state["staffing"] = {}
             orchestrator.state["worker_assignments"] = {}
             orchestrator.state["last_developer_role"] = "developer_senior"
+            orchestrator.state["last_qa_level"] = "senior"
             orchestrator.state["developer_promotions"] = {}
             orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
