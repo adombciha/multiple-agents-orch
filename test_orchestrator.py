@@ -313,8 +313,8 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
-    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "qwen3:latest"
-    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama") == "deepseek-r1:latest"
+    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "qwen2.5-coder:14b"
+    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama") == "deepseek-coder-v2:latest"
     assert initialized_orchestrator.get_active_model_for_role("qa_junior", "ollama") == "gemma4:latest"
 
 
@@ -394,14 +394,14 @@ def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
     ollama.assert_called_once_with("prompt", None, role="qa_senior")
 
 
-def test_qa_ollama_falls_back_to_deepseek(initialized_orchestrator, monkeypatch):
-    ollama = Mock(side_effect=[RuntimeError("gemma unavailable"), "deepseek fallback"])
+def test_qa_ollama_falls_back_to_qwen(initialized_orchestrator, monkeypatch):
+    ollama = Mock(side_effect=[RuntimeError("gemma unavailable"), "qwen fallback"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
-    assert initialized_orchestrator.call_agent_ollama_fallback("qa_junior", "prompt") == "deepseek fallback"
+    assert initialized_orchestrator.call_agent_ollama_fallback("qa_junior", "prompt") == "qwen fallback"
     assert ollama.call_args_list == [
         call("prompt", None, role="qa_junior"),
-        call("prompt", None, role="qa_junior", model="deepseek-r1:latest"),
+        call("prompt", None, role="qa_junior", model="qwen2.5-coder:7b"),
     ]
 
 

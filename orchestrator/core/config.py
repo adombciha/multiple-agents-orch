@@ -39,8 +39,8 @@ DEFAULT_CONFIG = {
         "developer_senior": "gpt-5.6-terra",
         "developer_middle": "gpt-5.6-luna",
         "developer_junior": "gemini-3.5-flash",
-        "qa_senior": "qwen3:latest",
-        "qa_middle": "deepseek-r1:latest",
+        "qa_senior": "qwen2.5-coder:14b",
+        "qa_middle": "deepseek-coder-v2:latest",
         "qa_junior": "gemma4:latest",
         "assistant": "gemma4:latest",
         "architect": "gemini-3.1-pro",
@@ -68,8 +68,8 @@ DEFAULT_CONFIG = {
     "role_model_tiers": {
         "manager": ["gpt-5.6-sol", "gpt-5.6-terra"],
         "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"],
-        "qa_senior": ["qwen3:latest"],
-        "qa_middle": ["deepseek-r1:latest"],
+        "qa_senior": ["qwen2.5-coder:14b"],
+        "qa_middle": ["deepseek-coder-v2:latest"],
         "ra": ["grok-4.5"],
         "sales": ["grok-4.5"]
     },
@@ -77,7 +77,7 @@ DEFAULT_CONFIG = {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
         "qa": {"senior": 1, "middle": 2, "junior": 3}
     },
-    "qa_ollama_fallback_model": "deepseek-r1:latest",
+    "qa_ollama_fallback_model": "qwen2.5-coder:7b",
 }
 
 
