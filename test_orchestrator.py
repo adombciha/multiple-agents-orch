@@ -296,7 +296,43 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
     assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
-    assert initialized_orchestrator.get_active_model_for_role("ra", "ollama") == "deepseek-r1:latest"
+    assert initialized_orchestrator.get_active_model_for_role("ra", "agy") == "gemini-3.1-pro"
+
+
+def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
+    ai_dir = tmp_path / ".ai-company"
+    ai_dir.mkdir()
+    (ai_dir / "config.json").write_text(json.dumps({"backends": {"developer": "codex"}}), encoding="utf-8")
+    (ai_dir / "state.json").write_text(json.dumps({"state": "PLANNING"}), encoding="utf-8")
+
+    app = AgentOrchestrator(tmp_path)
+    app.load_config_and_state()
+
+    assert app.get_backend("developer_junior") == "agy"
+    assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-sol"
+
+
+def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 0, "middle": 0, "junior": 2},
+        "qa": {"senior": 0, "middle": 0, "junior": 1},
+    }
+    tasks = [
+        {"id": "T-1", "assignee_level": "junior"},
+        {"id": "T-2", "assignee_level": "junior"},
+        {"id": "T-3", "assignee_level": "junior"},
+    ]
+
+    workers, assignments = initialized_orchestrator.allocate_workers("rd", tasks)
+
+    assert workers == [("rd-junior-1", "junior"), ("rd-junior-2", "junior")]
+    assert assignments == {"T-1": "rd-junior-1", "T-2": "rd-junior-2", "T-3": "rd-junior-1"}
+
+
+def test_token_fallback_promotes_manager_only_for_token_errors(initialized_orchestrator):
+    assert initialized_orchestrator.retry_with_token_fallback("manager", RuntimeError("maximum context length"))
+    assert initialized_orchestrator.get_active_model_for_role("manager", "codex") == "gpt-5.6-terra"
+    assert not initialized_orchestrator.retry_with_token_fallback("reviewer", RuntimeError("connection failed"))
 
 
 def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):
