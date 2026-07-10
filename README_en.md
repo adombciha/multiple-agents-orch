@@ -6,6 +6,40 @@ This project is a lightweight Multi-Agent Orchestrator written in Python. It use
 
 ---
 
+## System Requirements and Getting the Source
+
+- Python 3 plus the `requests` Python package; basic verification also needs `pytest`.
+- Git is required when using the default Git worktree; set `use_worktree` to `false` to disable it.
+- Install and sign in to the service for each enabled backend: an Ollama server or the `codex`, `agy`, `claude`, or `grok` CLI. You do not need every CLI when not running its AI workflow.
+
+After obtaining the source from Git, run these commands at the project root:
+
+```bash
+git clone https://github.com/adombciha/multiple-agents-orch.git multi-agents
+cd multi-agents
+python3 -m pip install requests pytest
+python3 orchestrator.py --help
+```
+
+The final command only verifies CLI loading and does not call AI or create a worktree.
+
+---
+
+## Configuration
+
+`init` creates `.ai-company/config.json`; unspecified keys are filled from the defaults in `orchestrator/core/config.py`.
+
+| Key | Purpose |
+| --- | --- |
+| `ollama_url`, `ollama_model` | Ollama service URL and default model. |
+| `test_command`, `max_revisions` | QA test command and plan/code revision limit. |
+| `backends` | Backend for each role; `set-backend` updates supported roles. |
+| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Backend model lists, role models, and model routing. |
+| `use_ponytail`, `use_worktree` | Enable minimalist prompting or Git-worktree isolation. |
+| `backend_escalation_path`, `staffing_limits` | Backend escalation order and RD/QA staffing limits. |
+
+---
+
 ## System Architecture
 
 ```text
@@ -177,7 +211,14 @@ python3 orchestrator.py approve --run
 
 `approve` applies only when the current state is `WAITING_FOR_OWNER`; without `--run`, it resumes the state without continuing execution.
 
-### 9. Basic Verification
+### 9. Human Review Decision (Advanced)
+```bash
+python3 orchestrator.py review pass --run
+```
+
+`review` applies only in `WAITING_FOR_OWNER`: `pass` continues along the recorded approval path, `revise` creates a revision task and returns to `IMPLEMENTING`, and `reject` moves to `FAILED`; `--run` continues execution only after `pass` or `revise`.
+
+### 10. Basic Verification
 ```bash
 python3 -m pytest -q
 ```
@@ -200,5 +241,5 @@ This enforces YAGNI (You Aren't Gonna Need It) and pushes the AI to use the shor
 
 1. **Git Worktree Isolation (Zero-Risk)**: All AI operations happen in a separate branch (`.ai-company/worktree`).
 2. **Targeted Fixes**: When QA fails, only the specific failed logic is targeted for repair.
-3. **Multilingual Interface**: Supports `en`, `zh-TW`, `ja`, and `zh-CN`. Change `"language"` in `config.json`.
+3. **Multilingual Documentation**: Provides README files in `en`, `zh-TW`, `ja`, and `zh-CN`.
 4. **Auto CHANGELOG**: Assistant automatically generates `CHANGELOG.md` upon completion.

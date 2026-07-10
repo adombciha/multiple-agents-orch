@@ -6,6 +6,40 @@
 
 ---
 
+## システム要件とソースの取得
+
+- Python 3 と Python パッケージ `requests` が必要です。基本検証には `pytest` も必要です。
+- デフォルトの Git worktree を使用する場合は Git が必要です。`use_worktree` を `false` にすると無効にできます。
+- 有効化されたバックエンドに応じて、対応するサービスをインストールしてログインします（Ollama サーバー、または `codex`、`agy`、`claude`、`grok` CLI が対象）。AI ワークフローを実行しない場合は、すべての CLI をインストールする必要はありません。
+
+Git からソースを取得した後、プロジェクトルートで実行します：
+
+```bash
+git clone https://github.com/adombciha/multiple-agents-orch.git multi-agents
+cd multi-agents
+python3 -m pip install requests pytest
+python3 orchestrator.py --help
+```
+
+最後のコマンドは CLI の読み込みのみを検証し、AI 呼び出しや worktree の作成は行いません。
+
+---
+
+## 設定
+
+`init` は `.ai-company/config.json` を作成します。未指定のキーは `orchestrator/core/config.py` のデフォルト設定で補完されます。
+
+| 設定キー | 用途 |
+| --- | --- |
+| `ollama_url`、`ollama_model` | Ollama サービス URL とデフォルトモデル。 |
+| `test_command`、`max_revisions` | QA テストコマンドと計画／コード修正の上限。 |
+| `backends` | 各役割が使用するバックエンド。`set-backend` でサポートされる役割を更新できます。 |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | バックエンドモデル一覧、役割モデル、モデルルーティング。 |
+| `use_ponytail`、`use_worktree` | ミニマルプロンプトまたは Git worktree 分離を有効化。 |
+| `backend_escalation_path`、`staffing_limits` | バックエンド昇格順と RD／QA の人員上限。 |
+
+---
+
 ## システムアーキテクチャ
 
 ```text
@@ -80,7 +114,7 @@ python3 orchestrator.py init
 grok -p "<prompt>" -m grok-4.5
 ```
 
-現在 Grok がサポートするモデルは `grok-4.5` のみで、RA と Sales のデフォルトモデルでもあります。Grok 用の 2 番目のモデルによる fallback はありません。`grok` CLI を直接使用する場合は `-m` でモデルを渡せます。オーケストレーターは `.ai-company/config.json` から RA または Sales のモデルを選択し、`role_model_tiers.ra[0]` または `role_model_tiers.sales[0]`、`role_models.ra` または `role_models.sales`、`grok-4.5` の順に使用します。`set-backend` は `ra` と `sales` の役割をサポートしますが、バックエンド引数として `grok` は受け付けません。Grok CLI またはリクエストが失敗した場合、役割は AGY の `gpt-oss-120b`、続いて設定済みモデルの Ollama の順にフォールバックします。これらも失敗した場合はエラーが上位へ返されます。Grok の RA 出力はモデルレビューであり、検証済みの法的調査ではありません。
+現在 Grok がサポートするモデルは `grok-4.5` のみで、RA と Sales のデフォルトモデルでもあります。Grok 用の 2 番目のモデルによる fallback はありません。`grok` CLI を直接使用する場合は `-m` でモデルを渡せます。オーケストレーターは `.ai-company/config.json` から RA または Sales のモデルを選択し、`role_model_tiers.ra[0]` または `role_model_tiers.sales[0]`、`role_models.ra` 或いは `role_models.sales`、`grok-4.5` の順に使用します。`set-backend` は `ra` と `sales` の役割をサポートしますが、バックエンド引数として `grok` は受け付けません。Grok CLI またはリクエストが失敗した場合、役割は AGY の `gpt-oss-120b`、続いて設定済みモデルの Ollama の順にフォールバックします。これらも失敗した場合はエラーが上位へ返されます。Grok の RA 出力はモデルレビューであり、検証済みの法的調査ではありません。
 
 ### 🚀 最小構成 (対象: 小規模ツール、単一スクリプト、高速イテレーション)
 
@@ -134,7 +168,7 @@ graph LR
 
 以下の主要な例では、プロジェクトルートのラッパーエントリポイント `python3 orchestrator.py` を使用します。モジュールエントリポイント `python3 -m orchestrator.main <command>` は同等であり、Python モジュール実行方式を好む場合に代替として使用できます。同一プロセス内ではいずれか一方を選択して使用してください。
 
-### 1. Environment の初期化
+### 1. 環境の初期化
 ```bash
 python3 orchestrator.py init
 ```
@@ -154,7 +188,7 @@ python3 orchestrator.py step
 python3 orchestrator.py run
 ```
 
-### 5. 状態を確認
+### 5. 現在の状態を確認
 ```bash
 python3 orchestrator.py status
 ```
@@ -177,12 +211,19 @@ python3 orchestrator.py approve --run
 
 `approve` は現在の状態が `WAITING_FOR_OWNER` の場合のみ使用できます。`--run` を省略すると状態だけを再開し、実行は継続しません。
 
-### 9. 基本検証
+### 9. 手動レビューの決定（高度）
+```bash
+python3 orchestrator.py review pass --run
+```
+
+`review` は `WAITING_FOR_OWNER` の状態でのみ適用されます。`pass` は記録された承認パスに沿って続行し、`revise` は修訂タスクを作成して `IMPLEMENTING` に戻り、`reject` は `FAILED` に移行します。`--run` は `pass` または `revise` の後にのみ実行を継続します。
+
+### 10. 基本検証
 ```bash
 python3 -m pytest -q
 ```
 
-`run`、`step`、`approve --run` は外部 AI CLI を呼び出したり、Git worktree を変更したり、費用が発生したりする可能性があります。外部サービスを設定していない場合は、まず `--help`、`verify_alignment.py`、および上記のテストコマンドで安全に検証してください。
+`run`、`step`、`approve --run` は外部 AI CLI を呼び出したり、Git worktree を変更したり、費用が発生したりする可能性があります。外部サービスを設定していない場合は、まず `--help` や `verify_alignment.py`、および上記のテストを実行して安全に検証してください。
 
 ---
 
@@ -196,9 +237,9 @@ python3 -m pytest -q
 
 ---
 
-## 主な機能
+## コア機能
 
 1. **Git Worktree による分離開発 (ゼロリスク)**：すべての AI 操作は独立したブランチおよびワークツリー（`.ai-company/worktree`）で行われます。
 2. **ピンポイント修正**：QA が失敗した場合、失敗した特定のロジックのみをターゲットに修正を行います。
-3. **多言語インターフェース**：`en`、`zh-TW`、`ja`、および `zh-CN` をサポートします。`config.json` の `"language"` を変更して切り替えます。
+3. **多言語ドキュメント**：`en`、`zh-TW`、`ja`、および `zh-CN` の README を提供します。
 4. **CHANGELOG 自動生成**：プロジェクト完了時に Assistant が自動的に `CHANGELOG.md` を生成します。

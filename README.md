@@ -6,6 +6,40 @@
 
 ---
 
+## 系統需求與取得方式
+
+- Python 3，以及 Python 套件 `requests`；執行基本驗證另需 `pytest`。
+- 使用預設 Git worktree 時需要 Git；將 `use_worktree` 設為 `false` 可停用。
+- 依啟用的後端安裝並登入對應服務：Ollama 伺服器，或 `codex`、`agy`、`claude`、`grok` CLI。未執行 AI 工作流程時不需要安裝所有 CLI。
+
+從 Git 儲存庫取得原始碼後，在專案根目錄執行：
+
+```bash
+git clone https://github.com/adombciha/multiple-agents-orch.git multi-agents
+cd multi-agents
+python3 -m pip install requests pytest
+python3 orchestrator.py --help
+```
+
+最後一行只驗證 CLI 載入，不會呼叫 AI 或建立 worktree。
+
+---
+
+## 設定檔
+
+`init` 會建立 `.ai-company/config.json`；未指定的鍵值會由 `orchestrator/core/config.py` 的預設設定補齊。
+
+| 設定鍵 | 用途 |
+| --- | --- |
+| `ollama_url`、`ollama_model` | Ollama 服務位址與預設模型。 |
+| `test_command`、`max_revisions` | QA 執行的測試命令與計畫／程式碼修訂上限。 |
+| `backends` | 每個角色使用的後端；可用 `set-backend` 更新支援的角色。 |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | 後端模型清單、角色模型與模型路由。 |
+| `use_ponytail`、`use_worktree` | 啟用極簡提示或 Git worktree 隔離。 |
+| `backend_escalation_path`、`staffing_limits` | 後端升級順序與 RD／QA 人力上限。 |
+
+---
+
 ## 系統架構
 
 ```text
@@ -177,7 +211,14 @@ python3 orchestrator.py approve --run
 
 `approve` 僅適用於目前狀態為 `WAITING_FOR_OWNER` 的任務；省略 `--run` 時只恢復狀態，不會繼續執行。
 
-### 9. 基本驗證
+### 9. 人工審核決定（進階）
+```bash
+python3 orchestrator.py review pass --run
+```
+
+`review` 只適用於 `WAITING_FOR_OWNER`：`pass` 依記錄的核准路徑繼續、`revise` 建立修訂任務並回到 `IMPLEMENTING`、`reject` 轉為 `FAILED`；`--run` 只會在 `pass` 或 `revise` 後繼續執行。
+
+### 10. 基本驗證
 ```bash
 python3 -m pytest -q
 ```
@@ -200,5 +241,5 @@ python3 -m pytest -q
 
 1. **Git Worktree 隔離開發 (零風險)**：所有 AI 操作都在獨立的分支與工作區中進行 (`.ai-company/worktree`)。
 2. **單點精準修復**：當 QA 驗證失敗時，僅針對具體失敗的邏輯進行修復。
-3. **多國語系支援**：支援 `en`、`zh-TW`、`ja` 和 `zh-CN`。可在 `config.json` 中修改 `"language"` 設定。
+3. **多國語系文件**：提供 `en`、`zh-TW`、`ja` 和 `zh-CN` README。
 4. **自動生成 CHANGELOG**：Assistant 代理人在專案完成後會自動生成 `CHANGELOG.md`。
