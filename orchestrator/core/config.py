@@ -1,0 +1,85 @@
+from copy import deepcopy
+
+DEFAULT_CONFIG = {
+    "ollama_url": "http://localhost:11434",
+    "ollama_model": "gemma4:latest",
+    "test_command": "git diff --stat",  # Runs a simple check if no test suite exists
+    "max_revisions": 2,
+    "backends": {
+        "manager": "codex",
+        "architect": "agy",
+        "developer": "codex",
+        "reviewer": "codex",
+        "qa": "codex",
+        "developer_senior": "codex",
+        "developer_middle": "codex",
+        "developer_junior": "agy",
+        "qa_senior": "codex",
+        "qa_middle": "codex",
+        "qa_junior": "agy",
+        "assistant": "ollama",
+        "ra": "agy",
+        "security": "ollama",
+        "sales": "ollama",
+        "sre": "agy"
+    },
+    "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
+    "use_worktree": True,   # Enforces isolated git worktrees for agent roles
+    "backend_escalation_path": ["ollama", "agy", "codex"],
+    "model_tiers": {
+        "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
+        "agy": ["gemini-3.5-flash", "gemini-3.1-pro"],
+        "codex": ["gpt-5.6-sol"],
+        "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"]
+    },
+    "role_models": {
+        "manager": "gpt-5.6-sol",
+        "reviewer": "gpt-5.6-sol",
+        "developer_senior": "gpt-5.6-terra",
+        "developer_middle": "gpt-5.6-luna",
+        "developer_junior": "gemini-3.5-flash",
+        "qa_senior": "gpt-5.6-terra",
+        "qa_middle": "gpt-5.6-luna",
+        "qa_junior": "gemini-3.5-flash",
+        "assistant": "gemma4:latest",
+        "architect": "gemini-3.1-pro",
+        "ra": "gemini-3.1-pro",
+        "security": "deepseek-r1:latest",
+        "sales": "qwen2.5:latest",
+        "sre": "gemini-3.1-pro"
+    },
+    "role_model_backends": {
+        "manager": "codex",
+        "reviewer": "codex",
+        "developer_senior": "codex",
+        "developer_middle": "codex",
+        "developer_junior": "agy",
+        "qa_senior": "codex",
+        "qa_middle": "codex",
+        "qa_junior": "agy",
+        "assistant": "ollama",
+        "architect": "agy",
+        "ra": "agy",
+        "security": "ollama",
+        "sales": "ollama",
+        "sre": "agy"
+    },
+    "role_model_tiers": {
+        "manager": ["gpt-5.6-sol", "gpt-5.6-terra"],
+        "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"]
+    },
+    "staffing_limits": {
+        "rd": {"senior": 1, "middle": 2, "junior": 3},
+        "qa": {"senior": 1, "middle": 2, "junior": 3}
+    }
+}
+
+
+def merge_defaults(defaults: dict, values: dict) -> dict:
+    merged = deepcopy(defaults)
+    for key, value in values.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = merge_defaults(merged[key], value)
+        else:
+            merged[key] = value
+    return merged

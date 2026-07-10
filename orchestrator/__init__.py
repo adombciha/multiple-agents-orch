@@ -1,9 +1,4 @@
-#!/usr/bin/env python3
-from orchestrator.main import main
 from orchestrator.core.config import DEFAULT_CONFIG
 from orchestrator.core.state import AgentOrchestrator, Colors
 import subprocess
 import requests
-
-if __name__ == "__main__":
-    main()

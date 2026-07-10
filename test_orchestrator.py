@@ -53,6 +53,15 @@ def write_ai_company(
     return config, state
 
 
+@pytest.fixture(autouse=True)
+def restore_default_config():
+    """Ensure DEFAULT_CONFIG is not mutated by other tests."""
+    original = copy.deepcopy(DEFAULT_CONFIG)
+    yield
+    DEFAULT_CONFIG.clear()
+    DEFAULT_CONFIG.update(original)
+
+
 @pytest.fixture
 def no_git(monkeypatch):
     monkeypatch.setattr(
@@ -79,13 +88,13 @@ def test_initialized_orchestrator_fixture_loads_temp_config_and_state(initialize
 def test_write_ai_company_overrides_do_not_mutate_default_config(tmp_path):
     config, state = write_ai_company(
         tmp_path,
-        config_overrides={"backends": {"developer": "codex"}, "use_worktree": False},
+        config_overrides={"backends": {"developer": "ollama"}, "use_worktree": False},
         state_overrides={"state": "TESTING"},
     )
 
-    assert config["backends"]["developer"] == "codex"
+    assert config["backends"]["developer"] == "ollama"
     assert config["backends"]["manager"] == DEFAULT_CONFIG["backends"]["manager"]
-    assert DEFAULT_CONFIG["backends"]["developer"] == "ollama"
+    assert DEFAULT_CONFIG["backends"]["developer"] == "codex"
     assert config["use_worktree"] is False
     assert DEFAULT_CONFIG["use_worktree"] is True
     assert state["state"] == "TESTING"
@@ -102,7 +111,13 @@ def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_gi
     app.load_config_and_state()
 
     assert app.config == config
-    assert app.state == state
+    expected_state = copy.deepcopy(state)
+    expected_state.setdefault("specialists", [])
+    expected_state.setdefault("staffing", {})
+    expected_state.setdefault("worker_assignments", {})
+    expected_state.setdefault("last_developer_role", "developer_senior")
+    expected_state.setdefault("developer_promotions", {})
+    assert app.state == expected_state
 
 
 def test_load_config_and_state_missing_config_keeps_default_config(tmp_path, no_git):
@@ -715,6 +730,7 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(initialized_orch
     run = Mock(side_effect=[
         (0, ""),
         (0, ""),
+        (0, ""),
         (0, "merged"),
         (0, f"{worktree} ai-feature-branch\n"),
         (0, ""),
@@ -725,6 +741,7 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(initialized_orch
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
+        call(["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"], cwd=initialized_orchestrator.workspace),
         call(["git", "add", "."], cwd=worktree),
         call(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=worktree),
         call(["git", "merge", "ai-feature-branch"], cwd=initialized_orchestrator.workspace),
@@ -740,6 +757,7 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(initialized_orchest
     run = Mock(side_effect=[
         (0, ""),
         (0, ""),
+        (0, ""),
         (1, "conflict"),
     ])
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
@@ -747,6 +765,7 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(initialized_orchest
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
+        call(["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"], cwd=initialized_orchestrator.workspace),
         call(["git", "add", "."], cwd=worktree),
         call(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=worktree),
         call(["git", "merge", "ai-feature-branch"], cwd=initialized_orchestrator.workspace),
