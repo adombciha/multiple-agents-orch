@@ -3,7 +3,7 @@ from copy import deepcopy
 DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
     "ollama_model": "gemma4:latest",
-    "test_command": "git diff --stat",  # Runs a simple check if no test suite exists
+    "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
     "backends": {
         "manager": "codex",
