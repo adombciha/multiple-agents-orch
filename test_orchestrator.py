@@ -391,6 +391,7 @@ def test_developer_promotion_is_state_only(initialized_orchestrator):
     assert initialized_orchestrator.state["developer_promotions"]["developer_junior"] == "developer_middle"
     assert initialized_orchestrator.config["role_models"]["developer_junior"] == original_model
     assert initialized_orchestrator.fix_task_levels() == {"rd_level": "middle", "qa_level": "junior"}
+    assert initialized_orchestrator.state["staffing"]["rd"]["middle"] == 1
 
 
 def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):
@@ -416,6 +417,24 @@ def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestra
         initialized_orchestrator,
         "call_manager",
         Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+
+
+def test_developing_plan_reopens_changed_completed_task(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "old scope", "status": "completed",
+        "complexity": "routine", "rd_level": "junior", "qa_level": "junior",
+    }]
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "new scope", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
     )
 
     initialized_orchestrator.step_developing_plan()
@@ -523,6 +542,8 @@ def test_step_testing_failed_command_cannot_pass_on_qa_response(initialized_orch
     initialized_orchestrator.step_testing()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert "Test exit code: 1" in initialized_orchestrator.state["tasks"][-1]["description"]
+    assert "tests failed" in initialized_orchestrator.state["tasks"][-1]["description"]
 
 
 def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeypatch):
@@ -543,7 +564,7 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_testing()
 
-    assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
 
 
 def test_step_reviewing_code_approved_moves_to_completed(initialized_orchestrator, monkeypatch):

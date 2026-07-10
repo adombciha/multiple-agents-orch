@@ -715,10 +715,15 @@ class AgentOrchestrator:
                         task[level_key] = legacy_level if legacy_level in {"junior", "middle", "senior"} else "senior"
             self.allocate_workers("rd", tasks)
             self.allocate_workers("qa", tasks)
-            # Retain previously completed tasks if we are revising
-            existing_completed = {t["id"] for t in self.state["tasks"] if t.get("status") == "completed"}
+            # Retain completed work only when the revised task is unchanged.
+            task_signature = lambda task: tuple(
+                task.get(key) for key in ("id", "description", "complexity", "rd_level", "qa_level")
+            )
+            existing_completed = {
+                task_signature(t) for t in self.state["tasks"] if t.get("status") == "completed"
+            }
             for t in tasks:
-                if t["id"] in existing_completed:
+                if task_signature(t) in existing_completed:
                     t["status"] = "completed"
             self.state["tasks"] = tasks
             self.save_state()
@@ -820,9 +825,15 @@ class AgentOrchestrator:
         return workers, assignments
 
     def fix_task_levels(self) -> dict[str, str]:
-        role = self.state.get("last_developer_role", "developer_senior")
-        role = self.state.get("developer_promotions", {}).get(role, role)
+        base_role = self.state.get("last_developer_role", "developer_senior")
+        role = self.state.get("developer_promotions", {}).get(base_role, base_role)
         level = role.rsplit("_", 1)[-1]
+        limits = self.config.get("staffing_limits", {}).get("rd", {})
+        if int(limits.get(level, 0)):
+            staffing = self.state.setdefault("staffing", {}).setdefault("rd", {})
+            staffing[level] = max(1, int(staffing.get(level, 0)))
+        else:
+            level = base_role.rsplit("_", 1)[-1]
         qa_level = self.state.get("last_qa_level", level)
         return {"rd_level": level, "qa_level": qa_level if qa_level in {"junior", "middle", "senior"} else level}
 
@@ -998,6 +1009,9 @@ class AgentOrchestrator:
                 if self.qa_report_path.exists():
                     with open(self.qa_report_path, "r", encoding="utf-8") as f:
                         feedback += f"\n--- QA Feedback ---\n{f.read()}\n"
+                if self.test_results_path.exists():
+                    with open(self.test_results_path, "r", encoding="utf-8") as f:
+                        feedback += f"\n--- Test Results ---\n{f.read()}\n"
                 if self.reviewer_output_path.exists():
                     with open(self.reviewer_output_path, "r", encoding="utf-8") as f:
                         feedback += f"\n--- Code Review Feedback ---\n{f.read()}\n"
@@ -1114,15 +1128,15 @@ class AgentOrchestrator:
                 fix_task_id = f"FIX-QA-{self.state['code_revisions']}"
                 self.state["tasks"].append({
                     "id": fix_task_id,
-                    "description": f"Fix QA verification issues. Feedback from QA:\n{qa_report[:2000]}",
+                    "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\nQA feedback:\n{qa_report[:2000]}",
                     "status": "pending",
                     **self.fix_task_levels(),
                 })
                 self.save_state()
                 log_info(f"Revising code based on QA report (Revision {self.state['code_revisions']}/{max_rev})...")
             else:
-                log_warning("Reached max code revisions. Proceeding to final architect review.")
-                self.state["state"] = "REVIEWING_CODE"
+                log_warning("Reached max code revisions with failing QA. Pausing for human review.")
+                self.state["state"] = "WAITING_FOR_OWNER"
                 self.save_state()
 
     def step_reviewing_code(self):
