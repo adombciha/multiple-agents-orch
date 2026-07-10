@@ -39,11 +39,39 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | Key | 用途與預設行為 |
 | --- | --- |
 | `ollama_url`、`ollama_model` | Ollama endpoint 與預設 model（`http://localhost:11434`、`gemma4:latest`）。 |
+| `ollama_keep_alive` | Ollama model 在回覆後保留於記憶體的時間；預設 `0`，每次回覆後立即卸載以釋放 VRAM。 |
 | `test_command`、`max_revisions` | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。 |
 | `backends` | 分配給各 role 的 backend。 |
 | `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 清單及每個 role 的 model/backend 路由。 |
 | `use_ponytail`、`use_worktree` | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。 |
 | `backend_escalation_path`、`staffing_limits` | backend 升級路徑及 RD/QA staffing 限制。 |
+
+## 建議角色與模型路由
+
+下表是角色與模型路由的目標提案。PM 只在任務確實需要時才 invoke specialist；模型回退會在主要模型不可用時依序嘗試。完整的 role-specific 回退機制與新增 specialists 將於後續版本實作。
+
+| 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
+| --- | --- | --- | --- | --- |
+| PM | 每次任務 | `gpt-5.6-sol` | `gemini-3.5-flash` | `qwen3:8b` |
+| Architect | 每次任務 | `deepseek-r1:latest` | `qwen3:8b` | `qwen2.5-coder:14b` |
+| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-terra` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
+| RD Middle | 一般功能實作 | `gpt-5.6-luna` | `qwen2.5-coder:14b` | `codegemma:7b` |
+| RD Junior | 重複、明確、小修改 | `deepseek-r1:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
+| QA Senior | 安全、架構、複雜流程 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `qwen2.5-coder:7b` |
+| QA Middle | 整合與一般功能驗證 | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` | `gemma4:latest` |
+| QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
+| Reviewer | 最終程式碼審查 | `gpt-5.6-sol` | `deepseek-r1:latest` | `qwen2.5-coder:14b` |
+| Security | auth、secrets、PII、payment、攻擊面 | `deepseek-r1:latest` | `phi4-reasoning:14b` | `qwen2.5-coder:14b` |
+| DevOps | CI/CD、Docker、release、rollback、pipeline | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` | `qwen2.5-coder:7b` |
+| RA | 法規、合規、產業規範 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
+| Sales | 競品、商業需求、客戶價值 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
+| UI/UX | UI、流程、a11y、wireframe | `qwen3:8b` | `gemma4:latest` | — |
+| UI/UX Visual Review | 有 screenshot／mockup 時 | `llama3.2-vision:latest` | `gemma4:latest` | — |
+| FAE | 客戶環境、SDK、設備、驗收 | `qwen3:8b` | `gemma4:latest` | — |
+| Integration | 外部 API、設備協定、第三方平台 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
+| Assistant | changelog、摘要、文件整理 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
+
+模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
 
 ## Grok specialists 說明
 
