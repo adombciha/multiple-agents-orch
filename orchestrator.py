@@ -64,6 +64,22 @@ DEFAULT_CONFIG = {
         "sales": "qwen2.5:latest",
         "sre": "gemini-3.1-pro"
     },
+    "role_model_backends": {
+        "manager": "codex",
+        "reviewer": "codex",
+        "developer_senior": "codex",
+        "developer_middle": "codex",
+        "developer_junior": "agy",
+        "qa_senior": "codex",
+        "qa_middle": "codex",
+        "qa_junior": "agy",
+        "assistant": "ollama",
+        "architect": "agy",
+        "ra": "agy",
+        "security": "ollama",
+        "sales": "ollama",
+        "sre": "agy"
+    },
     "role_model_tiers": {
         "manager": ["gpt-5.6-sol", "gpt-5.6-terra"],
         "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"]
@@ -202,6 +218,7 @@ class AgentOrchestrator:
             
         with open(self.config_path, "r", encoding="utf-8") as f:
             loaded_config = json.load(f)
+        self.explicit_backends = set(loaded_config.get("backends", {}))
         self.config = self.merge_defaults(DEFAULT_CONFIG, loaded_config)
             
         with open(self.state_path, "r", encoding="utf-8") as f:
@@ -211,7 +228,6 @@ class AgentOrchestrator:
         self.state.setdefault("worker_assignments", {})
         self.state.setdefault("last_developer_role", "developer_senior")
         self.state.setdefault("developer_promotions", {})
-        self.state.setdefault("role_model_indices", {})
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -225,12 +241,14 @@ class AgentOrchestrator:
 
     def get_backend(self, role: str) -> str:
         backends = self.config.get("backends", {})
-        if role in backends:
-            return backends[role]
         if role.startswith("developer_"):
-            return backends.get("developer", "ollama")
+            if "developer" in self.explicit_backends and role not in self.explicit_backends:
+                return backends.get("developer", "ollama")
+            return backends.get(role, backends.get("developer", "ollama"))
         if role.startswith("qa_"):
-            return backends.get("qa", "ollama")
+            if "qa" in self.explicit_backends and role not in self.explicit_backends:
+                return backends.get("qa", "ollama")
+            return backends.get(role, backends.get("qa", "ollama"))
         return backends.get(role, "ollama")
 
     def save_state(self):
@@ -314,7 +332,7 @@ class AgentOrchestrator:
             log_error(f"Error detail: {e}")
             raise RuntimeError(f"Ollama connection failed: {e}")
 
-    def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         # Prepend system prompt to the user prompt if present
         full_prompt = ""
         if system_prompt:
@@ -332,7 +350,7 @@ class AgentOrchestrator:
             "--skip-git-repo-check"
         ]
         
-        model = self.get_active_model_for_role(role, "codex")
+        model = model or self.get_active_model_for_role(role, "codex")
         if model:
             cmd.extend(["-m", model])
         cmd.append("-")
@@ -432,9 +450,10 @@ class AgentOrchestrator:
             try:
                 return self.call_codex(prompt, system_prompt, role="manager")
             except Exception as e:
-                if self.retry_with_token_fallback("manager", e):
+                fallback_model = self.token_fallback_model("manager", e)
+                if fallback_model:
                     try:
-                        return self.call_codex(prompt, system_prompt, role="manager")
+                        return self.call_codex(prompt, system_prompt, role="manager", model=fallback_model)
                     except Exception as retry_error:
                         e = retry_error
                 log_warning(f"Codex manager backend failed: {e}")
@@ -492,9 +511,10 @@ class AgentOrchestrator:
             try:
                 return self.call_codex(prompt, system_prompt, role=role)
             except Exception as e:
-                if self.retry_with_token_fallback(role, e):
+                fallback_model = self.token_fallback_model(role, e)
+                if fallback_model:
                     try:
-                        return self.call_codex(prompt, system_prompt, role=role)
+                        return self.call_codex(prompt, system_prompt, role=role, model=fallback_model)
                     except Exception as retry_error:
                         e = retry_error
                 log_warning(f"Codex backend failed: {e}")
@@ -656,7 +676,7 @@ class AgentOrchestrator:
             "plan_revisions": self.state.get("plan_revisions", 0),
             "code_revisions": self.state.get("code_revisions", 0),
         }
-        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), and 'assignee_level' ('junior', 'middle', or 'senior'). Assign isolated repetitive changes to junior; ordinary feature work with known patterns to middle; architecture, cross-module, security, data migration, ambiguity, or design work to senior.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include a senior for complex work, middle agents for moderate work, and juniors only for safely separable routine work.\n- 'specialists': only include roles relevant to this project: 'sales' for unclear business requirements, 'security' for auth/secrets/payment/PII/attack surface, 'ra' for laws/regulations/healthcare/financial compliance, and 'sre' for deployment/CI/CD/containers/monitoring. Each item has 'role' and a short 'reason'. Do not include a role when it is unnecessary.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include roles relevant to this project: 'sales' for unclear business requirements, 'security' for auth/secrets/payment/PII/attack surface, 'ra' for laws/regulations/healthcare/financial compliance, and 'sre' for deployment/CI/CD/containers/monitoring. Each item has 'role' and a short 'reason'. Do not include a role when it is unnecessary.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
         
         parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
         
@@ -687,8 +707,11 @@ class AgentOrchestrator:
                     raise ValueError("each task requires id and description")
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
-                if task.get("assignee_level") not in {"junior", "middle", "senior"}:
-                    task["assignee_level"] = "senior"
+                legacy_level = task.get("assignee_level", "senior")
+                for role in ("rd", "qa"):
+                    level_key = f"{role}_level"
+                    if task.get(level_key) not in {"junior", "middle", "senior"}:
+                        task[level_key] = legacy_level if legacy_level in {"junior", "middle", "senior"} else "senior"
             self.allocate_workers("rd", tasks)
             self.allocate_workers("qa", tasks)
             # Retain previously completed tasks if we are revising
@@ -718,13 +741,14 @@ class AgentOrchestrator:
 
     def get_active_model_for_role(self, role: str, backend: str) -> str | None:
         """Returns the specific active model name for a role/backend based on the current scaling tier index."""
-        role_tiers = self.config.get("role_model_tiers", {}).get(role, [])
-        if role_tiers:
-            index = self.state.setdefault("role_model_indices", {}).get(role, 0)
-            return role_tiers[min(index, len(role_tiers) - 1)]
-        role_model = self.config.get("role_models", {}).get(role)
-        if role_model:
-            return role_model
+        expected_backend = self.config.get("role_model_backends", {}).get(role)
+        if backend == expected_backend:
+            role_tiers = self.config.get("role_model_tiers", {}).get(role, [])
+            if role_tiers:
+                return role_tiers[0]
+            role_model = self.config.get("role_models", {}).get(role)
+            if role_model:
+                return role_model
 
         # Ensure model_tier_indices exist in state
         indices = self.state.setdefault("model_tier_indices", {})
@@ -743,20 +767,16 @@ class AgentOrchestrator:
             return tiers[idx]
         return tiers[-1]
 
-    def retry_with_token_fallback(self, role: str, error: Exception) -> bool:
-        """Advance a role model only after a Codex context/token-limit failure."""
+    def token_fallback_model(self, role: str, error: Exception) -> str | None:
+        """Return a one-request fallback model after a Codex context/token-limit failure."""
         message = str(error).lower()
         if not any(marker in message for marker in ("token limit", "context length", "maximum context", "too many tokens")):
-            return False
+            return None
         tiers = self.config.get("role_model_tiers", {}).get(role, [])
-        indices = self.state.setdefault("role_model_indices", {})
-        index = indices.get(role, 0)
-        if index + 1 >= len(tiers):
-            return False
-        indices[role] = index + 1
-        self.save_state()
-        log_warning(f"[!] Retrying {role} with {tiers[index + 1]} after token-limit failure.")
-        return True
+        if len(tiers) < 2:
+            return None
+        log_warning(f"[!] Retrying {role} with {tiers[1]} after token-limit failure.")
+        return tiers[1]
 
     def staffing(self, role: str) -> dict[str, int]:
         """Return a validated staffing allocation within configured capacity."""
@@ -773,9 +793,10 @@ class AgentOrchestrator:
     def allocate_workers(self, role: str, tasks: list[dict]) -> tuple[list[tuple[str, str]], dict[str, str]]:
         """Assign tasks to configured workers without concurrent workspace writes."""
         levels = ("senior", "middle", "junior")
+        level_key = f"{role}_level"
         selected = self.state.setdefault("staffing", {}).setdefault(role, {})
         limits = self.config.get("staffing_limits", {}).get(role, {})
-        required = {task.get("assignee_level", "senior") for task in tasks}
+        required = {task.get(level_key, task.get("assignee_level", "senior")) for task in tasks}
         for level in required:
             if level in levels and not self.staffing(role)[level] and int(limits.get(level, 0)):
                 selected[level] = 1
@@ -789,7 +810,7 @@ class AgentOrchestrator:
         next_worker = {level: 0 for level in levels}
         assignments = {}
         for task in tasks:
-            level = task.get("assignee_level", "senior")
+            level = task.get(level_key, task.get("assignee_level", "senior"))
             available = by_level.get(level)
             if not available:
                 raise ValueError(f"No {role} {level} worker capacity is available")
@@ -829,13 +850,9 @@ class AgentOrchestrator:
             log_warning("[!] Already at the highest Developer model tier.")
             return
 
-        self.config.setdefault("backends", {})[role] = self.get_backend(promoted_role)
-        self.config.setdefault("role_models", {})[role] = self.config.get("role_models", {}).get(promoted_role)
         self.state["developer_promotions"][role] = promoted_role
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            json.dump(self.config, f, indent=2)
         self.save_state()
-        log_warning(f"[!] Promoted {role} to {promoted_role}'s backend and model.")
+        log_warning(f"[!] Promoted {role} to {promoted_role} for this run.")
 
     def step_reviewing_plan(self):
         log_header("3. REVIEWING PLAN (Architect)")
@@ -943,7 +960,8 @@ class AgentOrchestrator:
             worker_id = rd_assignments[task["id"]]
             _, level, agent_number = worker_id.rsplit("-", 2)
             agent_role = f"developer_{level}"
-            backend = self.get_backend(agent_role)
+            effective_role = self.state.get("developer_promotions", {}).get(agent_role, agent_role)
+            backend = self.get_backend(effective_role)
             
             prompt = (
                 f"We are implementing the project in the workspace root. Here are the requirements:\n"
@@ -983,7 +1001,7 @@ class AgentOrchestrator:
             # We use Developer backend to make modifications
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
-            dev_output = self.call_agent(agent_role, prompt, system_prompt)
+            dev_output = self.call_agent(effective_role, prompt, system_prompt)
             self.state["last_developer_role"] = agent_role
             
             # If text-based API backend, parse and write files
@@ -1044,7 +1062,7 @@ class AgentOrchestrator:
         qa_reports = []
         for worker_id, level in qa_workers:
             assigned_tasks = [
-                {key: task.get(key) for key in ("id", "description", "complexity", "assignee_level")}
+                {key: task.get(key) for key in ("id", "description", "complexity", "rd_level", "qa_level")}
                 for task in tasks
                 if qa_assignments.get(task["id"]) == worker_id
             ]
@@ -1255,7 +1273,7 @@ def main():
     reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
 
     backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
-    backend_parser.add_argument("role", choices=["manager", "developer", "reviewer", "qa"], help="The agent role")
+    backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre"], help="The agent role")
     backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
 
     args = parser.parse_args()
@@ -1279,7 +1297,18 @@ def main():
             "state": "PLANNING",
             "plan_revisions": 0,
             "code_revisions": 0,
-            "tasks": []
+            "model_tier_indices": {
+                "developer": 0,
+                "reviewer": 0,
+                "manager": 0,
+                "qa": 0,
+            },
+            "tasks": [],
+            "specialists": [],
+            "staffing": {},
+            "worker_assignments": {},
+            "last_developer_role": "developer_senior",
+            "developer_promotions": {},
         }
         orchestrator.save_state()
         log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")
@@ -1322,6 +1351,11 @@ def main():
                 "manager": 0,
                 "qa": 0
             }
+            orchestrator.state["specialists"] = []
+            orchestrator.state["staffing"] = {}
+            orchestrator.state["worker_assignments"] = {}
+            orchestrator.state["last_developer_role"] = "developer_senior"
+            orchestrator.state["developer_promotions"] = {}
             orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")
@@ -1330,7 +1364,15 @@ def main():
     elif args.command == "set-backend":
         try:
             orchestrator.load_config_and_state()
-            orchestrator.config["backends"][args.role] = args.backend
+            roles = (
+                ["developer_senior", "developer_middle", "developer_junior"]
+                if args.role == "developer"
+                else ["qa_senior", "qa_middle", "qa_junior"]
+                if args.role == "qa"
+                else [args.role]
+            )
+            for role in roles:
+                orchestrator.config["backends"][role] = args.backend
             with open(orchestrator.config_path, "w", encoding="utf-8") as f:
                 json.dump(orchestrator.config, f, indent=2)
             log_success(f"Successfully configured '{args.role}' backend to '{args.backend}'")

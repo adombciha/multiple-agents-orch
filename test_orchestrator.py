@@ -308,8 +308,12 @@ def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
     app = AgentOrchestrator(tmp_path)
     app.load_config_and_state()
 
-    assert app.get_backend("developer_junior") == "agy"
+    assert app.get_backend("developer_junior") == "codex"
     assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-sol"
+
+
+def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator):
+    assert initialized_orchestrator.get_active_model_for_role("manager", "ollama") == "gemma4:latest"
 
 
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
@@ -330,9 +334,33 @@ def test_allocate_workers_persists_round_robin_assignments(initialized_orchestra
 
 
 def test_token_fallback_promotes_manager_only_for_token_errors(initialized_orchestrator):
-    assert initialized_orchestrator.retry_with_token_fallback("manager", RuntimeError("maximum context length"))
-    assert initialized_orchestrator.get_active_model_for_role("manager", "codex") == "gpt-5.6-terra"
-    assert not initialized_orchestrator.retry_with_token_fallback("reviewer", RuntimeError("connection failed"))
+    assert initialized_orchestrator.token_fallback_model("manager", RuntimeError("maximum context length")) == "gpt-5.6-terra"
+    assert initialized_orchestrator.get_active_model_for_role("manager", "codex") == "gpt-5.6-sol"
+    assert initialized_orchestrator.token_fallback_model("reviewer", RuntimeError("connection failed")) is None
+
+
+def test_rd_and_qa_can_use_different_levels(initialized_orchestrator):
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"junior": 1},
+    }
+    tasks = [{"id": "T-1", "rd_level": "senior", "qa_level": "junior"}]
+
+    _, rd_assignments = initialized_orchestrator.allocate_workers("rd", tasks)
+    _, qa_assignments = initialized_orchestrator.allocate_workers("qa", tasks)
+
+    assert rd_assignments == {"T-1": "rd-senior-1"}
+    assert qa_assignments == {"T-1": "qa-junior-1"}
+
+
+def test_developer_promotion_is_state_only(initialized_orchestrator):
+    original_model = initialized_orchestrator.config["role_models"]["developer_junior"]
+    initialized_orchestrator.state["last_developer_role"] = "developer_junior"
+
+    initialized_orchestrator.escalate_developer_backend()
+
+    assert initialized_orchestrator.state["developer_promotions"]["developer_junior"] == "developer_middle"
+    assert initialized_orchestrator.config["role_models"]["developer_junior"] == original_model
 
 
 def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):
