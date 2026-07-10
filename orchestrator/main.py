@@ -97,9 +97,12 @@ def main():
             if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
                 log_error(f"Cannot approve from state: {orchestrator.state.get('state')}")
                 return
-            orchestrator.state["state"] = "REVIEWING_CODE"
+            resume_state = orchestrator.state.get("resume_state", "REVIEWING_CODE")
+            orchestrator.state["state"] = resume_state
+            orchestrator.state.pop("human_review_source", None)
+            orchestrator.state.pop("resume_state", None)
             orchestrator.save_state()
-            log_success("Owner approval recorded; workflow resumed at REVIEWING_CODE.")
+            log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
             if args.run:
                 orchestrator.run_to_end()
         except FileNotFoundError:

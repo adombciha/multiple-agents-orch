@@ -87,5 +87,4 @@ class QAAgent(BaseAgent):
                 log_info(f"Revising code based on QA report (Revision {self.orchestrator.state['code_revisions']}/{max_rev})...")
             else:
                 log_warning("Reached max code revisions with failing QA. Pausing for human review.")
-                self.orchestrator.state["state"] = "WAITING_FOR_OWNER"
-                self.orchestrator.save_state()
+                self.orchestrator.pause_for_human_review("QA", qa_report, "REVIEWING_CODE")
