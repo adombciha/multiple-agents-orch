@@ -562,6 +562,15 @@ def test_visual_review_receives_start_image_paths(initialized_orchestrator, monk
     assert f"[IMAGE: {screenshot}]" in review.call_args.args[2]
 
 
+def test_visual_images_force_visual_review_specialist(initialized_orchestrator):
+    initialized_orchestrator.state["visual_image_paths"] = ["/tmp/screen.png"]
+
+    initialized_orchestrator.ensure_visual_review_specialist()
+    initialized_orchestrator.ensure_visual_review_specialist()
+
+    assert initialized_orchestrator.state["specialists"] == [{"role": "uiux_visual_review", "reason": "Visual inputs provided"}]
+
+
 @pytest.mark.parametrize(
     ("state", "method_name"),
     [

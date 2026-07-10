@@ -533,6 +533,12 @@ class AgentOrchestrator:
             self.specialist_review_path.write_text(notes, encoding="utf-8")
         return notes
 
+    def ensure_visual_review_specialist(self) -> None:
+        if self.state.get("visual_image_paths") and not any(
+            item.get("role") == "uiux_visual_review" for item in self.state.get("specialists", [])
+        ):
+            self.state.setdefault("specialists", []).append({"role": "uiux_visual_review", "reason": "Visual inputs provided"})
+
     # State Machine Delegation to Role Agents
     def step_planning(self):
         return self.manager.step_planning()

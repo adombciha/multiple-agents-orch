@@ -41,10 +41,14 @@ def main():
     elif args.command == "start":
         orchestrator.init_project()
         orchestrator.load_config_and_state()
-        image_paths = [str(Path(path).resolve()) for path in args.image if Path(path).is_file()]
-        if len(image_paths) != len(args.image):
-            log_error("Every --image path must point to an existing file.")
-            return
+        allowed_image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
+        max_image_bytes = orchestrator.config.get("max_visual_image_bytes", 10 * 1024 * 1024)
+        image_paths = []
+        for path in map(Path, args.image):
+            if not path.is_file() or path.suffix.lower() not in allowed_image_suffixes or path.stat().st_size > max_image_bytes:
+                log_error(f"Each --image must be a PNG, JPEG, or WebP file no larger than {max_image_bytes // 1024 // 1024}MB.")
+                return
+            image_paths.append(str(path.resolve()))
 
         # Save request prompt
         with open(orchestrator.request_path, "w", encoding="utf-8") as f:

@@ -79,6 +79,7 @@ class DeveloperAgent(BaseAgent):
                     item for item in specialists
                     if isinstance(item, dict) and item.get("role") in {"sales", "security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"}
                 ]
+                self.orchestrator.ensure_visual_review_specialist()
             for task in tasks:
                 if not isinstance(task, dict) or not task.get("id") or not task.get("description"):
                     raise ValueError("each task requires id and description")
@@ -114,6 +115,7 @@ class DeveloperAgent(BaseAgent):
             fallback_tasks = [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending", "rd_level": "senior", "qa_level": "senior"}]
             self.orchestrator.state["tasks"] = fallback_tasks
             self.orchestrator.state["specialists"] = []
+            self.orchestrator.ensure_visual_review_specialist()
             self.orchestrator.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
             self.orchestrator.allocate_workers("rd", fallback_tasks)
             self.orchestrator.allocate_workers("qa", fallback_tasks)

@@ -4,6 +4,7 @@ DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
     "ollama_model": "gemma4:latest",
     "ollama_keep_alive": 0,
+    "max_visual_image_bytes": 10 * 1024 * 1024,
     "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
     "backends": {
