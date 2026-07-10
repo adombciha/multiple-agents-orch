@@ -311,7 +311,8 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
     assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
-    assert initialized_orchestrator.get_active_model_for_role("ra", "agy") == "gemini-3.1-pro"
+    assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
+    assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
 
 
 def test_load_config_migrates_new_role_defaults(tmp_path, no_git):

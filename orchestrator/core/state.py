@@ -228,9 +228,13 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.call_claude(self, prompt, system_prompt, role)
 
-    def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_agy(self, prompt, system_prompt, role)
+        return backends.call_agy(self, prompt, system_prompt, role, model)
+
+    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+        from orchestrator.core import backends
+        return backends.call_grok(self, prompt, system_prompt, role)
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
         from orchestrator.core import backends
@@ -301,6 +305,16 @@ class AgentOrchestrator:
                 log_warning(f"Claude backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
+        elif backend == "grok":
+            try:
+                return self.call_grok(prompt, system_prompt, role=role)
+            except Exception as e:
+                log_warning(f"Grok Build backend failed: {e}")
+                log_warning("Falling back to AGY, then Ollama.")
+                try:
+                    return self.call_agy(prompt, system_prompt, role=role, model="gpt-oss-120b")
+                except Exception:
+                    return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "codex":
             try:
                 return self.call_codex(prompt, system_prompt, role=role)

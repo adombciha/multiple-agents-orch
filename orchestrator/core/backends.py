@@ -139,7 +139,7 @@ def call_claude(orchestrator, prompt: str, system_prompt: str | None = None, rol
         raise RuntimeError(f"Claude CLI failed with code {result.returncode}:\n{result.stderr}")
     return result.stdout
 
-def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
     from orchestrator.core.state import log_info
     full_prompt = ""
     if system_prompt:
@@ -147,7 +147,7 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
     full_prompt += prompt
 
     cmd = ["agy"]
-    model = orchestrator.get_active_model_for_role(role, "agy")
+    model = model or orchestrator.get_active_model_for_role(role, "agy")
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--print", full_prompt])
@@ -164,6 +164,18 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
     )
     if result.returncode != 0:
         raise RuntimeError(f"agy CLI failed with code {result.returncode}:\n{result.stderr}")
+    return result.stdout
+
+def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    from orchestrator.core.state import log_info
+    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    model = orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
+    cmd = ["grok", "-p", full_prompt, "-m", model]
+    log_info(f"Running Grok Build: grok -p ... -m {model}")
+    result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, timeout=1800, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"Grok Build failed with code {result.returncode}:\n{result.stderr}")
     return result.stdout
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:

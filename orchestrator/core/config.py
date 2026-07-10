@@ -18,9 +18,9 @@ DEFAULT_CONFIG = {
         "qa_middle": "codex",
         "qa_junior": "agy",
         "assistant": "ollama",
-        "ra": "agy",
+        "ra": "grok",
         "security": "ollama",
-        "sales": "ollama",
+        "sales": "grok",
         "sre": "agy"
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
@@ -30,7 +30,8 @@ DEFAULT_CONFIG = {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
         "agy": ["gemini-3.5-flash", "gemini-3.1-pro"],
         "codex": ["gpt-5.6-sol"],
-        "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"]
+        "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"],
+        "grok": ["grok-4.5"],
     },
     "role_models": {
         "manager": "gpt-5.6-sol",
@@ -43,9 +44,9 @@ DEFAULT_CONFIG = {
         "qa_junior": "gemini-3.5-flash",
         "assistant": "gemma4:latest",
         "architect": "gemini-3.1-pro",
-        "ra": "gemini-3.1-pro",
+        "ra": "grok-4.5",
         "security": "deepseek-r1:latest",
-        "sales": "qwen2.5:latest",
+        "sales": "grok-4.5",
         "sre": "gemini-3.1-pro"
     },
     "role_model_backends": {
@@ -59,14 +60,16 @@ DEFAULT_CONFIG = {
         "qa_junior": "agy",
         "assistant": "ollama",
         "architect": "agy",
-        "ra": "agy",
+        "ra": "grok",
         "security": "ollama",
-        "sales": "ollama",
+        "sales": "grok",
         "sre": "agy"
     },
     "role_model_tiers": {
         "manager": ["gpt-5.6-sol", "gpt-5.6-terra"],
-        "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"]
+        "reviewer": ["gpt-5.6-sol", "gpt-5.6-terra"],
+        "ra": ["grok-4.5"],
+        "sales": ["grok-4.5"]
     },
     "staffing_limits": {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
