@@ -313,8 +313,8 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
-    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "agy") == "gemini-3.1-pro"
-    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "agy") == "gpt-oss-120b"
+    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "qwen3:latest"
+    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama") == "deepseek-r1:latest"
     assert initialized_orchestrator.get_active_model_for_role("qa_junior", "ollama") == "gemma4:latest"
 
 
@@ -386,15 +386,12 @@ def test_token_fallback_promotes_manager_only_for_token_errors(initialized_orche
     assert initialized_orchestrator.token_fallback_model("reviewer", RuntimeError("connection failed")) is None
 
 
-def test_qa_senior_retries_gpt_oss_after_quota_failure(initialized_orchestrator, monkeypatch):
-    agy = Mock(side_effect=[RuntimeError("quota exceeded"), "fallback"])
-    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
+def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
+    ollama = Mock(return_value="qwen response")
+    monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
-    assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "fallback"
-    assert agy.call_args_list == [
-        call("prompt", None, role="qa_senior"),
-        call("prompt", None, role="qa_senior", model="gpt-oss-120b"),
-    ]
+    assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qwen response"
+    ollama.assert_called_once_with("prompt", None, role="qa_senior")
 
 
 def test_qa_ollama_falls_back_to_deepseek(initialized_orchestrator, monkeypatch):
