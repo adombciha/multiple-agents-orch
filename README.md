@@ -15,6 +15,8 @@
                     ↓
            [ PM (負責分析需求、拆解任務) ]
                     ↓
+       [ 專家 (RA / Sales → Grok CLI) ]
+                    ↓
            [ Architect (負責計畫與架構審查) ]
                     ↓
         [ RD 團隊 (Senior / Middle / Junior) ]
@@ -43,6 +45,7 @@
 | RD / QA junior | 孤立、重複的常規工作 | AGY Gemini `gemini-3.5-flash` |
 | Reviewer | 每個專案：代碼與測試結果審查 | Codex `gpt-5.6-sol` |
 | Assistant | 每個專案：CHANGELOG 與常規文件 | Local Ollama `gemma4:latest` |
+| Grok | RA 與 Sales 專家需要時的領域分析 | Grok CLI `grok-4.5` |
 
 ### 動態專家 (Dynamic Specialists)
 
@@ -50,12 +53,30 @@ PM 僅在適用其觸發條件時啟用以下專家：
 
 | 專家 | 觸發條件 | 預設模型路由 |
 | --- | --- | --- |
-| Sales (業務) | 業務範圍或驗收標準不明確 | Local Ollama `qwen2.5:latest` |
+| Sales (業務) | 業務範圍或驗收標準不明確 | Grok CLI `grok-4.5` |
 | Security (資安) | 涉及身分驗證、金鑰、支付、PII（個人識別資訊）或攻擊面 | Local Ollama `deepseek-r1:latest` |
-| RA (法規) | 適用法律、法規、醫療保健、財務合規或隱私義務 | AGY Gemini `gemini-3.1-pro` |
+| RA (法規) | 適用法律、法規、醫療保健、財務合規或隱私義務 | Grok CLI `grok-4.5` |
 | SRE | CI/CD、容器、部署、監控或運維可靠性在範圍內 | AGY Gemini `gemini-3.1-pro` |
 
 RA 提供的是模型審查，而非經證實的法律研究。生產環境的合規工作應增加權威來源的檢索與引用。
+
+### Grok agent
+
+Grok 是由協調器選擇的外部 CLI agent，負責 RA（法規）與 Sales（業務）專家的領域分析；它不是額外的流程階段，也不會取代 PM、Architect、RD、QA 或 Reviewer。PM 只會在需求觸發對應專家時使用 Grok，分析結果再交給 Architect 納入計畫審查。
+
+使用前必須在執行環境安裝並可執行 `grok` CLI。新初始化的專案已將 Grok 設為 RA 與 Sales 的預設後端：
+
+```bash
+python3 orchestrator.py init
+```
+
+協調器會以目前角色的設定呼叫下列介面：
+
+```bash
+grok -p "<prompt>" -m grok-4.5
+```
+
+目前 Grok 僅支援 `grok-4.5`，也是 RA 與 Sales 的預設模型；沒有第二個 Grok 模型可供 fallback。直接使用 `grok` CLI 時可透過 `-m` 傳入模型；協調器則從 `.ai-company/config.json` 選擇 RA 或 Sales 的模型，依序採用 `role_model_tiers.ra[0]` 或 `role_model_tiers.sales[0]`、`role_models.ra` 或 `role_models.sales`，最後使用 `grok-4.5`。`set-backend` 可設定 `ra` 與 `sales` 角色，但不接受 `grok` 作為後端參數。若 Grok CLI 或請求失敗，該角色會依序改用 AGY 的 `gpt-oss-120b`，再改用 Ollama（使用其設定的模型）；若後續後端也失敗，錯誤會向上回報。Grok 的 RA 輸出是模型審查，不等同於已驗證的法律研究。
 
 ### 🚀 最小化配置 (適合：小型工具、單一腳本、快速迭代)
 
@@ -137,6 +158,7 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ### 7. 更換代理人 (Agent) 後端
 ```bash
 python3 orchestrator.py set-backend developer codex
+python3 orchestrator.py set-backend reviewer agy
 ```
 
 ---

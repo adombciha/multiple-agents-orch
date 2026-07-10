@@ -15,6 +15,8 @@ This project is a lightweight Multi-Agent Orchestrator written in Python. It use
                    ↓
          [ PM (Requirements and task allocation) ]
                    ↓
+       [ Specialists (RA / Sales → Grok CLI) ]
+                   ↓
          [ Architect (Plan review) ]
                    ↓
       [ RD Team (Senior / Middle / Junior) ]
@@ -43,6 +45,7 @@ The orchestrator always enables PM, Architect, RD, Reviewer, QA, and Assistant. 
 | RD / QA junior | Isolated, repetitive routine work | AGY Gemini `gemini-3.5-flash` |
 | Reviewer | Every project: code and test-result review | Codex `gpt-5.6-sol` |
 | Assistant | Every project: CHANGELOG and routine documentation | Local Ollama `gemma4:latest` |
+| Grok | Domain analysis when RA or Sales specialists are needed | Grok CLI `grok-4.5` |
 
 ### Dynamic Specialists
 
@@ -50,12 +53,30 @@ The PM may activate the following specialists only when their trigger applies:
 
 | Specialist | Trigger | Default model route |
 | --- | --- | --- |
-| Sales | Business scope or acceptance criteria are unclear | Local Ollama `qwen2.5:latest` |
+| Sales | Business scope or acceptance criteria are unclear | Grok CLI `grok-4.5` |
 | Security | Authentication, secrets, payments, PII, or an attack surface is involved | Local Ollama `deepseek-r1:latest` |
-| RA | Laws, regulations, healthcare, financial compliance, or privacy obligations apply | AGY Gemini `gemini-3.1-pro` |
+| RA | Laws, regulations, healthcare, financial compliance, or privacy obligations apply | Grok CLI `grok-4.5` |
 | SRE | CI/CD, containers, deployment, monitoring, or operational reliability is in scope | AGY Gemini `gemini-3.1-pro` |
 
 RA provides a model review, not verified legal research. Production compliance work should add authoritative-source search and citations.
+
+### Grok agent
+
+Grok is an external CLI agent selected by the orchestrator for domain analysis by the RA (regulatory) and Sales specialists. It is not an additional workflow stage and does not replace PM, Architect, RD, QA, or Reviewer. The PM uses Grok only when a specialist trigger applies, then the result is supplied to the Architect for plan review.
+
+Before use, install the `grok` CLI and make it executable in the runtime environment. Grok is already the default backend for RA and Sales in a newly initialized project:
+
+```bash
+python3 orchestrator.py init
+```
+
+The orchestrator invokes the configured role through this interface:
+
+```bash
+grok -p "<prompt>" -m grok-4.5
+```
+
+Grok currently supports only `grok-4.5`, which is also the default model for RA and Sales; there is no second Grok model for fallback. When using the `grok` CLI directly, pass a model with `-m`; the orchestrator selects the RA or Sales model from `.ai-company/config.json`, in order: `role_model_tiers.ra[0]` or `role_model_tiers.sales[0]`, `role_models.ra` or `role_models.sales`, then `grok-4.5`. `set-backend` supports the `ra` and `sales` roles, but does not accept `grok` as a backend argument. If the Grok CLI or request fails, the role falls back in order to AGY with `gpt-oss-120b`, then Ollama with its configured model. If those backends also fail, the error is propagated. Grok's RA output is a model review, not verified legal research.
 
 ### 🚀 Minimalist Configuration (For: small tools, single scripts, fast iteration)
 
