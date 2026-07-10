@@ -313,8 +313,8 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "agy") == "gemini-3.5-flash"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
-    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "qwen2.5-coder:14b"
-    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama") == "deepseek-coder-v2:latest"
+    assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "deepseek-r1:latest"
+    assert initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama") == "qwen2.5-coder:14b"
     assert initialized_orchestrator.get_active_model_for_role("qa_junior", "ollama") == "gemma4:latest"
 
 
