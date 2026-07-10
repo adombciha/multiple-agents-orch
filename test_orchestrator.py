@@ -549,6 +549,19 @@ def test_consult_specialists_dispatches_new_role_modules(initialized_orchestrato
     assert all(f"## {role.title()}" in notes for role in expected_roles)
 
 
+def test_visual_review_receives_start_image_paths(initialized_orchestrator, monkeypatch, tmp_path):
+    screenshot = tmp_path / "screen.png"
+    screenshot.write_bytes(b"image")
+    initialized_orchestrator.state["specialists"] = [{"role": "uiux_visual_review", "reason": "mockup"}]
+    initialized_orchestrator.state["visual_image_paths"] = [str(screenshot)]
+    review = Mock(return_value="review")
+    monkeypatch.setattr(initialized_orchestrator.uiux_visual_review, "review", review)
+
+    initialized_orchestrator.consult_specialists("requirements", "plan")
+
+    assert f"[IMAGE: {screenshot}]" in review.call_args.args[2]
+
+
 @pytest.mark.parametrize(
     ("state", "method_name"),
     [

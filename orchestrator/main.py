@@ -13,6 +13,7 @@ def main():
 
     start_parser = subparsers.add_parser("start", help="Start a new multi-agent task")
     start_parser.add_argument("prompt", type=str, help="The development task prompt or request")
+    start_parser.add_argument("--image", action="append", default=[], help="Screenshot or mockup path for UI/UX visual review; repeat for multiple images")
 
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
@@ -40,6 +41,10 @@ def main():
     elif args.command == "start":
         orchestrator.init_project()
         orchestrator.load_config_and_state()
+        image_paths = [str(Path(path).resolve()) for path in args.image if Path(path).is_file()]
+        if len(image_paths) != len(args.image):
+            log_error("Every --image path must point to an existing file.")
+            return
 
         # Save request prompt
         with open(orchestrator.request_path, "w", encoding="utf-8") as f:
@@ -65,6 +70,7 @@ def main():
             "last_qa_level": "senior",
             "developer_promotions": {},
             "quota_exhausted_backends": {},
+            "visual_image_paths": image_paths,
         }
         orchestrator.save_state()
         log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")

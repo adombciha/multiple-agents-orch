@@ -508,6 +508,7 @@ class AgentOrchestrator:
 
     def consult_specialists(self, requirements: str, plan: str, context: str = "", roles: set[str] | None = None) -> str:
         reports = []
+        visual_context = "\n".join(f"[IMAGE: {path}]" for path in self.state.get("visual_image_paths", []))
         for specialist in self.state.get("specialists", []):
             role = specialist.get("role")
             if role not in {"sales", "security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"} or roles is not None and role not in roles:
@@ -515,7 +516,7 @@ class AgentOrchestrator:
             specialist_agent = getattr(self, role, None)
             if specialist_agent:
                 try:
-                    report = specialist_agent.review(requirements, plan, context)
+                    report = specialist_agent.review(requirements, plan, "\n".join(part for part in (context, visual_context) if part))
                     reports.append(f"## {role.title()}\n{report}")
                     continue
                 except Exception as e:
