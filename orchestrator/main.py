@@ -17,6 +17,8 @@ def main():
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
     subparsers.add_parser("status", help="Get current orchestrator status and logs info")
+    approve_parser = subparsers.add_parser("approve", help="Approve a workflow paused for owner review")
+    approve_parser.add_argument("--run", action="store_true", help="Continue the workflow after approval")
 
     reset_parser = subparsers.add_parser("reset", help="Reset the orchestrator state")
     reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
@@ -87,6 +89,19 @@ def main():
                     print(f" - [{status_color}{t['status']}{Colors.ENDC}] {t['id']}: {t['description']}")
             else:
                 print(f"\n{'No tasks parsed yet.'}")
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+    elif args.command == "approve":
+        try:
+            orchestrator.load_config_and_state()
+            if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
+                log_error(f"Cannot approve from state: {orchestrator.state.get('state')}")
+                return
+            orchestrator.state["state"] = "REVIEWING_CODE"
+            orchestrator.save_state()
+            log_success("Owner approval recorded; workflow resumed at REVIEWING_CODE.")
+            if args.run:
+                orchestrator.run_to_end()
         except FileNotFoundError:
             log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
     elif args.command == "reset":
