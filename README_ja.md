@@ -11,23 +11,6 @@
 ```text
                ユーザー入力 (User Input)
                     ↓
-<<<<<<< HEAD
-          [ Python Orchestrator ]
-                    ↓
-          [ PM (要件分析・タスク割り当て) ]
-                    ↓
-          [ Architect (計画・アーキテクチャレビュー) ]
-                    ↓
-       [ RD チーム (Senior / Middle / Junior) ]
-                    ↓
-          [ QA チーム (Senior / Middle / Junior) ]
-                    ↓
-          [ Reviewer (コードレビュー) ]
-           ├── 承認 (APPROVED) → ブランチをマージし Final Report を生成
-           └── 差し戻し (REJECTED) → 修正タスク票 (FIX-TASK) を生成し Developer に返してピンポイント修正
-                    ↓
-          [ Assistant (CHANGELOG.md を自動生成) ]
-=======
            [ Python Orchestrator ]
                     ↓
            [ PM (要件分析・タスク割り当て) ]
@@ -43,7 +26,6 @@
             └── 差し戻し (REJECTED) → 修正タスク票 (FIX-TASK) を生成し Developer に返してピンポイント修正
                      ↓
            [ Assistant (CHANGELOG.md を自動生成) ]
->>>>>>> ai-feature-branch
 ```
 
 ---
@@ -155,10 +137,6 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ### 7. エージェントバックエンドの変更
 ```bash
 python3 orchestrator.py set-backend developer codex
-<<<<<<< HEAD
-python3 orchestrator.py set-backend reviewer agy
-=======
->>>>>>> ai-feature-branch
 ```
 
 ---
@@ -178,8 +156,4 @@ python3 orchestrator.py set-backend reviewer agy
 1. **Git Worktree による分離開発 (ゼロリスク)**：すべての AI 操作は独立したブランチおよびワークツリー（`.ai-company/worktree`）で行われます。
 2. **ピンポイント修正**：QA が失敗した場合、失敗した特定のロジックのみをターゲットに修正を行います。
 3. **多言語インターフェース**：`en`、`zh-TW`、`ja`、および `zh-CN` をサポートします。`config.json` の `"language"` を変更して切り替えます。
-<<<<<<< HEAD
 4. **CHANGELOG 自動生成**：プロジェクト完了時に Assistant が自動的に `CHANGELOG.md` を生成します。
-=======
-4. **CHANGELOG 自動生成**：プロジェクト完了時に Assistant が自動的に `CHANGELOG.md` を生成します。
->>>>>>> ai-feature-branch

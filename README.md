@@ -11,23 +11,6 @@
 ```text
                你輸入需求 (User Input)
                     ↓
-<<<<<<< HEAD
-          [ Python Orchestrator ]
-                    ↓
-          [ PM (負責分析需求、拆解任務) ]
-                    ↓
-          [ Architect (負責計畫與架構審查) ]
-                    ↓
-       [ RD 團隊 (Senior / Middle / Junior) ]
-                    ↓
-          [ QA 團隊 (Senior / Middle / Junior) ]
-                    ↓
-          [ Reviewer (負責代碼審核) ]
-           ├── APPROVED → 合併分支並產生 Final Report
-           └── REJECTED → 產生修復任務單 (FIX-TASK) 交回 Developer 單點修改
-                    ↓
-          [ Assistant (自動生成 CHANGELOG.md) ]
-=======
            [ Python Orchestrator ]
                     ↓
            [ PM (負責分析需求、拆解任務) ]
@@ -43,7 +26,6 @@
             └── REJECTED → 產生修復任務單 (FIX-TASK) 交回 Developer 單點修改
                      ↓
            [ Assistant (自動生成 CHANGELOG.md) ]
->>>>>>> ai-feature-branch
 ```
 
 ---
@@ -155,10 +137,6 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 ### 7. 更換代理人 (Agent) 後端
 ```bash
 python3 orchestrator.py set-backend developer codex
-<<<<<<< HEAD
-python3 orchestrator.py set-backend reviewer agy
-=======
->>>>>>> ai-feature-branch
 ```
 
 ---
@@ -178,8 +156,4 @@ python3 orchestrator.py set-backend reviewer agy
 1. **Git Worktree 隔離開發 (零風險)**：所有 AI 操作都在獨立的分支與工作區中進行 (`.ai-company/worktree`)。
 2. **單點精準修復**：當 QA 驗證失敗時，僅針對具體失敗的邏輯進行修復。
 3. **多國語系支援**：支援 `en`、`zh-TW`、`ja` 和 `zh-CN`。可在 `config.json` 中修改 `"language"` 設定。
-<<<<<<< HEAD
 4. **自動生成 CHANGELOG**：Assistant 代理人在專案完成後會自動生成 `CHANGELOG.md`。
-=======
-4. **自動生成 CHANGELOG**：Assistant 代理人在專案完成後會自動生成 `CHANGELOG.md`。
->>>>>>> ai-feature-branch
