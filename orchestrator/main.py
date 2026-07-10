@@ -64,6 +64,7 @@ def main():
             "last_developer_role": "developer_senior",
             "last_qa_level": "senior",
             "developer_promotions": {},
+            "quota_exhausted_backends": {},
         }
         orchestrator.save_state()
         log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")
@@ -158,6 +159,7 @@ def main():
             orchestrator.state["last_developer_role"] = "developer_senior"
             orchestrator.state["last_qa_level"] = "senior"
             orchestrator.state["developer_promotions"] = {}
+            orchestrator.state["quota_exhausted_backends"] = {}
             orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")

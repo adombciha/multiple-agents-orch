@@ -383,6 +383,22 @@ def test_token_fallback_promotes_manager_only_for_token_errors(initialized_orche
     assert initialized_orchestrator.token_fallback_model("reviewer", RuntimeError("connection failed")) is None
 
 
+def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(initialized_orchestrator, monkeypatch):
+    codex = Mock(side_effect=RuntimeError("429 quota exceeded"))
+    agy = Mock(return_value="agy fallback")
+    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
+
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
+
+    codex.assert_called_once_with("prompt", None, role="reviewer")
+    assert agy.call_args_list == [
+        call("prompt", None, role="reviewer", model="gpt-oss-120b"),
+        call("prompt", None, role="reviewer", model="gpt-oss-120b"),
+    ]
+
+
 def test_rd_and_qa_can_use_different_levels(initialized_orchestrator):
     initialized_orchestrator.state["staffing"] = {
         "rd": {"senior": 1},

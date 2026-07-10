@@ -189,6 +189,23 @@ def token_fallback_model(orchestrator, role: str, error: Exception) -> str | Non
     log_warning(f"[!] Retrying {role} with {tiers[1]} after token-limit failure.")
     return tiers[1]
 
+def quota_exhausted(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "quota", "rate limit", "rate_limit", "too many requests", "429",
+        "insufficient credit", "insufficient funds", "usage limit", "token budget",
+    ))
+
+def backend_available(orchestrator, backend: str) -> bool:
+    exhausted = orchestrator.state.setdefault("quota_exhausted_backends", {})
+    return backend not in exhausted
+
+def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
+    from orchestrator.core.state import log_warning
+    orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = True
+    orchestrator.save_state()
+    log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
+
 def escalate_developer_backend(orchestrator) -> None:
     from orchestrator.core.state import log_warning
     role = orchestrator.state.get("last_developer_role", "developer_senior")

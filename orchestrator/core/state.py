@@ -85,6 +85,7 @@ class AgentOrchestrator:
                 "manager": 0,
                 "qa": 0
             },
+            "quota_exhausted_backends": {},
             "tasks": [],
             "specialists": [],
             "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}}
@@ -259,40 +260,19 @@ class AgentOrchestrator:
         return backends.escalate_developer_backend(self)
 
     def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
-        backend = self.config["backends"].get("manager", "ollama")
-        log_info(f"Requesting Agent 'manager' (Backend: {backend})...")
+        return self.call_agent("manager", prompt, system_prompt)
 
-        system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), "manager")
-
-        if backend == "codex":
-            try:
-                return self.call_codex(prompt, system_prompt, role="manager")
-            except Exception as e:
-                fallback_model = self.token_fallback_model("manager", e)
-                if fallback_model:
-                    try:
-                        return self.call_codex(prompt, system_prompt, role="manager", model=fallback_model)
-                    except Exception as retry_error:
-                        e = retry_error
-                log_warning(f"Codex manager backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role="manager")
-        elif backend == "claude":
-            try:
-                return self.call_claude(prompt, system_prompt, role="manager")
-            except Exception as e:
-                log_warning(f"Claude manager backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role="manager")
-        elif backend == "agy":
-            try:
-                return self.call_agy(prompt, system_prompt, role="manager")
-            except Exception as e:
-                log_warning(f"agy manager backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
-                return self.call_ollama(prompt, system_prompt, role="manager")
-        else:
-            return self.call_ollama(prompt, system_prompt, role="manager")
+    def call_agy_quota_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+        from orchestrator.core import backends
+        if not backends.backend_available(self, "agy"):
+            log_warning("AGY quota exhausted; falling back to Ollama backend.")
+            return self.call_agent_ollama_fallback(role, prompt, system_prompt)
+        try:
+            return self.call_agy(prompt, system_prompt, role=role, model="gpt-oss-120b")
+        except Exception as e:
+            if backends.quota_exhausted(e):
+                backends.mark_backend_quota_exhausted(self, "agy")
+            return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
     def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         if role.startswith("developer") and "[FILE_START:" not in prompt:
@@ -307,32 +287,43 @@ class AgentOrchestrator:
         return self.call_ollama(prompt, system_prompt, role=role)
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+        from orchestrator.core import backends
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
         system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
 
         if backend == "claude":
+            if not backends.backend_available(self, "claude"):
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
             try:
                 return self.call_claude(prompt, system_prompt, role=role)
             except Exception as e:
+                if backends.quota_exhausted(e):
+                    backends.mark_backend_quota_exhausted(self, "claude")
                 log_warning(f"Claude backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "grok":
+            if not backends.backend_available(self, "grok"):
+                return self.call_agy_quota_fallback(role, prompt, system_prompt)
             try:
                 return self.call_grok(prompt, system_prompt, role=role)
             except Exception as e:
+                if backends.quota_exhausted(e):
+                    backends.mark_backend_quota_exhausted(self, "grok")
                 log_warning(f"Grok Build backend failed: {e}")
                 log_warning("Falling back to AGY, then Ollama.")
-                try:
-                    return self.call_agy(prompt, system_prompt, role=role, model="gpt-oss-120b")
-                except Exception:
-                    return self.call_agent_ollama_fallback(role, prompt, system_prompt)
+                return self.call_agy_quota_fallback(role, prompt, system_prompt)
         elif backend == "codex":
+            if not backends.backend_available(self, "codex"):
+                return self.call_agy_quota_fallback(role, prompt, system_prompt)
             try:
                 return self.call_codex(prompt, system_prompt, role=role)
             except Exception as e:
+                if backends.quota_exhausted(e):
+                    backends.mark_backend_quota_exhausted(self, "codex")
+                    return self.call_agy_quota_fallback(role, prompt, system_prompt)
                 fallback_model = self.token_fallback_model(role, e)
                 if fallback_model:
                     try:
@@ -343,9 +334,13 @@ class AgentOrchestrator:
                 log_warning("Falling open to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         elif backend == "agy":
+            if not backends.backend_available(self, "agy"):
+                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
             try:
                 return self.call_agy(prompt, system_prompt, role=role)
             except Exception as e:
+                if backends.quota_exhausted(e):
+                    backends.mark_backend_quota_exhausted(self, "agy")
                 log_warning(f"agy backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
