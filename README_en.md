@@ -60,6 +60,10 @@ The PM may activate the following specialists only when their trigger applies:
 
 RA provides a model review, not verified legal research. Production compliance work should add authoritative-source search and citations.
 
+### This README Acceptance & System Roles
+
+Sales is a system specialist dynamically activated by the PM as needed; the fact that Sales is not involved in the acceptance process of this README modification does not mean that Sales is removed or deactivated. QA is responsible for verifying the Markdown structure, the commands and paths listed in the README, and the safely executable check results; after QA passes, the Reviewer reviews the document correctness, modification scope, and first-time user workflow based on requirements, implementation, and QA results, and decides whether to approve or reject for fixes.
+
 ### Grok agent
 
 Grok is an external CLI agent selected by the orchestrator for domain analysis by the RA (regulatory) and Sales specialists. It is not an additional workflow stage and does not replace PM, Architect, RD, QA, or Reviewer. The PM uses Grok only when a specialist trigger applies, then the result is supplied to the Architect for plan review.
@@ -115,6 +119,9 @@ After execution, the tool creates an `.ai-company/` folder containing:
 ├── developer_output.md     # Developer's logs
 ├── reviewer_output.md      # Reviewer's feedback
 ├── test_results.txt        # Output of test commands
+├── qa_report.md            # QA verification report
+├── human_report.md         # Report while waiting for owner review
+├── specialist_reviews.md   # Dynamic-specialist consultation results
 └── final_report.md         # Final summary report
 
 # Project Root
@@ -124,6 +131,8 @@ After execution, the tool creates an `.ai-company/` folder containing:
 ---
 
 ## Quick Start Commands
+
+The following main examples use the wrapper entry point `python3 orchestrator.py` in the project root. The module entry point `python3 -m orchestrator.main <command>` is equivalent and can be used as an alternative if python module execution is preferred; please choose one and stick with it throughout the workflow.
 
 ### 1. Initialize Environment
 ```bash
@@ -160,6 +169,20 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 python3 orchestrator.py set-backend developer codex
 python3 orchestrator.py set-backend reviewer agy
 ```
+
+### 8. Approve a Paused Workflow
+```bash
+python3 orchestrator.py approve --run
+```
+
+`approve` applies only when the current state is `WAITING_FOR_OWNER`; without `--run`, it resumes the state without continuing execution.
+
+### 9. Basic Verification
+```bash
+python3 -m pytest -q
+```
+
+`run`, `step`, and `approve --run` may call external AI CLIs, modify Git worktrees, or incur charges; without external services configured, safely verify first with `--help`, `verify_alignment.py`, and the test command above.
 
 ---
 

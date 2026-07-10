@@ -19,6 +19,9 @@ def main():
     subparsers.add_parser("status", help="Get current orchestrator status and logs info")
     approve_parser = subparsers.add_parser("approve", help="Approve a workflow paused for owner review")
     approve_parser.add_argument("--run", action="store_true", help="Continue the workflow after approval")
+    review_parser = subparsers.add_parser("review", help="Decide a paused human review")
+    review_parser.add_argument("decision", choices=["pass", "revise", "reject"])
+    review_parser.add_argument("--run", action="store_true", help="Continue the workflow after the decision")
 
     reset_parser = subparsers.add_parser("reset", help="Reset the orchestrator state")
     reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
@@ -97,13 +100,43 @@ def main():
             if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
                 log_error(f"Cannot approve from state: {orchestrator.state.get('state')}")
                 return
-            resume_state = orchestrator.state.get("resume_state", "REVIEWING_CODE")
+            resume_state = orchestrator.state.get("pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE"))
             orchestrator.state["state"] = resume_state
             orchestrator.state.pop("human_review_source", None)
             orchestrator.state.pop("resume_state", None)
             orchestrator.save_state()
             log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
             if args.run:
+                orchestrator.run_to_end()
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+    elif args.command == "review":
+        try:
+            orchestrator.load_config_and_state()
+            if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
+                log_error(f"Cannot review from state: {orchestrator.state.get('state')}")
+                return
+            decision = args.decision
+            if decision == "pass":
+                next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
+            elif decision == "revise":
+                next_state = "IMPLEMENTING"
+                n = orchestrator.state.get("code_revisions", 0) + 1
+                orchestrator.state["code_revisions"] = n
+                orchestrator.state.setdefault("tasks", []).append({
+                    "id": f"HUMAN-REVIEW-{n}",
+                    "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
+                    "status": "pending",
+                    **orchestrator.fix_task_levels(),
+                })
+            else:
+                next_state = "FAILED"
+            orchestrator.state["state"] = next_state
+            for key in ("human_review_source", "resume_state", "pass_state", "human_review_details"):
+                orchestrator.state.pop(key, None)
+            orchestrator.save_state()
+            log_success(f"Human review '{decision}' recorded; workflow moved to {next_state}.")
+            if args.run and decision != "reject":
                 orchestrator.run_to_end()
         except FileNotFoundError:
             log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")

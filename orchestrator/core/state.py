@@ -159,7 +159,7 @@ class AgentOrchestrator:
         with open(self.state_path, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=2)
 
-    def pause_for_human_review(self, source: str, details: str, resume_state: str):
+    def pause_for_human_review(self, source: str, details: str, resume_state: str, pass_state: str):
         requirements = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
         chinese = any("\u4e00" <= char <= "\u9fff" for char in requirements)
         title = "人工審核報告" if chinese else "Human Review Report"
@@ -167,7 +167,9 @@ class AgentOrchestrator:
         next_step = "確認後執行" if chinese else "After review, run"
         report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}:\n\n```bash\npython3 orchestrator.py approve --run\n```\n"
         self.human_report_path.write_text(report, encoding="utf-8")
-        self.state.update({"state": "WAITING_FOR_OWNER", "human_review_source": source, "resume_state": resume_state})
+        self.state.update({"state": "WAITING_FOR_OWNER", "human_review_source": source,
+                           "resume_state": resume_state, "pass_state": pass_state,
+                           "human_review_details": details})
         self.save_state()
 
     def get_windows_host_ip(self) -> str:

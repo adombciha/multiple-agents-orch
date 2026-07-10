@@ -60,6 +60,10 @@ PM 仅在适用其触发条件时启用以下专家：
 
 RA 提供的是模型审查，而非经证实的法律研究。生产环境的合规工作应增加权威来源的检索与引用。
 
+### 本次 README 验收与系统角色
+
+Sales 是由 PM 视需求动态启用的系统专家；本次 README 修改的验收流程不安排 Sales 参与，并不代表移除或停用 Sales。QA 负责验证 Markdown 结构、README 所列命令与路径，以及安全可执行的检查结果；QA 通过后，Reviewer 依需求、实现与 QA 结果审查文档正确性、修改范围和首次用户流程，并决定核准或退回修正。
+
 ### Grok agent
 
 Grok 是由协调器选择的外部 CLI agent，负责 RA（法规）和 Sales（业务）专家的领域分析；它不是额外的流程阶段，也不会取代 PM、Architect、RD、QA 或 Reviewer。PM 仅在满足专家触发条件时使用 Grok，然后将分析结果交给 Architect 进行计划审查。
@@ -115,6 +119,9 @@ graph LR
 ├── developer_output.md     # Developer 的日志与输出
 ├── reviewer_output.md      # Reviewer 的审查意见
 ├── test_results.txt        # 测试指令执行的输出结果
+├── qa_report.md            # QA 的验证报告
+├── human_report.md         # 等待所有者审查时的报告
+├── specialist_reviews.md   # 动态专家的咨询结果
 └── final_report.md         # 项目完成后的总结报告
 
 # 项目根目录
@@ -124,6 +131,8 @@ graph LR
 ---
 
 ## 快速上手指令
+
+以下主要示例使用项目根目录的包装入口 `python3 orchestrator.py`。模块入口 `python3 -m orchestrator.main <command>` 与其等效，可在偏好 Python 模块执行方式时替代使用；请在同一流程中择一使用。
 
 ### 1. 初始化环境
 ```bash
@@ -160,6 +169,20 @@ python3 orchestrator.py reset --state DEVELOPING_PLAN
 python3 orchestrator.py set-backend developer codex
 python3 orchestrator.py set-backend reviewer agy
 ```
+
+### 8. 批准暂停的工作流程
+```bash
+python3 orchestrator.py approve --run
+```
+
+`approve` 仅适用于当前状态为 `WAITING_FOR_OWNER` 的任务；省略 `--run` 时只恢复状态，不会继续执行。
+
+### 9. 基本验证
+```bash
+python3 -m pytest -q
+```
+
+`run`、`step` 和 `approve --run` 可能调用外部 AI CLI、修改 Git worktree 或产生费用；未配置外部服务时，请先使用 `--help`、`verify_alignment.py` 和上述测试命令进行安全验证。
 
 ---
 
