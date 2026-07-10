@@ -76,6 +76,21 @@ DEFAULT_CONFIG = {
         "ra": ["grok-4.5"],
         "sales": ["grok-4.5"]
     },
+    "role_model_routes": {
+        "manager": [["codex", "gpt-5.6-sol"], ["agy", "gemini-3.5-flash"], ["ollama", "qwen3:8b"]],
+        "architect": [["ollama", "deepseek-r1:latest"], ["ollama", "qwen3:8b"], ["ollama", "qwen2.5-coder:14b"]],
+        "developer_senior": [["codex", "gpt-5.6-terra"], ["ollama", "qwen2.5-coder:14b"], ["ollama", "deepseek-coder-v2:latest"]],
+        "developer_middle": [["codex", "gpt-5.6-luna"], ["ollama", "qwen2.5-coder:14b"], ["ollama", "codegemma:7b"]],
+        "developer_junior": [["ollama", "deepseek-r1:latest"], ["ollama", "codegemma:7b"], ["ollama", "qwen2.5-coder:7b"]],
+        "qa_senior": [["ollama", "deepseek-r1:latest"], ["ollama", "qwen2.5-coder:14b"], ["ollama", "qwen2.5-coder:7b"]],
+        "qa_middle": [["ollama", "qwen2.5-coder:14b"], ["ollama", "deepseek-coder-v2:latest"], ["ollama", "gemma4:latest"]],
+        "qa_junior": [["ollama", "gemma4:latest"], ["ollama", "codegemma:7b"], ["ollama", "qwen2.5-coder:7b"]],
+        "reviewer": [["codex", "gpt-5.6-sol"], ["ollama", "deepseek-r1:latest"], ["ollama", "qwen2.5-coder:14b"]],
+        "security": [["ollama", "deepseek-r1:latest"], ["ollama", "phi4-reasoning:14b"], ["ollama", "qwen2.5-coder:14b"]],
+        "ra": [["grok", "grok-4.5"], ["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
+        "sales": [["grok", "grok-4.5"], ["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
+        "assistant": [["ollama", "gemma4:latest"], ["ollama", "qwen3:8b"], ["ollama", "qwen2.5-coder:7b"]],
+    },
     "staffing_limits": {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
         "qa": {"senior": 1, "middle": 2, "junior": 3}

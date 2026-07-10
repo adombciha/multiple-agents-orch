@@ -42,13 +42,14 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | `ollama_keep_alive` | Ollama model 在回覆後保留於記憶體的時間；預設 `0`，每次回覆後立即卸載以釋放 VRAM。 |
 | `test_command`、`max_revisions` | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。 |
 | `backends` | 分配給各 role 的 backend。 |
-| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 清單及每個 role 的 model/backend 路由。 |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | legacy model 清單及每個 role 的主要 model/backend 路由。 |
+| `role_model_routes` | 每個既有 role 的跨 backend model 回退鏈；依表格順序嘗試，quota 耗盡的 backend 會在本次 workflow 跳過。 |
 | `use_ponytail`、`use_worktree` | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。 |
 | `backend_escalation_path`、`staffing_limits` | backend 升級路徑及 RD/QA staffing 限制。 |
 
 ## 建議角色與模型路由
 
-下表是角色與模型路由的目標提案。PM 只在任務確實需要時才 invoke specialist；模型回退會在主要模型不可用時依序嘗試。完整的 role-specific 回退機制與新增 specialists 將於後續版本實作。
+下表是既有角色的實作路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡的 backend 會在本次 workflow 跳過。DevOps、UI/UX、FAE 和 Integration 是後續才會新增的 specialist，不在目前 runtime 範圍。
 
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
@@ -70,6 +71,8 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | FAE | 客戶環境、SDK、設備、驗收 | `qwen3:8b` | `gemma4:latest` | — |
 | Integration | 外部 API、設備協定、第三方平台 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
 | Assistant | changelog、摘要、文件整理 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
+
+`DevOps`、`UI/UX`、`UI/UX Visual Review`、`FAE` 與 `Integration` 為規劃中的 specialist；其餘列已由 `role_model_routes` 實作。
 
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
 

@@ -247,9 +247,9 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.call_agy(self, prompt, system_prompt, role, model)
 
-    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_grok(self, prompt, system_prompt, role)
+        return backends.call_grok(self, prompt, system_prompt, role, model)
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
         from orchestrator.core import backends
@@ -274,7 +274,7 @@ class AgentOrchestrator:
                 backends.mark_backend_quota_exhausted(self, "agy")
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None, model: str | None = None) -> str:
         if role.startswith("developer") and "[FILE_START:" not in prompt:
             prompt += (
                 "\n\nCRITICAL: You do not have access to terminal tools. "
@@ -285,14 +285,45 @@ class AgentOrchestrator:
                 "Any modifications outside this format will be ignored. Write only complete file contents inside the blocks."
             )
         try:
-            return self.call_ollama(prompt, system_prompt, role=role)
+            if model is None:
+                return self.call_ollama(prompt, system_prompt, role=role)
+            return self.call_ollama(prompt, system_prompt, role=role, model=model)
         except Exception:
-            if role.startswith("qa"):
+            if role.startswith("qa") and model is None:
                 return self.call_ollama(
                     prompt, system_prompt, role=role,
                     model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:latest"),
                 )
             raise
+
+    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None) -> str | None:
+        from orchestrator.core import backends
+        routes = self.config.get("role_model_routes", {}).get(role, [])
+        if not routes:
+            return None
+        errors = []
+        for backend, model in routes:
+            if not backends.backend_available(self, backend):
+                continue
+            try:
+                log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
+                if backend == "ollama":
+                    return self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model)
+                if backend == "codex":
+                    return self.call_codex(prompt, system_prompt, role=role, model=model)
+                if backend == "agy":
+                    return self.call_agy(prompt, system_prompt, role=role, model=model)
+                if backend == "grok":
+                    return self.call_grok(prompt, system_prompt, role=role, model=model)
+                if backend == "claude":
+                    return self.call_claude(prompt, system_prompt, role=role)
+                raise ValueError(f"Unsupported backend in route: {backend}")
+            except Exception as error:
+                errors.append(f"{backend}/{model}: {error}")
+                if backends.quota_exhausted(error):
+                    backends.mark_backend_quota_exhausted(self, backend)
+                log_warning(f"{backend}/{model} failed; trying next route.")
+        raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         from orchestrator.core import backends
@@ -300,6 +331,10 @@ class AgentOrchestrator:
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
         system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
+
+        routed = self.call_role_model_routes(role, prompt, system_prompt)
+        if routed is not None:
+            return routed
 
         if backend == "claude":
             if not backends.backend_available(self, "claude"):

@@ -167,10 +167,10 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
         raise RuntimeError(f"agy CLI failed with code {result.returncode}:\n{result.stderr}")
     return result.stdout
 
-def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
     from orchestrator.core.state import log_info
     full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-    model = orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
+    model = model or orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
     cmd = ["grok", "-p", full_prompt, "-m", model]
     log_info(f"Running Grok Build: grok -p ... -m {model}")
     result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,

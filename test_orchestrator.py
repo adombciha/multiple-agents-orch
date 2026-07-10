@@ -339,31 +339,25 @@ def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator)
 
 
 def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
-    codex = Mock(side_effect=[RuntimeError("maximum context length"), RuntimeError("unavailable")])
-    ollama = Mock(return_value="fallback")
+    codex = Mock(side_effect=RuntimeError("maximum context length"))
+    agy = Mock(return_value="fallback")
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
-    monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
 
     assert initialized_orchestrator.call_manager("prompt") == "fallback"
-    assert codex.call_args_list == [
-        call("prompt", None, role="manager"),
-        call("prompt", None, role="manager", model="gpt-5.6-terra"),
-    ]
-    ollama.assert_called_once_with("prompt", None, role="manager")
+    codex.assert_called_once_with("prompt", None, role="manager", model="gpt-5.6-sol")
+    agy.assert_called_once_with("prompt", None, role="manager", model="gemini-3.5-flash")
 
 
 def test_reviewer_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
-    codex = Mock(side_effect=[RuntimeError("maximum context length"), RuntimeError("unavailable")])
+    codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
-    assert codex.call_args_list == [
-        call("prompt", None, role="reviewer"),
-        call("prompt", None, role="reviewer", model="gpt-5.6-terra"),
-    ]
-    ollama.assert_called_once_with("reviewer", "prompt", None)
+    codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
+    ollama.assert_called_once_with("reviewer", "prompt", None, model="deepseek-r1:latest")
 
 
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
@@ -394,7 +388,7 @@ def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
     assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qwen response"
-    ollama.assert_called_once_with("prompt", None, role="qa_senior")
+    ollama.assert_called_once_with("prompt", None, role="qa_senior", model="deepseek-r1:latest")
 
 
 def test_qa_ollama_falls_back_to_qwen(initialized_orchestrator, monkeypatch):
@@ -413,15 +407,15 @@ def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(initialized_
     agy = Mock(return_value="agy fallback")
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
-
-    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
-    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
-
-    codex.assert_called_once_with("prompt", None, role="reviewer")
-    assert agy.call_args_list == [
-        call("prompt", None, role="reviewer", model="gpt-oss-120b"),
-        call("prompt", None, role="reviewer", model="gpt-oss-120b"),
+    initialized_orchestrator.config["role_model_routes"]["reviewer"] = [
+        ["codex", "gpt-5.6-sol"], ["agy", "gpt-oss-120b"]
     ]
+
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
+
+    codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
+    assert agy.call_args_list == [call("prompt", None, role="reviewer", model="gpt-oss-120b")] * 2
 
 
 def test_rd_and_qa_can_use_different_levels(initialized_orchestrator):
