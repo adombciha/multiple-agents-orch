@@ -12,7 +12,7 @@ class ArchitectAgent(BaseAgent):
             plan = f.read()
         specialist_notes = self.orchestrator.consult_specialists(requirements, plan)
 
-        prompt = f"""Review the implementation plan against the requirements.\n\nRequirements:\n{requirements}\n\nImplementation Plan:\n{plan}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nCheck for architectural issues, gaps in requirements, and safety.\nIf acceptable, start your response with 'APPROVED'.\nIf issues exist, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
+        prompt = f"""Review the implementation plan against the requirements.\n\nRequirements:\n{requirements}\n\nImplementation Plan:\n{plan}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nCheck for architectural issues, gaps in requirements, and safety.\n\nThe first non-empty line must be exactly one of:\nPLAN_STATUS: APPROVED\nPLAN_STATUS: REJECTED\nThen provide concise feedback."""
 
         system_prompt = "You are a Senior Software Architect. Review the implementation plan."
         review = self.call_agent("architect", prompt, system_prompt)
@@ -21,7 +21,8 @@ class ArchitectAgent(BaseAgent):
             f.write(review)
         log_info(f"Architect response saved. Preview:\n{review[:200]}...")
 
-        is_approved = review.strip().upper().replace("*", "").startswith("APPROVED")
+        first_line = next((line.strip().upper().strip("[]*") for line in review.splitlines() if line.strip()), "")
+        is_approved = first_line in {"PLAN_STATUS: APPROVED", "APPROVED"}
 
         if is_approved:
             log_success("Implementation plan APPROVED by Architect!")

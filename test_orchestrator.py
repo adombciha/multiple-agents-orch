@@ -352,6 +352,18 @@ def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator)
     assert initialized_orchestrator.get_active_model_for_role("manager", "ollama") == "gemma4:latest"
 
 
+def test_developer_plan_does_not_require_file_blocks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "DEVELOPING_PLAN"
+    initialized_orchestrator.config["role_model_routes"]["developer_senior"] = [["grok", "grok-4.5"]]
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_grok",
+        Mock(return_value="## Target Files\n- app.py\n\n## Implementation Steps\n- change it\n\n## Verification\n- pytest"),
+    )
+
+    assert "## Target Files" in initialized_orchestrator.call_agent("developer_senior", "prompt")
+
+
 def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     agy = Mock(return_value="fallback")
@@ -637,7 +649,7 @@ def test_step_dispatches_known_states(initialized_orchestrator, monkeypatch, sta
 def test_step_reviewing_plan_approved_moves_to_implementing(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="APPROVED\nok"))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="[APPROVED]\nok"))
 
     initialized_orchestrator.step_reviewing_plan()
 

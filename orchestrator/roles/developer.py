@@ -20,6 +20,7 @@ class DeveloperAgent(BaseAgent):
             f"2. Specific changes or logic details for each file.\n"
             f"3. Sequence of work (action items).\n"
             f"4. Testing strategy.\n\n"
+            f"Use these exact Markdown headings: '## Target Files', '## Implementation Steps', and '## Verification'.\n\n"
             f"Write ONLY the Markdown implementation plan. Do not include any conversational preamble or postscript."
         )
 
@@ -30,7 +31,7 @@ class DeveloperAgent(BaseAgent):
                 f"Your previous implementation plan was REJECTED by the reviewer with feedback:\n\n"
                 f"{feedback}\n\n"
                 f"Please revise the implementation plan to address all reviewer comments.\n"
-                f"Write the complete updated implementation plan in Markdown. Only output the plan content."
+                f"Write the complete updated implementation plan in Markdown using these exact headings: '## Target Files', '## Implementation Steps', and '## Verification'. Only output the plan content."
             )
 
         system_prompt = "You are a Lead Software Developer. Generate a clear step-by-step implementation plan."
