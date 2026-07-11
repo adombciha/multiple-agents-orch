@@ -324,7 +324,7 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
 def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
     assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
     assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
-    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "deepseek-r1:7b"
+    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "deepseek-coder:6.7b"
     assert initialized_orchestrator.get_active_model_for_role("architect", "ollama") == "deepseek-r1:7b"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"

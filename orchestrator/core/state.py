@@ -531,7 +531,8 @@ class AgentOrchestrator:
         return {"rd_level": level, "qa_level": qa_level if qa_level in {"junior", "middle", "senior"} else level}
 
     def consult_specialists(self, requirements: str, plan: str, context: str = "", roles: set[str] | None = None) -> str:
-        scope = f"{requirements}\n{plan}".lower()
+        request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
+        scope = f"{request}\n{requirements}\n{plan}".lower()
         if "readme" in scope and any(marker in scope for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改")):
             log_info("README-only task; skipping specialist consultation.")
             return ""
