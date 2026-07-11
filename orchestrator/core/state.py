@@ -330,6 +330,10 @@ class AgentOrchestrator:
             return None
         errors = []
         for backend, model in routes:
+            route = f"{backend}/{model}"
+            if route in self.state.setdefault("failed_model_routes", []):
+                log_info(f"Skipping unavailable model route: {route}")
+                continue
             if not backends.backend_available(self, backend):
                 continue
             try:
@@ -347,6 +351,9 @@ class AgentOrchestrator:
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
+                if backend == "ollama":
+                    self.state["failed_model_routes"].append(route)
+                    self.save_state()
                 if backends.quota_exhausted(error):
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed; trying next route.")

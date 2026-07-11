@@ -34,7 +34,7 @@ class DeveloperAgent(BaseAgent):
             )
 
         system_prompt = "You are a Lead Software Developer. Generate a clear step-by-step implementation plan."
-        plan = self.call_agent("developer", prompt, system_prompt)
+        plan = self.call_agent("developer_senior", prompt, system_prompt)
 
         with open(self.orchestrator.plan_path, "w", encoding="utf-8") as f:
             f.write(plan)
@@ -72,8 +72,14 @@ class DeveloperAgent(BaseAgent):
             tasks = parsed if isinstance(parsed, list) else parsed["tasks"]
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a JSON array")
+            docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改"))
+            if docs_only:
+                request = self.orchestrator.request_path.read_text(encoding="utf-8")
+                tasks = [{"id": "DOCS-README", "description": request, "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}]
+                self.orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
             if isinstance(parsed, dict):
-                self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
+                if not docs_only:
+                    self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
                 specialists = parsed.get("specialists", [])
                 self.orchestrator.state["specialists"] = [
                     item for item in specialists

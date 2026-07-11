@@ -101,6 +101,7 @@ def main():
             "last_qa_level": "senior",
             "developer_promotions": {},
             "quota_exhausted_backends": {},
+            "failed_model_routes": [],
             "visual_image_paths": image_paths,
         }
         orchestrator.save_state()
