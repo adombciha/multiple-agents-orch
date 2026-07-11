@@ -2,8 +2,18 @@ import os
 import sys
 import argparse
 import json
+from urllib.error import URLError
+from urllib.request import urlopen
 from pathlib import Path
 from orchestrator.core.state import AgentOrchestrator, Colors, log_success, log_info, log_error, log_header
+
+
+def ollama_available(url: str) -> bool:
+    try:
+        with urlopen(f"{url.rstrip('/')}/api/tags", timeout=2):
+            return True
+    except (OSError, URLError):
+        return False
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-Agent Orchestrator CLI")
@@ -41,6 +51,20 @@ def main():
 
     if args.command == "init":
         orchestrator.init_project()
+        orchestrator.load_config_and_state()
+        local_url = orchestrator.config["ollama_url"]
+        if ollama_available(local_url):
+            log_success(f"Ollama is available at {local_url}")
+        else:
+            windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
+            if ollama_available(windows_url):
+                log_info(f"Windows Ollama detected at {windows_url}")
+                if sys.stdin.isatty() and input("Use this Windows Ollama endpoint? [Y/n] ").strip().lower() not in {"n", "no"}:
+                    orchestrator.config["ollama_url"] = windows_url
+                    orchestrator.config_path.write_text(json.dumps(orchestrator.config, indent=2), encoding="utf-8")
+                    log_success(f"Ollama API URL set to {windows_url}")
+            else:
+                log_error("No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task.")
     elif args.command == "start":
         orchestrator.init_project()
         orchestrator.load_config_and_state()
