@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 import json
 import re
+from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent
 
 class DeveloperAgent(BaseAgent):
@@ -136,15 +137,19 @@ class DeveloperAgent(BaseAgent):
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()
 
-    def parse_and_write_files(self, text: str) -> list[str]:
+    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
+        allowed = {str(Path(path)) for path in allowed_files} if allowed_files is not None else None
 
         written_files = []
         for filepath_str, content in matches:
             filepath_str = filepath_str.strip()
             content = content.strip()
+            if allowed is not None and str(Path(filepath_str)) not in allowed:
+                log_warning(f"Skipping file not declared by task contract: {filepath_str}")
+                continue
 
             # Strip potential leading/trailing markdown code block wrappers
             if content.startswith("```"):
@@ -268,7 +273,7 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.state["last_developer_role"] = agent_role
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                written = self.parse_and_write_files(dev_output)
+                written = self.parse_and_write_files(dev_output, task.get("target_files"))
                 if written:
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:

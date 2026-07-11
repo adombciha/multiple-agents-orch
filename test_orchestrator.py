@@ -400,6 +400,16 @@ def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator
     assert initialized_orchestrator.state["human_review_source"] == "Developer"
 
 
+def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator):
+    output = "[FILE_START: allowed.py]\nok\n[FILE_END: allowed.py]\n[FILE_START: test_orchestrator.py]\nwrong\n[FILE_END: test_orchestrator.py]"
+
+    written = initialized_orchestrator.parse_and_write_files(output, ["allowed.py"])
+
+    assert written == ["allowed.py"]
+    assert (initialized_orchestrator.workspace / "allowed.py").read_text(encoding="utf-8") == "ok"
+    assert not (initialized_orchestrator.workspace / "test_orchestrator.py").exists()
+
+
 def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(initialized_orchestrator, "step", Mock(side_effect=RuntimeError("unexpected failure")))
 

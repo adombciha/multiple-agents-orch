@@ -614,8 +614,8 @@ class AgentOrchestrator:
         self.save_state()
         log_success(f"Research report saved to {self.human_report_path}")
 
-    def parse_and_write_files(self, text: str) -> list[str]:
-        return self.developer.parse_and_write_files(text)
+    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None) -> list[str]:
+        return self.developer.parse_and_write_files(text, allowed_files)
 
     # State Dispatching
     def step(self):
