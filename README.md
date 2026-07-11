@@ -49,32 +49,34 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 ## 建議角色與模型路由
 
-下表是已實作角色與 specialist 的路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡的 backend 會在本次 workflow 跳過。
+下表是依目前本機實測結果整理的目標路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡或本 run 失敗的 route 會被跳過。實際啟用路由以 `orchestrator/core/config.py` 為準。
 
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
 | PM | 每次任務 | `gpt-5.6-sol` | `gemini-3.5-flash` | `qwen3:8b` |
 | Architect | 每次任務 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
-| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-terra` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
-| RD Middle | 一般功能實作 | `gpt-5.6-luna` | `qwen2.5-coder:14b` | `codegemma:7b` |
-| RD Junior | 重複、明確、小修改 | `codegemma:7b` | `qwen2.5-coder:7b` | `gemma4:latest` |
+| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-terra` | `gpt-oss:20b` | `granite4.1:8b` |
+| RD Middle | 一般功能實作 | `gpt-5.6-luna` | `granite4.1:8b` | `codegemma:7b` |
+| RD Junior | 重複、明確、小修改 | `codegemma:7b` | `granite4.1:8b` | `qwen2.5-coder:7b` |
 | QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
 | Reviewer | 最終程式碼審查 | `gpt-5.6-sol` | `deepseek-coder:6.7b` | `gemma4:latest` |
 | Security | auth、secrets、PII、payment、攻擊面 | `deepseek-coder:6.7b` | `gemma4:latest` | `qwen2.5-coder:7b` |
-| DevOps | CI/CD、Docker、release、rollback、pipeline | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` | `qwen2.5-coder:7b` |
+| DevOps | CI/CD、Docker、release、rollback、pipeline | `granite4.1:8b` | `qwen2.5-coder:7b` | `gemma4:latest` |
 | RA | 法規、合規、產業規範 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
 | Sales | 競品、商業需求、客戶價值 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
-| UI/UX | UI、流程、a11y、wireframe | `qwen3:8b` | `gemma4:latest` | — |
-| UI/UX Visual Review | 有 screenshot／mockup 時 | `llama3.2-vision:latest` | `gemma4:latest` | — |
-| FAE | 客戶環境、SDK、設備、驗收 | `qwen3:8b` | `gemma4:latest` | — |
-| Integration | 外部 API、設備協定、第三方平台 | `deepseek-coder:6.7b` | `qwen3:8b` | `gemma4:latest` |
-| Assistant | changelog、摘要、文件整理 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
+| UI/UX | UI、流程、a11y、wireframe | `granite4.1:8b` | `gemma4:latest` | — |
+| UI/UX Visual Review | 有 screenshot／mockup 時 | `qwen3-vl:4b` | — | — |
+| FAE | 客戶環境、SDK、設備、驗收 | `granite4.1:8b` | `gemma4:latest` | — |
+| Integration | 外部 API、設備協定、第三方平台 | `deepseek-coder:6.7b` | `granite4.1:8b` | `gemma4:latest` |
+| Assistant | changelog、摘要、文件整理 | `granite4.1:8b` | `gemma4:latest` | `ministral-3:3b` |
 
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
 
-使用 `start` 的 `--image` 可提供 screenshot 或 mockup（可重複指定），UI/UX Visual Review 會將它送至 Ollama vision API：
+本機驗證顯示 `gpt-oss:20b` 能穩定遵守檔案 block 協議，但較慢，適合 Senior/Middle 的高品質 fallback；`codegemma:7b` 是 Junior 寫檔主力。`qwen3.6:latest` 能回覆但耗時較長，保留作手動高價值審核；`granite4.1-guardian:8b` 僅適合作為 PHI／安全分類 gate，不作一般聊天或程式角色。`medgemma1.5:4b` 可作 PCR、生醫檢測與 HIPAA 相關的醫療語境輔助研究，不取代 RA、Security 或真人法規審核。
+
+使用 `start` 的 `--image` 可提供 screenshot 或 mockup（可重複指定），UI/UX Visual Review 會將它送至 Ollama vision API。圖片任務必須使用 vision-capable model，不可降級到純文字 fallback：
 
 ```bash
 python3 orchestrator.py start "Review the settings screen" --image /absolute/path/to/screenshot.png
