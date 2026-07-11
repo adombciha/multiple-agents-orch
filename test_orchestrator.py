@@ -421,6 +421,20 @@ def test_file_blocks_cannot_remove_existing_markdown_headings(initialized_orches
     assert readme.read_text(encoding="utf-8") == "# Install\n\n## Workflow\n\nOriginal\n"
 
 
+def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="[FILE_START: README.md]\n# Replacement\n[FILE_END: README.md]"))
+    (initialized_orchestrator.workspace / "README.md").write_text("# Existing\n\n## Keep\n", encoding="utf-8")
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+
+
 def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(initialized_orchestrator, "step", Mock(side_effect=RuntimeError("unexpected failure")))
 

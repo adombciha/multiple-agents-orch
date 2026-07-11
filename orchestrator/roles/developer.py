@@ -284,6 +284,13 @@ class DeveloperAgent(BaseAgent):
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:
                     log_warning("No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks.")
+                    self.orchestrator.pause_for_human_review(
+                        "Developer",
+                        f"Task {task['id']} produced no permitted file changes.",
+                        "IMPLEMENTING",
+                        "IMPLEMENTING",
+                    )
+                    return
 
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")
             task["status"] = "completed"
