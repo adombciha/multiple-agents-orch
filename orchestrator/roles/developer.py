@@ -75,7 +75,11 @@ class DeveloperAgent(BaseAgent):
             docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改"))
             if docs_only:
                 request = self.orchestrator.request_path.read_text(encoding="utf-8")
-                tasks = [{"id": "DOCS-README", "description": request, "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}]
+                files = [name for name in ("README.md", "README_en.md", "README_ja.md", "README_zh-CN.md") if name in request]
+                tasks = [
+                    {"id": f"DOCS-{index}", "description": f"Update only {name} according to this request:\n{request}", "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}
+                    for index, name in enumerate(files, 1)
+                ]
                 self.orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
             if isinstance(parsed, dict):
                 if not docs_only:
