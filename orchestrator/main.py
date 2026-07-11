@@ -15,6 +15,21 @@ def ollama_available(url: str) -> bool:
     except (OSError, URLError):
         return False
 
+def configure_ollama(orchestrator: AgentOrchestrator):
+    local_url = orchestrator.config["ollama_url"]
+    if ollama_available(local_url):
+        log_success(f"Ollama is available at {local_url}")
+        return
+    windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
+    if ollama_available(windows_url):
+        log_info(f"Windows Ollama detected at {windows_url}")
+        if not sys.stdin.isatty() or input("Use this Windows Ollama endpoint? [Y/n] ").strip().lower() not in {"n", "no"}:
+            orchestrator.config["ollama_url"] = windows_url
+            orchestrator.config_path.write_text(json.dumps(orchestrator.config, indent=2), encoding="utf-8")
+            log_success(f"Ollama API URL set to {windows_url}")
+    else:
+        log_error("No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task.")
+
 def main():
     parser = argparse.ArgumentParser(description="Multi-Agent Orchestrator CLI")
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
@@ -53,22 +68,12 @@ def main():
     if args.command == "init":
         orchestrator.init_project()
         orchestrator.load_config_and_state()
-        local_url = orchestrator.config["ollama_url"]
-        if ollama_available(local_url):
-            log_success(f"Ollama is available at {local_url}")
-        else:
-            windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
-            if ollama_available(windows_url):
-                log_info(f"Windows Ollama detected at {windows_url}")
-                if sys.stdin.isatty() and input("Use this Windows Ollama endpoint? [Y/n] ").strip().lower() not in {"n", "no"}:
-                    orchestrator.config["ollama_url"] = windows_url
-                    orchestrator.config_path.write_text(json.dumps(orchestrator.config, indent=2), encoding="utf-8")
-                    log_success(f"Ollama API URL set to {windows_url}")
-            else:
-                log_error("No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task.")
+        configure_ollama(orchestrator)
     elif args.command == "start":
+        orchestrator.clear_run_artifacts()
         orchestrator.init_project()
         orchestrator.load_config_and_state()
+        configure_ollama(orchestrator)
         allowed_image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
         max_image_bytes = orchestrator.config.get("max_visual_image_bytes", 10 * 1024 * 1024)
         image_paths = []

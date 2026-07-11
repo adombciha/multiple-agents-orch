@@ -3,6 +3,8 @@ import os
 import sys
 import json
 import subprocess
+import shutil
+import re
 from copy import deepcopy
 from pathlib import Path
 import requests
@@ -38,7 +40,6 @@ def log_header(msg: str):
 class AgentOrchestrator:
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.ai_dir = workspace / ".ai-company"
 
         # Check if we are in a git repository
         try:
@@ -57,6 +58,11 @@ class AgentOrchestrator:
                     self.base_branch = "HEAD"
             except Exception:
                 self.base_branch = "HEAD"
+        if self.has_git:
+            run_name = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{workspace.name}-{self.base_branch}").strip("-")
+            self.ai_dir = workspace / f".ai-company-{run_name}"
+        else:
+            self.ai_dir = workspace / ".ai-company"
         self.config_path = self.ai_dir / "config.json"
         self.state_path = self.ai_dir / "state.json"
 
@@ -120,6 +126,14 @@ class AgentOrchestrator:
 
     def init_project(self):
         """Initializes the .ai-company folder and configuration files."""
+        if self.state_path.exists():
+            try:
+                existing_state = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if existing_state.get("state") in {"COMPLETED", "FAILED"}:
+                    log_info("Clearing completed or failed workflow artifacts.")
+                    self.clear_run_artifacts()
+            except (OSError, json.JSONDecodeError):
+                self.clear_run_artifacts()
         self.ai_dir.mkdir(exist_ok=True)
 
         # Write config if not exists
@@ -141,6 +155,22 @@ class AgentOrchestrator:
         host_ip = self.get_windows_host_ip()
         log_info(f"Suggested Windows Host IP: {host_ip}")
         log_info(f"If Ollama is running on Windows, set 'ollama_url' in config.json to 'http://{host_ip}:11434'")
+
+    def clear_run_artifacts(self):
+        config_text = self.config_path.read_text(encoding="utf-8") if self.config_path.exists() else None
+        self.cleanup_worktree(merge=False)
+        shutil.rmtree(self.ai_dir, ignore_errors=True)
+        if self.has_git:
+            self.run_command(["git", "worktree", "prune"], cwd=self.workspace)
+        self.ai_dir.mkdir(parents=True, exist_ok=True)
+        if config_text is not None:
+            self.config_path.write_text(config_text, encoding="utf-8")
+        self.state = {
+            "state": "PLANNING", "plan_revisions": 0, "code_revisions": 0,
+            "model_tier_indices": {"developer": 0, "reviewer": 0, "manager": 0, "qa": 0},
+            "quota_exhausted_backends": {}, "tasks": [], "specialists": [],
+            "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}},
+        }
 
     def write_agent_context(self):
         request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""

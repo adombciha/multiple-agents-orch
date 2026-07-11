@@ -8,6 +8,7 @@ from unittest.mock import Mock, call
 import pytest
 
 import orchestrator
+import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
 from orchestrator.core.backends import quota_exhausted
 
@@ -144,6 +145,7 @@ def test_constructor_detects_git_and_current_branch(tmp_path, monkeypatch):
 
     assert app.has_git is True
     assert app.base_branch == "main"
+    assert app.ai_dir.name == f".ai-company-{tmp_path.name}-main"
 
 
 def test_constructor_non_git_output_is_safe_default(tmp_path, monkeypatch):
@@ -157,6 +159,22 @@ def test_constructor_non_git_output_is_safe_default(tmp_path, monkeypatch):
 
     assert app.has_git is False
     assert app.base_branch == "master"
+    assert app.ai_dir.name == ".ai-company"
+
+
+def test_init_clears_completed_run_but_keeps_config(initialized_orchestrator):
+    initialized_orchestrator.config["ollama_url"] = "http://windows:11434"
+    initialized_orchestrator.config_path.write_text(json.dumps(initialized_orchestrator.config), encoding="utf-8")
+    initialized_orchestrator.state["state"] = "COMPLETED"
+    initialized_orchestrator.save_state()
+    initialized_orchestrator.request_path.write_text("old request", encoding="utf-8")
+
+    initialized_orchestrator.init_project()
+    initialized_orchestrator.load_config_and_state()
+
+    assert initialized_orchestrator.state["state"] == "PLANNING"
+    assert initialized_orchestrator.config["ollama_url"] == "http://windows:11434"
+    assert not initialized_orchestrator.request_path.exists()
 
 
 def test_save_state_writes_current_state_to_state_file(initialized_orchestrator):
@@ -290,6 +308,16 @@ def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, mo
 
     assert result == "fallback answer"
     assert post.call_args.kwargs["json"]["model"] == "fallback-model"
+
+
+def test_configure_ollama_uses_detected_windows_endpoint(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(orchestrator_main, "ollama_available", Mock(side_effect=[False, True]))
+    monkeypatch.setattr(initialized_orchestrator, "get_windows_host_ip", Mock(return_value="172.17.144.1"))
+    monkeypatch.setattr(orchestrator_main.sys.stdin, "isatty", Mock(return_value=False))
+
+    orchestrator_main.configure_ollama(initialized_orchestrator)
+
+    assert initialized_orchestrator.config["ollama_url"] == "http://172.17.144.1:11434"
 
 
 def test_call_ollama_encodes_local_image(initialized_orchestrator, monkeypatch, tmp_path):
