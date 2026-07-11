@@ -56,7 +56,6 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
         "messages": messages,
         "stream": False,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
-        "options": orchestrator.config.get("ollama_options", {"num_ctx": 2048}),
     }
     if image_paths:
         payload["messages"][-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
