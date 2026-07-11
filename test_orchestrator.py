@@ -535,6 +535,20 @@ def test_consult_specialists_only_calls_manager_selected_roles(initialized_orche
     assert call_agent.call_args.args[0] == "security"
 
 
+def test_consult_specialists_skips_readme_only_tasks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["specialists"] = [{"role": "devops", "reason": "mentioned in docs"}]
+    call_agent = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    notes = initialized_orchestrator.consult_specialists(
+        "Only modify README translations; must not modify source code.",
+        "Update README_en.md and README_ja.md.",
+    )
+
+    assert notes == ""
+    call_agent.assert_not_called()
+
+
 def test_consult_specialists_dispatches_new_role_modules(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["specialists"] = [
         {"role": role, "reason": "needed"}

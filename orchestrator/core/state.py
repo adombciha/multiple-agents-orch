@@ -507,6 +507,10 @@ class AgentOrchestrator:
         return {"rd_level": level, "qa_level": qa_level if qa_level in {"junior", "middle", "senior"} else level}
 
     def consult_specialists(self, requirements: str, plan: str, context: str = "", roles: set[str] | None = None) -> str:
+        scope = f"{requirements}\n{plan}".lower()
+        if "readme" in scope and any(marker in scope for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改")):
+            log_info("README-only task; skipping specialist consultation.")
+            return ""
         reports = []
         visual_context = "\n".join(f"[IMAGE: {path}]" for path in self.state.get("visual_image_paths", []))
         for specialist in self.state.get("specialists", []):
