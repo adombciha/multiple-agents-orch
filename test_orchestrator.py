@@ -843,6 +843,20 @@ def test_step_reviewing_code_approved_moves_to_completed(initialized_orchestrato
     assert initialized_orchestrator.state["state"] == "COMPLETED"
 
 
+def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.test_results_path.write_text("tests passed", encoding="utf-8")
+    initialized_orchestrator.has_git = True
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(side_effect=[(0, "diff"), (0, "?? docs/new.md")]))
+    call_agent = Mock(return_value="APPROVED")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_reviewing_code()
+
+    assert "Git Status (includes untracked files):\n?? docs/new.md" in call_agent.call_args.args[1]
+
+
 def test_step_reviewing_code_rejected_revises_until_max(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")

@@ -18,17 +18,19 @@ class ReviewerAgent(BaseAgent):
             _, git_diff = self.orchestrator.run_command(["git", "diff", self.orchestrator.base_branch], capture=True)
             if not git_diff.strip():
                 _, git_diff = self.orchestrator.run_command(["git", "diff"], capture=True)
+            _, git_status = self.orchestrator.run_command(["git", "status", "--short"], capture=True)
+            git_evidence = f"Git Diff:\n{git_diff}\n\nGit Status (includes untracked files):\n{git_status}"
         else:
-            git_diff = "No git repository, changes are directly in workspace."
+            git_evidence = "No git repository, changes are directly in workspace."
 
         specialist_notes = self.orchestrator.consult_specialists(
             requirements,
             plan,
-            context=f"Git Diff:\n{git_diff}",
+            context=git_evidence,
             roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
         )
 
-        prompt = f"""Review the code changes made. Here is the context:\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nGit Diff:\n{git_diff}\n\nVerify if the implementation matches the assigned tasks and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
+        prompt = f"""Review the code changes made. Here is the context:\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify if the implementation matches the assigned tasks and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
 
         system_prompt = "You are a Senior Code Reviewer. Review the git diff and test results."
         review = self.call_agent("reviewer", prompt, system_prompt)
