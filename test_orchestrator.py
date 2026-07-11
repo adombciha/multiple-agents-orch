@@ -387,6 +387,28 @@ def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, 
     call_agent.assert_not_called()
 
 
+def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "write hello", "target_files": ["hello.py"], "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(side_effect=RuntimeError("all routes failed")))
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["human_review_source"] == "Developer"
+
+
+def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(initialized_orchestrator, "step", Mock(side_effect=RuntimeError("unexpected failure")))
+
+    initialized_orchestrator.run_to_end()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["human_review_source"] == "Orchestrator"
+
+
 def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     agy = Mock(return_value="fallback")
@@ -504,7 +526,7 @@ def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkey
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_manager",
-        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "status": "pending", "complexity": "routine", "assignee_level": "junior"}], "staffing": {"rd": {"senior": 1, "junior": 2}, "qa": {"senior": 1, "junior": 1}}}'),
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "target_files": ["app.py"], "status": "pending", "complexity": "routine", "assignee_level": "junior"}], "staffing": {"rd": {"senior": 1, "junior": 2}, "qa": {"senior": 1, "junior": 1}}}'),
     )
 
     initialized_orchestrator.step_developing_plan()
@@ -520,7 +542,7 @@ def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestra
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_manager",
-        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "implement", "target_files": ["app.py"], "status": "completed", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
     )
 
     initialized_orchestrator.step_developing_plan()
@@ -535,7 +557,7 @@ def test_developing_plan_does_not_treat_unrelated_change_scope_as_readme_only(in
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_manager",
-        Mock(return_value='{"tasks": [{"id": "CONFIG-1", "description": "update config", "rd_level": "middle", "qa_level": "junior"}], "staffing": {"rd": {"middle": 1}, "qa": {"junior": 1}}}'),
+        Mock(return_value='{"tasks": [{"id": "CONFIG-1", "description": "update config", "target_files": ["orchestrator/core/config.py"], "rd_level": "middle", "qa_level": "junior"}], "staffing": {"rd": {"middle": 1}, "qa": {"junior": 1}}}'),
     )
 
     initialized_orchestrator.step_developing_plan()
@@ -561,14 +583,14 @@ def test_developing_plan_pauses_when_manager_returns_only_planning_tasks(initial
 def test_developing_plan_reopens_changed_completed_task(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.state["tasks"] = [{
-        "id": "T-1", "description": "old scope", "status": "completed",
+            "id": "T-1", "description": "old scope", "target_files": ["app.py"], "status": "completed",
         "complexity": "routine", "rd_level": "junior", "qa_level": "junior",
     }]
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_manager",
-        Mock(return_value='{"tasks": [{"id": "T-1", "description": "new scope", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "new scope", "target_files": ["app.py"], "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
     )
 
     initialized_orchestrator.step_developing_plan()
@@ -626,7 +648,7 @@ def test_agent_context_is_compact_machine_data(initialized_orchestrator):
     initialized_orchestrator.write_agent_context()
 
     assert json.loads(initialized_orchestrator.agent_context_path.read_text(encoding="utf-8")) == {
-        "request": "Add a setting", "tasks": [{"id": "T-1", "description": "add it", "status": "pending"}], "specialists": [],
+        "request": "Add a setting", "contract": {"stage": "PLANNING", "allowed_actions": ["plan_or_review"], "output_contract": {"format": "stage_prompt", "allow_file_blocks": False}}, "tasks": [{"id": "T-1", "description": "add it", "status": "pending"}], "specialists": [],
     }
 
 

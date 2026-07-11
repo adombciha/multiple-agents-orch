@@ -144,9 +144,12 @@ class AgentOrchestrator:
 
     def write_agent_context(self):
         request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
-        task_keys = ("id", "description", "complexity", "rd_level", "qa_level", "status")
+        stage = self.state.get("state", "PLANNING")
+        contract = {"stage": stage, "allowed_actions": ["modify_files"], "output_contract": {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}} if stage == "IMPLEMENTING" else {"stage": stage, "allowed_actions": ["plan_or_review"], "output_contract": {"format": "stage_prompt", "allow_file_blocks": False}}
+        task_keys = ("id", "description", "complexity", "rd_level", "qa_level", "status", "target_files", "output_contract")
         context = {
             "request": request,
+            "contract": contract,
             "tasks": [{key: task.get(key) for key in task_keys if key in task} for task in self.state.get("tasks", [])],
             "specialists": self.state.get("specialists", []),
         }
@@ -646,7 +649,12 @@ class AgentOrchestrator:
     def run_to_end(self):
         self.load_config_and_state()
         while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "FAILED"]:
-            self.step()
+            try:
+                self.step()
+            except Exception as error:
+                failed_state = self.state.get("state", "PLANNING")
+                self.pause_for_human_review("Orchestrator", str(error), failed_state, failed_state)
+                return
             self.load_config_and_state()
         if self.state["state"] == "COMPLETED":
             self.step()

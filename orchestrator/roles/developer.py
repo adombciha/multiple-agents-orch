@@ -54,7 +54,7 @@ class DeveloperAgent(BaseAgent):
             "plan_revisions": self.orchestrator.state.get("plan_revisions", 0),
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
         }
-        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
 
@@ -82,7 +82,7 @@ class DeveloperAgent(BaseAgent):
                 request = self.orchestrator.request_path.read_text(encoding="utf-8")
                 files = [name for name in ("README.md", "README_en.md", "README_ja.md", "README_zh-CN.md") if name in request]
                 tasks = [
-                    {"id": f"DOCS-{index}", "description": f"Update only {name} according to this request:\n{request}", "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}
+                    {"id": f"DOCS-{index}", "description": f"Update only {name} according to this request:\n{request}", "target_files": [name], "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}
                     for index, name in enumerate(files, 1)
                 ]
                 self.orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
@@ -99,6 +99,10 @@ class DeveloperAgent(BaseAgent):
                 if not isinstance(task, dict) or not task.get("id") or not task.get("description"):
                     raise ValueError("each task requires id and description")
                 task["status"] = "pending"
+                target_files = task.get("target_files", [])
+                if not isinstance(target_files, list) or not target_files or not all(isinstance(path, str) and path and not path.startswith("/") for path in target_files):
+                    raise ValueError("each task requires non-empty relative target_files")
+                task["output_contract"] = {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
                 legacy_level = task.get("assignee_level", "senior")
@@ -220,7 +224,8 @@ class DeveloperAgent(BaseAgent):
                 f"```markdown\n{plan}\n```\n\n"
                 f"Please implement the following task:\n"
                 f"Task ID: {task['id']}\n"
-                f"Description: {task['description']}\n\n"
+                f"Description: {task['description']}\n"
+                f"Machine contract: {json.dumps({'stage': 'IMPLEMENTING', 'allowed_actions': ['modify_files'], 'target_files': task.get('target_files', []), 'output_contract': task.get('output_contract', {})})}\n\n"
             )
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
@@ -255,7 +260,11 @@ class DeveloperAgent(BaseAgent):
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
             if backend in ["ollama", "gemini", "agy", "grok"]:
                 system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
-            dev_output = self.call_agent(effective_role, prompt, system_prompt)
+            try:
+                dev_output = self.call_agent(effective_role, prompt, system_prompt)
+            except RuntimeError as error:
+                self.orchestrator.pause_for_human_review("Developer", str(error), "IMPLEMENTING", "IMPLEMENTING")
+                return
             self.orchestrator.state["last_developer_role"] = agent_role
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
