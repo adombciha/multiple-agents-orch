@@ -204,6 +204,14 @@ class DeveloperAgent(BaseAgent):
         _, rd_assignments = self.orchestrator.allocate_workers("rd", tasks)
         for task in pending_tasks:
             log_info(f"Implementing Task {task['id']}: {task['description']}")
+            description = task["description"].lstrip().lower()
+            if description.startswith(("inventory ", "inspect ", "review ", "verify ", "validate ", "盤點", "檢查", "審查", "驗證")):
+                log_info(f"Task {task['id']} is read-only; no developer response required.")
+                task["status"] = "completed"
+                self.orchestrator.save_state()
+                with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
+                    json.dump(tasks, f, indent=2)
+                continue
             worker_id = rd_assignments[task["id"]]
             _, level, agent_number = worker_id.rsplit("-", 2)
             agent_role = f"developer_{level}"

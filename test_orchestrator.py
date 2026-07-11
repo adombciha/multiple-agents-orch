@@ -373,6 +373,20 @@ def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator,
     assert "respond only with [file_start" in call_agent.call_args.args[2].lower()
 
 
+def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "Inventory current routes", "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    call_agent = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "completed"
+    call_agent.assert_not_called()
+
+
 def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     agy = Mock(return_value="fallback")
