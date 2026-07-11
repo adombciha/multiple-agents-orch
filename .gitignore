@@ -4,5 +4,4 @@ __pycache__/
 *$py.class
 
 # Temporary prompt and agent state files
-.ai-company/
-
+.ai-company*/
