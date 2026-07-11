@@ -355,13 +355,9 @@ def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator)
 def test_developer_plan_does_not_require_file_blocks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["state"] = "DEVELOPING_PLAN"
     initialized_orchestrator.config["role_model_routes"]["developer_senior"] = [["grok", "grok-4.5"]]
-    monkeypatch.setattr(
-        initialized_orchestrator,
-        "call_grok",
-        Mock(return_value="## Target Files\n- app.py\n\n## Implementation Steps\n- change it\n\n## Verification\n- pytest"),
-    )
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value="# Plan"))
 
-    assert "## Target Files" in initialized_orchestrator.call_agent("developer_senior", "prompt")
+    assert initialized_orchestrator.call_agent("developer_senior", "prompt") == "# Plan"
 
 
 def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator, monkeypatch):

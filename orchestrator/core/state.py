@@ -342,8 +342,6 @@ class AgentOrchestrator:
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
-                    if self.state.get("state") == "DEVELOPING_PLAN" and role.startswith("developer") and not all(heading in response for heading in ("## Target Files", "## Implementation Steps", "## Verification")):
-                        raise RuntimeError("Developer plan omitted required Markdown sections")
                     return response
                 if backend == "codex":
                     return self.call_codex(prompt, system_prompt, role=role, model=model)
@@ -353,8 +351,6 @@ class AgentOrchestrator:
                     response = self.call_grok(prompt, system_prompt, role=role, model=model)
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
-                    if self.state.get("state") == "DEVELOPING_PLAN" and role.startswith("developer") and not all(heading in response for heading in ("## Target Files", "## Implementation Steps", "## Verification")):
-                        raise RuntimeError("Developer plan omitted required Markdown sections")
                     return response
                 if backend == "claude":
                     return self.call_claude(prompt, system_prompt, role=role)
