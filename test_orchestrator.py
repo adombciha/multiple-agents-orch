@@ -560,6 +560,16 @@ def test_agent_context_is_compact_machine_data(initialized_orchestrator):
     }
 
 
+def test_assistant_meeting_memory_uses_handoff_sections(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="## Outcome\ndone"))
+
+    memory = initialized_orchestrator.assistant.generate_meeting_memory("請修正", "完成", [], "PASSED", "APPROVED", "a.py")
+
+    assert memory == "## Outcome\ndone"
+    prompt = initialized_orchestrator.call_agent.call_args.args[1]
+    assert "## Next-session Handoff" in prompt
+
+
 def test_consult_specialists_dispatches_new_role_modules(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["specialists"] = [
         {"role": role, "reason": "needed"}

@@ -69,7 +69,7 @@ class ManagerAgent(BaseAgent):
             diff_stat = "No git repository."
             diff_patch = "No git repository."
 
-        prompt = f"""We have successfully completed the tasks.\nOriginal Request:\n{request}\n\nRequirements:\n{requirements}\n\nGit Diff Stat:\n{diff_stat}\n\nPlease generate a Final Report in Markdown. Summarize what was built, files modified, and verify how requirements were met."""
+        prompt = f"""We have successfully completed the tasks.\nOriginal Request:\n{request}\n\nRequirements:\n{requirements}\n\nGit Diff Stat:\n{diff_stat}\n\nWrite in the same language as the original request. Use exactly these Markdown sections:\n## Outcome\n## Changes Delivered\n## Verification\n## Scope and Follow-ups\nBe specific: name changed files, cite available test evidence, and distinguish completed work from follow-ups."""
 
         system_prompt = "You are a Project Manager. Write a beautiful project final report."
         summary = self.call_manager(prompt, system_prompt)
@@ -78,6 +78,14 @@ class ManagerAgent(BaseAgent):
             f.write(summary)
 
         log_success(f"Final project report generated at {self.orchestrator.final_report_path}")
+
+        qa_report = self.orchestrator.qa_report_path.read_text(encoding="utf-8") if self.orchestrator.qa_report_path.exists() else "No QA report available."
+        review = self.orchestrator.reviewer_output_path.read_text(encoding="utf-8") if self.orchestrator.reviewer_output_path.exists() else "No code review available."
+        meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
+            request, summary, self.orchestrator.state.get("tasks", []), qa_report, review, diff_stat,
+        )
+        self.orchestrator.meeting_memory_path.write_text(meeting_memory, encoding="utf-8")
+        log_success(f"Meeting memory saved at {self.orchestrator.meeting_memory_path}")
 
         # Assistant generates CHANGELOG
         log_info("Asking Assistant to generate CHANGELOG.md...")

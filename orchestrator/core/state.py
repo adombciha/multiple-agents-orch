@@ -71,6 +71,7 @@ class AgentOrchestrator:
         self.test_results_path = self.ai_dir / "test_results.txt"
         self.qa_report_path = self.ai_dir / "qa_report.md"
         self.human_report_path = self.ai_dir / "human_report.md"
+        self.meeting_memory_path = self.ai_dir / "meeting_memory.md"
         self.specialist_review_path = self.ai_dir / "specialist_reviews.md"
         self.final_report_path = self.ai_dir / "final_report.md"
 
