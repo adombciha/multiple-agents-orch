@@ -228,8 +228,8 @@ class DeveloperAgent(BaseAgent):
                     "// code contents here\n"
                     "[FILE_END: path/to/file.ext]\n\n"
                     "Make sure the path is relative to the project root. "
-                    "Only output files wrapped in this format will be modified in the repository. "
-                    "Explain your changes briefly outside these blocks."
+                    "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
+                    "Do not output analysis, a plan, Markdown fences, or explanations."
                 )
             else:
                 prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
@@ -250,6 +250,8 @@ class DeveloperAgent(BaseAgent):
 
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
+            if backend in ["ollama", "gemini", "agy", "grok"]:
+                system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
             dev_output = self.call_agent(effective_role, prompt, system_prompt)
             self.orchestrator.state["last_developer_role"] = agent_role
 

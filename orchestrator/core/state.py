@@ -366,7 +366,7 @@ class AgentOrchestrator:
                     self.save_state()
                 if backends.quota_exhausted(error):
                     backends.mark_backend_quota_exhausted(self, backend)
-                log_warning(f"{backend}/{model} failed; trying next route.")
+                log_warning(f"{backend}/{model} failed: {error}; trying next route.")
         raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str:

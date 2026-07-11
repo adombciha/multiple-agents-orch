@@ -364,6 +364,19 @@ def test_developer_plan_does_not_require_file_blocks(initialized_orchestrator, m
     assert "## Target Files" in initialized_orchestrator.call_agent("developer_senior", "prompt")
 
 
+def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "write hello", "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    call_agent = Mock(return_value="[FILE_START: hello.py]\nprint('hello')\n[FILE_END: hello.py]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    assert "respond only with [file_start" in call_agent.call_args.args[2].lower()
+
+
 def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     agy = Mock(return_value="fallback")
