@@ -410,6 +410,17 @@ def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator
     assert not (initialized_orchestrator.workspace / "test_orchestrator.py").exists()
 
 
+def test_file_blocks_cannot_remove_existing_markdown_headings(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Install\n\n## Workflow\n\nOriginal\n", encoding="utf-8")
+    output = "[FILE_START: README.md]\n# New\n\nReplacement\n[FILE_END: README.md]"
+
+    written = initialized_orchestrator.parse_and_write_files(output, ["README.md"])
+
+    assert written == []
+    assert readme.read_text(encoding="utf-8") == "# Install\n\n## Workflow\n\nOriginal\n"
+
+
 def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(initialized_orchestrator, "step", Mock(side_effect=RuntimeError("unexpected failure")))
 

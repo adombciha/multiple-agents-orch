@@ -172,6 +172,12 @@ class DeveloperAgent(BaseAgent):
             if base_dir not in target_path.parents and target_path != base_dir:
                 log_warning(f"Skipping file write outside target directory: {filepath_str}")
                 continue
+            if target_path.suffix.lower() == ".md" and target_path.exists():
+                original = target_path.read_text(encoding="utf-8")
+                headings = [line for line in original.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
+                if any(heading not in content for heading in headings):
+                    log_warning(f"Skipping Markdown rewrite that removes existing headings: {filepath_str}")
+                    continue
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with open(target_path, "w", encoding="utf-8") as f:
