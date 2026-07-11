@@ -19,7 +19,13 @@ class ReviewerAgent(BaseAgent):
             if not git_diff.strip():
                 _, git_diff = self.orchestrator.run_command(["git", "diff"], capture=True)
             _, git_status = self.orchestrator.run_command(["git", "status", "--short"], capture=True)
-            git_evidence = f"Git Diff:\n{git_diff}\n\nGit Status (includes untracked files):\n{git_status}"
+            status_lines = git_status.partition("stdout:\n")[2].partition("\nstderr:")[0].splitlines()
+            untracked_files = [line[3:] for line in status_lines if line.startswith("?? ")]
+            untracked_diffs = []
+            for path in untracked_files:
+                _, diff = self.orchestrator.run_command(["git", "diff", "--no-index", "--", "/dev/null", path], capture=True)
+                untracked_diffs.append(diff)
+            git_evidence = f"Git Diff:\n{git_diff}\n\nGit Status (includes untracked files):\n{git_status}\n\nUntracked File Diffs:\n{'\n'.join(untracked_diffs) or 'None'}"
         else:
             git_evidence = "No git repository, changes are directly in workspace."
 
