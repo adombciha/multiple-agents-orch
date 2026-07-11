@@ -543,6 +543,21 @@ def test_developing_plan_does_not_treat_unrelated_change_scope_as_readme_only(in
     assert initialized_orchestrator.state["tasks"][0]["id"] == "CONFIG-1"
 
 
+def test_developing_plan_pauses_when_manager_returns_only_planning_tasks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "Gather requirements", "rd_level": "senior", "qa_level": "junior"}]}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["human_review_source"] == "Manager"
+
+
 def test_developing_plan_reopens_changed_completed_task(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.state["tasks"] = [{
@@ -572,7 +587,8 @@ def test_developing_plan_rejects_staffing_that_cannot_cover_tasks(initialized_or
 
     initialized_orchestrator.step_developing_plan()
 
-    assert initialized_orchestrator.state["tasks"] == [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending", "rd_level": "senior", "qa_level": "senior"}]
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["human_review_source"] == "Manager"
 
 
 def test_consult_specialists_only_calls_manager_selected_roles(initialized_orchestrator, monkeypatch):
@@ -708,7 +724,8 @@ def test_step_reviewing_plan_rejected_revises_until_max(initialized_orchestrator
     initialized_orchestrator.state["plan_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_reviewing_plan()
 
-    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["pass_state"] == "IMPLEMENTING"
 
 
 def test_step_testing_passed_moves_to_reviewing_code(initialized_orchestrator, monkeypatch):

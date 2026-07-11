@@ -38,6 +38,5 @@ class ArchitectAgent(BaseAgent):
                 self.orchestrator.save_state()
                 log_info(f"Revising plan (Revision {self.orchestrator.state['plan_revisions']}/{max_rev})...")
             else:
-                log_warning("Reached max plan revisions. Proceeding to implementation anyway (Owner override).")
-                self.orchestrator.state["state"] = "IMPLEMENTING"
-                self.orchestrator.save_state()
+                log_warning("Reached max plan revisions. Pausing for human review.")
+                self.orchestrator.pause_for_human_review("Architect", review, "DEVELOPING_PLAN", "IMPLEMENTING")

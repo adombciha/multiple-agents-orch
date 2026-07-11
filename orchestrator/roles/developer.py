@@ -54,7 +54,7 @@ class DeveloperAgent(BaseAgent):
             "plan_revisions": self.orchestrator.state.get("plan_revisions", 0),
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
         }
-        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
 
@@ -73,6 +73,10 @@ class DeveloperAgent(BaseAgent):
             tasks = parsed if isinstance(parsed, list) else parsed["tasks"]
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a JSON array")
+            planning_prefixes = ("gather ", "inventory ", "inspect ", "review ", "verify ", "validate ", "produce ", "research ", "盤點", "檢查", "審查", "驗證", "蒐集", "研究")
+            tasks = [task for task in tasks if not str(task.get("description", "")).lstrip().lower().startswith(planning_prefixes)]
+            if not tasks:
+                raise ValueError("Manager returned no file-change tasks")
             docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
             if docs_only:
                 request = self.orchestrator.request_path.read_text(encoding="utf-8")
@@ -121,18 +125,9 @@ class DeveloperAgent(BaseAgent):
                 json.dump(tasks, f, indent=2)
             log_success(f"Saved {len(tasks)} tasks to {self.orchestrator.action_items_path}")
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-            log_warning(f"Could not parse tasks as JSON. Saving raw output. Error: {e}")
-            log_warning(f"Raw manager output was: {parsed_items_raw}")
-            # Write a fallback task
-            fallback_tasks = [{"id": "TASK-001", "description": "Implement overall implementation plan", "status": "pending", "rd_level": "senior", "qa_level": "senior"}]
-            self.orchestrator.state["tasks"] = fallback_tasks
-            self.orchestrator.state["specialists"] = []
-            self.orchestrator.ensure_visual_review_specialist()
-            self.orchestrator.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
-            self.orchestrator.allocate_workers("rd", fallback_tasks)
-            self.orchestrator.allocate_workers("qa", fallback_tasks)
-            self.orchestrator.save_state()
-            self.orchestrator.write_agent_context()
+            log_warning(f"Could not create file-change tasks. Error: {e}")
+            self.orchestrator.pause_for_human_review("Manager", parsed_items_raw, "DEVELOPING_PLAN", "DEVELOPING_PLAN")
+            return
 
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()

@@ -162,15 +162,19 @@ def main():
             if decision == "pass":
                 next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
             elif decision == "revise":
-                next_state = "IMPLEMENTING"
-                n = orchestrator.state.get("code_revisions", 0) + 1
-                orchestrator.state["code_revisions"] = n
-                orchestrator.state.setdefault("tasks", []).append({
-                    "id": f"HUMAN-REVIEW-{n}",
-                    "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
-                    "status": "pending",
-                    **orchestrator.fix_task_levels(),
-                })
+                if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
+                    next_state = "DEVELOPING_PLAN"
+                    orchestrator.state["plan_revisions"] = 0
+                else:
+                    next_state = "IMPLEMENTING"
+                    n = orchestrator.state.get("code_revisions", 0) + 1
+                    orchestrator.state["code_revisions"] = n
+                    orchestrator.state.setdefault("tasks", []).append({
+                        "id": f"HUMAN-REVIEW-{n}",
+                        "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
+                        "status": "pending",
+                        **orchestrator.fix_task_levels(),
+                    })
             else:
                 next_state = "FAILED"
             orchestrator.state["state"] = next_state
