@@ -55,8 +55,8 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | --- | --- | --- | --- | --- |
 | PM | 每次任務 | `gpt-5.6-sol` | `gemini-3.5-flash` | `qwen3:8b` |
 | Architect | 每次任務 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
-| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-terra` | `gpt-oss:20b` | `granite4.1:8b` |
-| RD Middle | 一般功能實作 | `gpt-5.6-luna` | `granite4.1:8b` | `codegemma:7b` |
+| RD Senior | 跨模組／架構／高風險實作 | `grok-4.5` | `gpt-oss:20b` | `granite4.1:8b` |
+| RD Middle | 一般功能實作 | `grok-4.5` | `granite4.1:8b` | `codegemma:7b` |
 | RD Junior | 重複、明確、小修改 | `codegemma:7b` | `granite4.1:8b` | `qwen2.5-coder:7b` |
 | QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |

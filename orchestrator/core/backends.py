@@ -198,6 +198,7 @@ def quota_exhausted(error: Exception) -> bool:
     return any(marker in message for marker in (
         "quota", "rate limit", "rate_limit", "too many requests", "429",
         "insufficient credit", "insufficient funds", "usage limit", "token budget",
+        "spending-limit", "personal-team-blocked",
     ))
 
 def backend_available(orchestrator, backend: str) -> bool:

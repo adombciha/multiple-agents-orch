@@ -9,6 +9,7 @@ import pytest
 
 import orchestrator
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
+from orchestrator.core.backends import quota_exhausted
 
 
 def write_ai_company(
@@ -322,8 +323,8 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
 
 
 def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
-    assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
-    assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
+    assert initialized_orchestrator.get_active_model_for_role("developer_senior", "grok") == "grok-4.5"
+    assert initialized_orchestrator.get_active_model_for_role("developer_middle", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "codegemma:7b"
     assert initialized_orchestrator.get_active_model_for_role("architect", "ollama") == "gemma4:latest"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
@@ -429,6 +430,10 @@ def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(initialized_
 
     codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
     assert agy.call_args_list == [call("prompt", None, role="reviewer", model="gpt-oss-120b")] * 2
+
+
+def test_spending_limit_is_treated_as_quota_exhausted():
+    assert quota_exhausted(RuntimeError("403 personal-team-blocked:spending-limit"))
 
 
 def test_rd_and_qa_can_use_different_levels(initialized_orchestrator):

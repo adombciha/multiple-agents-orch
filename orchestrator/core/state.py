@@ -348,7 +348,10 @@ class AgentOrchestrator:
                 if backend == "agy":
                     return self.call_agy(prompt, system_prompt, role=role, model=model)
                 if backend == "grok":
-                    return self.call_grok(prompt, system_prompt, role=role, model=model)
+                    response = self.call_grok(prompt, system_prompt, role=role, model=model)
+                    if role.startswith("developer") and "[FILE_START:" not in response:
+                        raise RuntimeError("Developer response omitted required file blocks")
+                    return response
                 if backend == "claude":
                     return self.call_claude(prompt, system_prompt, role=role)
                 raise ValueError(f"Unsupported backend in route: {backend}")

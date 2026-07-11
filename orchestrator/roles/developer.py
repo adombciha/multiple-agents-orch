@@ -219,7 +219,7 @@ class DeveloperAgent(BaseAgent):
                 f"Description: {task['description']}\n\n"
             )
 
-            if backend in ["ollama", "gemini", "agy"]:
+            if backend in ["ollama", "gemini", "agy", "grok"]:
                 prompt += (
                     "Please write the code for any files that need to be created or modified. "
                     "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
@@ -252,7 +252,7 @@ class DeveloperAgent(BaseAgent):
             dev_output = self.call_agent(effective_role, prompt, system_prompt)
             self.orchestrator.state["last_developer_role"] = agent_role
 
-            if backend in ["ollama", "gemini", "agy"]:
+            if backend in ["ollama", "gemini", "agy", "grok"]:
                 written = self.parse_and_write_files(dev_output)
                 if written:
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
