@@ -549,6 +549,17 @@ def test_consult_specialists_skips_readme_only_tasks(initialized_orchestrator, m
     call_agent.assert_not_called()
 
 
+def test_agent_context_is_compact_machine_data(initialized_orchestrator):
+    initialized_orchestrator.request_path.write_text("Add a setting", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "add it", "status": "pending", "unused": "omit"}]
+
+    initialized_orchestrator.write_agent_context()
+
+    assert json.loads(initialized_orchestrator.agent_context_path.read_text(encoding="utf-8")) == {
+        "request": "Add a setting", "tasks": [{"id": "T-1", "description": "add it", "status": "pending"}], "specialists": [],
+    }
+
+
 def test_consult_specialists_dispatches_new_role_modules(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["specialists"] = [
         {"role": role, "reason": "needed"}

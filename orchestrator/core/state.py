@@ -65,6 +65,7 @@ class AgentOrchestrator:
         self.requirements_path = self.ai_dir / "requirements.md"
         self.plan_path = self.ai_dir / "implementation_plan.md"
         self.action_items_path = self.ai_dir / "action_items.json"
+        self.agent_context_path = self.ai_dir / "agent_context.json"
         self.reviewer_output_path = self.ai_dir / "reviewer_output.md"
         self.developer_output_path = self.ai_dir / "developer_output.md"
         self.test_results_path = self.ai_dir / "test_results.txt"
@@ -139,6 +140,21 @@ class AgentOrchestrator:
         host_ip = self.get_windows_host_ip()
         log_info(f"Suggested Windows Host IP: {host_ip}")
         log_info(f"If Ollama is running on Windows, set 'ollama_url' in config.json to 'http://{host_ip}:11434'")
+
+    def write_agent_context(self):
+        request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
+        task_keys = ("id", "description", "complexity", "rd_level", "qa_level", "status")
+        context = {
+            "request": request,
+            "tasks": [{key: task.get(key) for key in task_keys if key in task} for task in self.state.get("tasks", [])],
+            "specialists": self.state.get("specialists", []),
+        }
+        self.agent_context_path.write_text(json.dumps(context, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+    def read_agent_context(self) -> dict:
+        if self.agent_context_path.exists():
+            return json.loads(self.agent_context_path.read_text(encoding="utf-8"))
+        return {"request": self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else "", "tasks": self.state.get("tasks", [])}
 
     def load_config_and_state(self):
         """Loads configuration and state files from disk."""

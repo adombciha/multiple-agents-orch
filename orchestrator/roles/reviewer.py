@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from orchestrator.roles.base_agent import BaseAgent
 
 class ReviewerAgent(BaseAgent):
@@ -6,10 +7,9 @@ class ReviewerAgent(BaseAgent):
         from orchestrator.core.state import log_header, log_success, log_warning, log_info
 
         log_header("6. REVIEWING CODE (Architect / Reviewer)")
-        with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
-            requirements = f.read()
-        with open(self.orchestrator.plan_path, "r", encoding="utf-8") as f:
-            plan = f.read()
+        agent_context = json.dumps(self.orchestrator.read_agent_context(), ensure_ascii=False)
+        requirements = self.orchestrator.requirements_path.read_text(encoding="utf-8")
+        plan = self.orchestrator.plan_path.read_text(encoding="utf-8")
         with open(self.orchestrator.test_results_path, "r", encoding="utf-8") as f:
             test_results = f.read()
 
@@ -28,7 +28,7 @@ class ReviewerAgent(BaseAgent):
             roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
         )
 
-        prompt = f"""Review the code changes made. Here is the context:\n\nRequirements:\n{requirements}\n\nPlan:\n{plan}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nGit Diff:\n{git_diff}\n\nVerify if the implementation matches requirements and plan, and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
+        prompt = f"""Review the code changes made. Here is the context:\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\nGit Diff:\n{git_diff}\n\nVerify if the implementation matches the assigned tasks and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
 
         system_prompt = "You are a Senior Code Reviewer. Review the git diff and test results."
         review = self.call_agent("reviewer", prompt, system_prompt)

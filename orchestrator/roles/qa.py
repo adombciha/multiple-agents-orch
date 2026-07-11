@@ -18,10 +18,7 @@ class QAAgent(BaseAgent):
 
         log_info(f"Test exit code: {code}")
 
-        with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
-            requirements = f.read()
-        with open(self.orchestrator.plan_path, "r", encoding="utf-8") as f:
-            plan = f.read()
+        agent_context = json.dumps(self.orchestrator.read_agent_context(), ensure_ascii=False)
 
         if self.orchestrator.has_git:
             _, git_diff = self.orchestrator.run_command(["git", "diff", self.orchestrator.base_branch], capture=True)
@@ -41,7 +38,7 @@ class QAAgent(BaseAgent):
             ]
             if not assigned_tasks:
                 continue
-            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nRequirements:\n{requirements}\n\nImplementation Plan:\n{plan}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA test report in Markdown. If all tests pass and the implementation looks correct and safe, start with 'PASSED'. Otherwise start with 'FAILED' and list the issues and fixes."""
+            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA test report in Markdown. If all tests pass and the implementation looks correct and safe, start with 'PASSED'. Otherwise start with 'FAILED' and list the issues and fixes."""
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"

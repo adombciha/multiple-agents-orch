@@ -105,6 +105,7 @@ class DeveloperAgent(BaseAgent):
                     t["status"] = "completed"
             self.orchestrator.state["tasks"] = tasks
             self.orchestrator.save_state()
+            self.orchestrator.write_agent_context()
             with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
                 json.dump(tasks, f, indent=2)
             log_success(f"Saved {len(tasks)} tasks to {self.orchestrator.action_items_path}")
@@ -120,6 +121,7 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.allocate_workers("rd", fallback_tasks)
             self.orchestrator.allocate_workers("qa", fallback_tasks)
             self.orchestrator.save_state()
+            self.orchestrator.write_agent_context()
 
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()
