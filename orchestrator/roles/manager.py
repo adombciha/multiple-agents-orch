@@ -9,8 +9,8 @@ class ManagerAgent(BaseAgent):
 
         log_header("1. PLANNING (Ollama Manager)")
 
-        # Setup clean worktree
-        self.orchestrator.setup_worktree()
+        if self.orchestrator.state.get("workflow_mode") != "research":
+            self.orchestrator.setup_worktree()
 
         if not self.orchestrator.request_path.exists():
             log_error(f"No request file found at {self.orchestrator.request_path}. Please run 'start' command first.")
@@ -44,13 +44,21 @@ class ManagerAgent(BaseAgent):
             f.write(requirements)
 
         log_success(f"Requirements generated and saved to {self.orchestrator.requirements_path}")
-        self.orchestrator.state["state"] = "DEVELOPING_PLAN"
+        if self.orchestrator.state.get("workflow_mode") == "research":
+            self.orchestrator.state["specialists"] = [{"role": role, "reason": "Research-only workflow"} for role in self.orchestrator.state["research_roles"]]
+            self.orchestrator.state["state"] = "RESEARCHING"
+        else:
+            self.orchestrator.state["state"] = "DEVELOPING_PLAN"
         self.orchestrator.save_state()
 
     def step_completed(self):
         from orchestrator.core.state import log_header, log_success, log_info
 
         log_header("7. GENERATING SUMMARY (Ollama Manager)")
+
+        if self.orchestrator.state.get("workflow_mode") == "research":
+            log_success("Research-only workflow finished.")
+            return
 
         with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
             request = f.read()

@@ -24,6 +24,7 @@ def main():
     start_parser = subparsers.add_parser("start", help="Start a new multi-agent task")
     start_parser.add_argument("prompt", type=str, help="The development task prompt or request")
     start_parser.add_argument("--image", action="append", default=[], help="Screenshot or mockup path for UI/UX visual review; repeat for multiple images")
+    start_parser.add_argument("--research", action="store_true", help="Run Sales and RA research only; skip code delivery roles")
 
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
@@ -103,6 +104,8 @@ def main():
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
             "visual_image_paths": image_paths,
+            "workflow_mode": "research" if args.research else "delivery",
+            "research_roles": ["sales", "ra"] if args.research else [],
         }
         orchestrator.save_state()
         log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")

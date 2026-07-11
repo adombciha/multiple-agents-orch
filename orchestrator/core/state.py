@@ -589,6 +589,19 @@ class AgentOrchestrator:
     def step_completed(self):
         return self.manager.step_completed()
 
+    def step_researching(self):
+        log_header("RESEARCHING (Sales / RA)")
+        requirements = self.requirements_path.read_text(encoding="utf-8")
+        request = self.request_path.read_text(encoding="utf-8")
+        reports = self.consult_specialists(requirements, "Research-only workflow")
+        prompt = f"""Write a human-readable research report in the same language as the request.\n\nRequest:\n{request}\n\nResearch reports:\n{reports}\n\nUse sections: Outcome, Findings, Risks and Caveats, Recommended Next Steps. State that legal conclusions require human legal review."""
+        report = self.assistant.call_agent("assistant", prompt, "You synthesize factual Sales and RA research for a human decision maker.")
+        self.human_report_path.write_text(report, encoding="utf-8")
+        self.meeting_memory_path.write_text(report, encoding="utf-8")
+        self.state["state"] = "COMPLETED"
+        self.save_state()
+        log_success(f"Research report saved to {self.human_report_path}")
+
     def parse_and_write_files(self, text: str) -> list[str]:
         return self.developer.parse_and_write_files(text)
 
@@ -612,6 +625,8 @@ class AgentOrchestrator:
             self.step_reviewing_code()
         elif current_state == "COMPLETED":
             self.step_completed()
+        elif current_state == "RESEARCHING":
+            self.step_researching()
         elif current_state == "WAITING_FOR_OWNER":
             log_warning("Currently waiting for owner approval. Edit state.json to resume.")
         elif current_state == "FAILED":
