@@ -319,7 +319,7 @@ class AgentOrchestrator:
             if role.startswith("qa") and model is None:
                 return self.call_ollama(
                     prompt, system_prompt, role=role,
-                    model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:latest"),
+                    model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:7b"),
                 )
             raise
 
@@ -544,8 +544,10 @@ class AgentOrchestrator:
             specialist_agent = getattr(self, role, None)
             if specialist_agent:
                 try:
-                    report = specialist_agent.review(requirements, plan, "\n".join(part for part in (context, visual_context) if part))
-                    reports.append(f"## {role.title()}\n{report}")
+                    focus = specialist.get("reason", "")
+                    specialist_context = "\n".join(part for part in (context, visual_context, f"Research focus: {focus}" if focus else "") if part)
+                    report = specialist_agent.review(requirements, plan, specialist_context)
+                    reports.append(f"## {role.title()}{f' — {focus}' if focus else ''}\n{report}")
                     continue
                 except Exception as e:
                     log_warning(f"Optional {role} specialist failed: {e}")

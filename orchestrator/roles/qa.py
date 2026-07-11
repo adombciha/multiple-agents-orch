@@ -38,7 +38,7 @@ class QAAgent(BaseAgent):
             ]
             if not assigned_tasks:
                 continue
-            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA test report in Markdown. If all tests pass and the implementation looks correct and safe, start with 'PASSED'. Otherwise start with 'FAILED' and list the issues and fixes."""
+            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes."""
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"
@@ -61,10 +61,11 @@ class QAAgent(BaseAgent):
             f.write(qa_report)
         log_success(f"QA report generated and saved to {self.orchestrator.qa_report_path}")
 
-        is_passed = code == 0 and bool(qa_reports) and all(
-            re.match(r"\s*(?:#+\s*)?PASSED\b", report.replace("*", ""), re.IGNORECASE)
-            for _, _, report in qa_reports
-        )
+        def passed(report):
+            lines = [line.strip() for line in report.splitlines() if line.strip()]
+            status = next((line for line in lines[:3] + lines[-3:] if re.fullmatch(r"QA_STATUS:\s*(PASSED|FAILED)", line, re.IGNORECASE)), "")
+            return status.upper() == "QA_STATUS: PASSED"
+        is_passed = code == 0 and bool(qa_reports) and all(passed(report) for _, _, report in qa_reports)
 
         if is_passed:
             log_success("QA verification PASSED!")

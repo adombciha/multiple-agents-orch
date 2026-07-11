@@ -45,7 +45,17 @@ class ManagerAgent(BaseAgent):
 
         log_success(f"Requirements generated and saved to {self.orchestrator.requirements_path}")
         if self.orchestrator.state.get("workflow_mode") == "research":
-            self.orchestrator.state["specialists"] = [{"role": role, "reason": "Research-only workflow"} for role in self.orchestrator.state["research_roles"]]
+            tracks = self.call_manager(
+                f"""Split this research request into 1-3 independent Sales or RA research tracks.\n\n{request}\n\nRespond only with JSON: {{\"tracks\":[{{\"role\":\"sales\" or \"ra\",\"focus\":\"specific research question\"}}]}}.""",
+                "You are a research program manager. Output only JSON.",
+            )
+            try:
+                selected = json.loads(tracks).get("tracks", [])
+                self.orchestrator.state["specialists"] = [{"role": item["role"], "reason": item["focus"]} for item in selected if item.get("role") in {"sales", "ra"}][:3]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                self.orchestrator.state["specialists"] = []
+            if not self.orchestrator.state["specialists"]:
+                self.orchestrator.state["specialists"] = [{"role": role, "reason": "Research-only workflow"} for role in self.orchestrator.state["research_roles"]]
             self.orchestrator.state["state"] = "RESEARCHING"
         else:
             self.orchestrator.state["state"] = "DEVELOPING_PLAN"
