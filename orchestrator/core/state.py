@@ -339,7 +339,10 @@ class AgentOrchestrator:
             try:
                 log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
                 if backend == "ollama":
-                    return self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                    response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                    if role.startswith("developer") and "[FILE_START:" not in response:
+                        raise RuntimeError("Developer response omitted required file blocks")
+                    return response
                 if backend == "codex":
                     return self.call_codex(prompt, system_prompt, role=role, model=model)
                 if backend == "agy":

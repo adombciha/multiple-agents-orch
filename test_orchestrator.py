@@ -324,8 +324,8 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
 def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
     assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-terra"
     assert initialized_orchestrator.get_active_model_for_role("developer_middle", "codex") == "gpt-5.6-luna"
-    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "deepseek-coder:6.7b"
-    assert initialized_orchestrator.get_active_model_for_role("architect", "ollama") == "deepseek-r1:7b"
+    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "codegemma:7b"
+    assert initialized_orchestrator.get_active_model_for_role("architect", "ollama") == "gemma4:latest"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "deepseek-r1:7b"
@@ -370,7 +370,7 @@ def test_reviewer_retries_terra_then_ollama_after_token_failure(initialized_orch
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
-    ollama.assert_called_once_with("reviewer", "prompt", None, model="deepseek-r1:7b")
+    ollama.assert_called_once_with("reviewer", "prompt", None, model="deepseek-coder:6.7b")
 
 
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
@@ -401,7 +401,7 @@ def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
     assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qwen response"
-    ollama.assert_called_once_with("prompt", None, role="qa_senior", model="deepseek-r1:7b")
+    ollama.assert_called_once_with("prompt", None, role="qa_senior", model="gemma4:latest")
 
 
 def test_qa_ollama_falls_back_to_qwen(initialized_orchestrator, monkeypatch):

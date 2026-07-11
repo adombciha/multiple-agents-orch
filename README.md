@@ -54,22 +54,22 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
 | PM | 每次任務 | `gpt-5.6-sol` | `gemini-3.5-flash` | `qwen3:8b` |
-| Architect | 每次任務 | `deepseek-r1:latest` | `qwen3:8b` | `qwen2.5-coder:14b` |
+| Architect | 每次任務 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
 | RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-terra` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
 | RD Middle | 一般功能實作 | `gpt-5.6-luna` | `qwen2.5-coder:14b` | `codegemma:7b` |
-| RD Junior | 重複、明確、小修改 | `deepseek-r1:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| QA Senior | 安全、架構、複雜流程 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `qwen2.5-coder:7b` |
-| QA Middle | 整合與一般功能驗證 | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` | `gemma4:latest` |
+| RD Junior | 重複、明確、小修改 | `codegemma:7b` | `qwen2.5-coder:7b` | `gemma4:latest` |
+| QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
+| QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| Reviewer | 最終程式碼審查 | `gpt-5.6-sol` | `deepseek-r1:latest` | `qwen2.5-coder:14b` |
-| Security | auth、secrets、PII、payment、攻擊面 | `deepseek-r1:latest` | `phi4-reasoning:14b` | `qwen2.5-coder:14b` |
+| Reviewer | 最終程式碼審查 | `gpt-5.6-sol` | `deepseek-coder:6.7b` | `gemma4:latest` |
+| Security | auth、secrets、PII、payment、攻擊面 | `deepseek-coder:6.7b` | `gemma4:latest` | `qwen2.5-coder:7b` |
 | DevOps | CI/CD、Docker、release、rollback、pipeline | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` | `qwen2.5-coder:7b` |
 | RA | 法規、合規、產業規範 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
 | Sales | 競品、商業需求、客戶價值 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
 | UI/UX | UI、流程、a11y、wireframe | `qwen3:8b` | `gemma4:latest` | — |
 | UI/UX Visual Review | 有 screenshot／mockup 時 | `llama3.2-vision:latest` | `gemma4:latest` | — |
 | FAE | 客戶環境、SDK、設備、驗收 | `qwen3:8b` | `gemma4:latest` | — |
-| Integration | 外部 API、設備協定、第三方平台 | `deepseek-r1:latest` | `qwen2.5-coder:14b` | `deepseek-coder-v2:latest` |
+| Integration | 外部 API、設備協定、第三方平台 | `deepseek-coder:6.7b` | `qwen3:8b` | `gemma4:latest` |
 | Assistant | changelog、摘要、文件整理 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
 
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
