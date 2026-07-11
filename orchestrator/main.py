@@ -31,6 +31,9 @@ def main():
     backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"], help="The agent role")
     backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
 
+    ollama_url_parser = subparsers.add_parser("set-ollama-url", help="Set the Ollama API URL")
+    ollama_url_parser.add_argument("url", help="Ollama API base URL, for example http://172.17.144.1:11434")
+
     args = parser.parse_args()
 
     workspace = Path(os.getcwd())
@@ -192,6 +195,13 @@ def main():
             log_success(f"Successfully configured '{args.role}' backend to '{args.backend}'")
         except FileNotFoundError:
             log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+    elif args.command == "set-ollama-url":
+        orchestrator.init_project()
+        orchestrator.load_config_and_state()
+        orchestrator.config["ollama_url"] = args.url.rstrip("/")
+        with open(orchestrator.config_path, "w", encoding="utf-8") as f:
+            json.dump(orchestrator.config, f, indent=2)
+        log_success(f"Ollama API URL set to {orchestrator.config['ollama_url']}")
     else:
         parser.print_help()
 
