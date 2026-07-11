@@ -505,6 +505,21 @@ def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestra
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
 
 
+def test_developing_plan_does_not_treat_unrelated_change_scope_as_readme_only(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("Update README and config; 不得修改無關功能", encoding="utf-8")
+    initialized_orchestrator.request_path.write_text("Update README.md and orchestrator/core/config.py", encoding="utf-8")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "CONFIG-1", "description": "update config", "rd_level": "middle", "qa_level": "junior"}], "staffing": {"rd": {"middle": 1}, "qa": {"junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"][0]["id"] == "CONFIG-1"
+
+
 def test_developing_plan_reopens_changed_completed_task(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.state["tasks"] = [{

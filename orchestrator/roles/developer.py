@@ -73,7 +73,7 @@ class DeveloperAgent(BaseAgent):
             tasks = parsed if isinstance(parsed, list) else parsed["tasks"]
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a JSON array")
-            docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改"))
+            docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
             if docs_only:
                 request = self.orchestrator.request_path.read_text(encoding="utf-8")
                 files = [name for name in ("README.md", "README_en.md", "README_ja.md", "README_zh-CN.md") if name in request]
