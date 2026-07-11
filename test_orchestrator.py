@@ -271,8 +271,9 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(initialized_
             ],
             "stream": False,
             "keep_alive": 0,
+            "options": {"num_ctx": 2048},
         },
-        timeout=600,
+        timeout=1800,
     )
     response.raise_for_status.assert_called_once_with()
 
