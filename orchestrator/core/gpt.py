@@ -27,6 +27,28 @@ FILE_RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+SECTION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "heading": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "heading", "content"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+        }
+    },
+    "required": ["sections"],
+    "additionalProperties": False,
+}
+
 
 def is_gpt_oss(model: str | None) -> bool:
     return bool(model and model.split(":", 1)[0] == "gpt-oss")
@@ -47,18 +69,37 @@ def _file_blocks(payload: str) -> str:
         raise RuntimeError(f"gpt-oss returned invalid JSON file payload: {error}") from error
 
 
+def _section_blocks(payload: str) -> str:
+    try:
+        data = json.loads(payload)
+        sections = data["sections"]
+        if not isinstance(sections, list) or not sections:
+            raise ValueError("sections must be a non-empty array")
+        return "\n".join(
+            f"[SECTION_EDIT_START: {item['path']}]\n[HEADING]\n{item['heading']}\n[CONTENT]\n{item['content']}\n[SECTION_EDIT_END: {item['path']}]"
+            for item in sections
+            if isinstance(item, dict)
+            and all(isinstance(item.get(key), str) for key in ("path", "heading", "content"))
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"gpt-oss returned invalid JSON section payload: {error}") from error
+
+
 def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str = "gpt-oss:20b", image_paths: list[str] | None = None) -> str:
     from orchestrator.core.state import log_error, log_info
     from pathlib import Path
     import base64
 
+    section_mode = "[SECTION_EDIT_START:" in prompt
+    response_schema = SECTION_RESPONSE_SCHEMA if section_mode else FILE_RESPONSE_SCHEMA
     messages = []
     system = system_prompt or ""
-    system += " Return only one JSON object with a non-empty files array; each item must contain path and complete file content. Do not include thinking or explanatory text outside the JSON object."
+    output_kind = "sections array with path, heading, and replacement content" if section_mode else "files array with path and complete file content"
+    system += f" Return only one JSON object with a non-empty {output_kind}. Do not include thinking or explanatory text outside the JSON object."
     messages.append({"role": "system", "content": system})
     messages.append({
         "role": "user",
-        "content": prompt + "\n\nGPT-OSS output override: ignore any file-marker example in the task prompt and return only the JSON object required by the system instruction.",
+        "content": prompt + "\n\nGPT-OSS output override: ignore any file-marker or section-marker example in the task prompt and return only the JSON object required by the system instruction.",
     })
     if image_paths:
         messages[-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
@@ -67,7 +108,7 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
         "model": model,
         "messages": messages,
         "stream": False,
-        "format": FILE_RESPONSE_SCHEMA,
+        "format": response_schema,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
     think = orchestrator.config.get("ollama_think", "high")
@@ -89,7 +130,7 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
             retry_payload.pop("think")
             response = requests.post(url, json=retry_payload, timeout=timeout)
         response.raise_for_status()
-        result = _file_blocks(response.json()["message"]["content"])
+        result = _section_blocks(response.json()["message"]["content"]) if section_mode else _file_blocks(response.json()["message"]["content"])
         log_info(f"GPT Ollama completed model={model} elapsed={time.monotonic() - started:.1f}s")
         return result
     except requests.exceptions.RequestException as error:

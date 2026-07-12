@@ -353,6 +353,32 @@ class DeveloperAgent(BaseAgent):
             sys.exit(1)
 
         tasks = self.orchestrator.state.get("tasks", [])
+        for task in tasks:
+            if task.get("status") != "pending" or not str(task.get("id", "")).startswith("FIX-") or task.get("section_heading"):
+                continue
+            section_base = self.orchestrator.workspace
+            worktree = self.orchestrator.ai_dir / "worktree"
+            if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
+                section_base = worktree
+            for filepath in task.get("target_files", []):
+                path = section_base / filepath
+                if path.suffix.lower() != ".md" or not path.is_file():
+                    continue
+                content = path.read_text(encoding="utf-8")
+                marker = "replacement content below the heading"
+                marker_index = content.find(marker)
+                if marker_index < 0:
+                    continue
+                headings = [line for line in content[:marker_index].splitlines() if re.match(r"^#{1,6}\s+\S", line)]
+                if headings:
+                    task["section_heading"] = headings[-1]
+                    task["output_contract"] = {
+                        "format": "markdown_section_replacements",
+                        "response_must_start_with": "[SECTION_EDIT_START:",
+                        "allow_prose": False,
+                    }
+                    log_info(f"Scoped {task['id']} to damaged section {task['section_heading']}.")
+                break
         for task in list(tasks):
             if task.get("status") != "pending" or not str(task.get("id", "")).startswith("FIX-"):
                 continue
