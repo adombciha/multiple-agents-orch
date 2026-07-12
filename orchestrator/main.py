@@ -150,6 +150,11 @@ def main():
                 log_error(f"Cannot approve from state: {orchestrator.state.get('state')}")
                 return
             resume_state = orchestrator.state.get("pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE"))
+            active_task_id = orchestrator.state.get("active_task_id")
+            if active_task_id:
+                old_failures = orchestrator.state.setdefault("task_failed_model_routes", {}).pop(active_task_id, [])
+                if old_failures:
+                    log_info(f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry.")
             orchestrator.state["state"] = resume_state
             orchestrator.state.pop("human_review_source", None)
             orchestrator.state.pop("resume_state", None)
