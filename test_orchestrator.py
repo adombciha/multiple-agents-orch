@@ -120,6 +120,9 @@ def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_gi
     expected_state.setdefault("worker_assignments", {})
     expected_state.setdefault("last_developer_role", "developer_senior")
     expected_state.setdefault("developer_promotions", {})
+    expected_state.setdefault("failed_model_routes", [])
+    expected_state.setdefault("task_failed_model_routes", {})
+    expected_state.setdefault("task_developer_promotions", {})
     assert app.state == expected_state
 
 
@@ -291,10 +294,24 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(initialized_
             ],
             "stream": False,
             "keep_alive": 0,
+            "think": "high",
         },
         timeout=1800,
     )
     response.raise_for_status.assert_called_once_with()
+
+
+def test_call_ollama_retries_without_thinking_when_model_rejects_it(initialized_orchestrator, monkeypatch):
+    rejected = Mock(status_code=400)
+    accepted = Mock(status_code=200)
+    accepted.json.return_value = {"message": {"content": "answer"}}
+    post = Mock(side_effect=[rejected, accepted])
+    monkeypatch.setattr(orchestrator.requests, "post", post)
+
+    assert initialized_orchestrator.call_ollama("do it", model="plain-model") == "answer"
+    assert post.call_args_list[0].kwargs["json"]["think"] == "high"
+    assert "think" not in post.call_args_list[1].kwargs["json"]
+    assert "plain-model" in initialized_orchestrator._ollama_no_think_models
 
 
 def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, monkeypatch):
@@ -430,6 +447,22 @@ def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrat
     assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
 
 
+def test_implementing_route_failures_are_scoped_to_active_task(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.state["active_task_id"] = "T-1"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [["grok", "grok-4.5"]]
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value="invalid"))
+
+    with pytest.raises(RuntimeError):
+        initialized_orchestrator.call_agent("developer_junior", "prompt")
+
+    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == ["grok/grok-4.5"]
+    assert initialized_orchestrator.state["failed_model_routes"] == []
+    initialized_orchestrator.state["active_task_id"] = "T-2"
+    assert initialized_orchestrator.state["task_failed_model_routes"].get("T-2", []) == []
+
+
 def test_developer_route_accepts_markdown_edit_blocks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [["grok", "grok-4.5"]]
@@ -496,7 +529,8 @@ def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
-    assert initialized_orchestrator.state["code_revisions"] == 1
+    assert initialized_orchestrator.state["code_revisions"] == 0
+    assert initialized_orchestrator.state["tasks"][0]["revisions"] == 1
 
 
 def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator):
@@ -571,7 +605,8 @@ def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orche
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
-    assert initialized_orchestrator.state["code_revisions"] == 1
+    assert initialized_orchestrator.state["code_revisions"] == 0
+    assert initialized_orchestrator.state["tasks"][0]["revisions"] == 1
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
 
 
@@ -693,6 +728,17 @@ def test_developer_promotion_is_state_only(initialized_orchestrator):
     assert initialized_orchestrator.config["role_models"]["developer_junior"] == original_model
     assert initialized_orchestrator.fix_task_levels() == {"rd_level": "middle", "qa_level": "junior"}
     assert initialized_orchestrator.state["staffing"]["rd"]["middle"] == 1
+
+
+def test_developer_promotion_is_isolated_to_active_task(initialized_orchestrator):
+    initialized_orchestrator.state["active_task_id"] = "T-1"
+    initialized_orchestrator.state["last_developer_role"] = "developer_junior"
+
+    initialized_orchestrator.escalate_developer_backend()
+
+    assert initialized_orchestrator.state["task_developer_promotions"]["T-1"]["developer_junior"] == "developer_middle"
+    assert initialized_orchestrator.state["developer_promotions"] == {}
+    assert initialized_orchestrator.state["task_developer_promotions"].get("T-2", {}) == {}
 
 
 def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkeypatch):

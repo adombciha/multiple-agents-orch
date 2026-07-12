@@ -94,6 +94,9 @@ class AgentOrchestrator:
                 "qa": 0
             },
             "quota_exhausted_backends": {},
+            "failed_model_routes": [],
+            "task_failed_model_routes": {},
+            "task_developer_promotions": {},
             "tasks": [],
             "specialists": [],
             "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}}
@@ -169,6 +172,7 @@ class AgentOrchestrator:
             "state": "PLANNING", "plan_revisions": 0, "code_revisions": 0,
             "model_tier_indices": {"developer": 0, "reviewer": 0, "manager": 0, "qa": 0},
             "quota_exhausted_backends": {}, "tasks": [], "specialists": [],
+            "failed_model_routes": [], "task_failed_model_routes": {}, "task_developer_promotions": {},
             "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}},
         }
 
@@ -209,6 +213,9 @@ class AgentOrchestrator:
         self.state.setdefault("worker_assignments", {})
         self.state.setdefault("last_developer_role", "developer_senior")
         self.state.setdefault("developer_promotions", {})
+        self.state.setdefault("failed_model_routes", [])
+        self.state.setdefault("task_failed_model_routes", {})
+        self.state.setdefault("task_developer_promotions", {})
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -362,9 +369,14 @@ class AgentOrchestrator:
         if not routes:
             return None
         errors = []
+        task_id = self.state.get("active_task_id") if self.state.get("state") == "IMPLEMENTING" else None
+        if task_id:
+            failed_routes = self.state.setdefault("task_failed_model_routes", {}).setdefault(task_id, [])
+        else:
+            failed_routes = self.state.setdefault("failed_model_routes", [])
         for backend, model in routes:
             route = f"{backend}/{model}"
-            if route in self.state.setdefault("failed_model_routes", []):
+            if route in failed_routes:
                 log_info(f"Skipping unavailable model route: {route}")
                 continue
             if not backends.backend_available(self, backend):
@@ -408,8 +420,8 @@ class AgentOrchestrator:
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
-                if route not in self.state["failed_model_routes"]:
-                    self.state["failed_model_routes"].append(route)
+                if route not in failed_routes:
+                    failed_routes.append(route)
                     self.save_state()
                 if backends.quota_exhausted(error):
                     backends.mark_backend_quota_exhausted(self, backend)

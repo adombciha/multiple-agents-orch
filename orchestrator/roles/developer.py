@@ -280,6 +280,22 @@ class DeveloperAgent(BaseAgent):
             written_files.append(filepath_str)
         return list(dict.fromkeys(written_files))
 
+    def retry_task_or_pause(self, task: dict, error: str) -> None:
+        from orchestrator.core.state import log_info
+
+        self.orchestrator.escalate_developer_backend()
+        max_revisions = self.orchestrator.config.get("max_revisions", 2)
+        revisions = int(task.get("revisions", 0))
+        if revisions < max_revisions:
+            task["revisions"] = revisions + 1
+            self.orchestrator.state["state"] = "IMPLEMENTING"
+            self.orchestrator.state["last_developer_error"] = error
+            self.orchestrator.save_state()
+            self.orchestrator.action_items_path.write_text(json.dumps(self.orchestrator.state["tasks"], indent=2), encoding="utf-8")
+            log_info(f"Revising task {task['id']} (Revision {task['revisions']}/{max_revisions})...")
+            return
+        self.orchestrator.pause_for_human_review("Developer", error, "IMPLEMENTING", "IMPLEMENTING")
+
     def step_implementing(self):
         from orchestrator.core.state import log_header, log_error, log_success, log_info, log_warning
 
@@ -293,6 +309,7 @@ class DeveloperAgent(BaseAgent):
 
         if not pending_tasks:
             log_success("All tasks are already marked completed.")
+            self.orchestrator.state.pop("active_task_id", None)
             self.orchestrator.state["state"] = "TESTING"
             self.orchestrator.save_state()
             return
@@ -302,11 +319,13 @@ class DeveloperAgent(BaseAgent):
         developer_logs = []
         _, rd_assignments = self.orchestrator.allocate_workers("rd", tasks)
         for task in pending_tasks:
+            self.orchestrator.state["active_task_id"] = task["id"]
             log_info(f"Implementing Task {task['id']}: {task['description']}")
             description = task["description"].lstrip().lower()
             if description.startswith(("inventory ", "inspect ", "review ", "verify ", "validate ", "盤點", "檢查", "審查", "驗證")):
                 log_info(f"Task {task['id']} is read-only; no developer response required.")
                 task["status"] = "completed"
+                self.orchestrator.state.pop("active_task_id", None)
                 self.orchestrator.save_state()
                 with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
                     json.dump(tasks, f, indent=2)
@@ -314,7 +333,8 @@ class DeveloperAgent(BaseAgent):
             worker_id = rd_assignments[task["id"]]
             _, level, agent_number = worker_id.rsplit("-", 2)
             agent_role = f"developer_{level}"
-            effective_role = self.orchestrator.state.get("developer_promotions", {}).get(agent_role, agent_role)
+            task_promotions = self.orchestrator.state.setdefault("task_developer_promotions", {}).setdefault(task["id"], {})
+            effective_role = task_promotions.get(agent_role, agent_role)
             backend = self.orchestrator.get_backend(effective_role)
 
             target_files = task.get("target_files", [])
@@ -408,7 +428,7 @@ class DeveloperAgent(BaseAgent):
             else:
                 prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
 
-            if self.orchestrator.state["code_revisions"] > 0:
+            if self.orchestrator.state["code_revisions"] > 0 or task.get("revisions", 0) > 0:
                 feedback = ""
                 if self.orchestrator.qa_report_path.exists():
                     with open(self.orchestrator.qa_report_path, "r", encoding="utf-8") as f:
@@ -442,19 +462,7 @@ class DeveloperAgent(BaseAgent):
                     response_validator=valid_file_response,
                 )
             except RuntimeError as error:
-                self.orchestrator.escalate_developer_backend()
-                max_rev = self.orchestrator.config.get("max_revisions", 2)
-                if self.orchestrator.state["code_revisions"] < max_rev:
-                    self.orchestrator.state["code_revisions"] += 1
-                    self.orchestrator.state["state"] = "IMPLEMENTING"
-                    self.orchestrator.state["last_developer_error"] = str(error)
-                    self.orchestrator.save_state()
-                    log_info(
-                        f"Revising implementation after Developer contract failure "
-                        f"(Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
-                    )
-                else:
-                    self.orchestrator.pause_for_human_review("Developer", str(error), "IMPLEMENTING", "IMPLEMENTING")
+                self.retry_task_or_pause(task, str(error))
                 return
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
@@ -463,28 +471,12 @@ class DeveloperAgent(BaseAgent):
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:
                     log_warning("No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks.")
-                    self.orchestrator.escalate_developer_backend()
-                    max_rev = self.orchestrator.config.get("max_revisions", 2)
-                    if self.orchestrator.state["code_revisions"] < max_rev:
-                        self.orchestrator.state["code_revisions"] += 1
-                        self.orchestrator.state["state"] = "IMPLEMENTING"
-                        self.orchestrator.state["last_developer_error"] = f"Task {task['id']} produced no permitted file changes."
-                        self.orchestrator.save_state()
-                        log_info(
-                            f"Revising implementation after empty Developer output "
-                            f"(Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
-                        )
-                    else:
-                        self.orchestrator.pause_for_human_review(
-                            "Developer",
-                            f"Task {task['id']} produced no permitted file changes.",
-                            "IMPLEMENTING",
-                            "IMPLEMENTING",
-                        )
+                    self.retry_task_or_pause(task, f"Task {task['id']} produced no permitted file changes.")
                     return
 
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")
             task["status"] = "completed"
+            self.orchestrator.state.pop("active_task_id", None)
             self.orchestrator.save_state()
 
             with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
@@ -494,5 +486,6 @@ class DeveloperAgent(BaseAgent):
             f.write("\n".join(developer_logs))
 
         log_success("All pending tasks processed.")
+        self.orchestrator.state.pop("active_task_id", None)
         self.orchestrator.state["state"] = "TESTING"
         self.orchestrator.save_state()

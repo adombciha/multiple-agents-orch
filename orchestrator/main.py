@@ -106,8 +106,10 @@ def main():
             "last_developer_role": "developer_senior",
             "last_qa_level": "senior",
             "developer_promotions": {},
+            "task_developer_promotions": {},
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
+            "task_failed_model_routes": {},
             "visual_image_paths": image_paths,
             "workflow_mode": "research" if args.research else "delivery",
             "research_roles": ["sales", "ra"] if args.research else [],
@@ -209,7 +211,10 @@ def main():
             orchestrator.state["last_developer_role"] = "developer_senior"
             orchestrator.state["last_qa_level"] = "senior"
             orchestrator.state["developer_promotions"] = {}
+            orchestrator.state["task_developer_promotions"] = {}
             orchestrator.state["quota_exhausted_backends"] = {}
+            orchestrator.state["failed_model_routes"] = []
+            orchestrator.state["task_failed_model_routes"] = {}
             orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")

@@ -57,11 +57,23 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
         "stream": False,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
+    think = orchestrator.config.get("ollama_think", "high")
+    no_think_models = getattr(orchestrator, "_ollama_no_think_models", set())
+    if think and model not in no_think_models:
+        payload["think"] = think
     if image_paths:
         payload["messages"][-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
 
     try:
-        response = requests.post(url, json=payload, timeout=orchestrator.config.get("ollama_timeout", 1800))
+        timeout = orchestrator.config.get("ollama_timeout", 1800)
+        response = requests.post(url, json=payload, timeout=timeout)
+        if payload.get("think") and response.status_code == 400:
+            log_info(f"Ollama model {model} does not accept think={think}; retrying without thinking.")
+            no_think_models.add(model)
+            orchestrator._ollama_no_think_models = no_think_models
+            retry_payload = dict(payload)
+            retry_payload.pop("think")
+            response = requests.post(url, json=retry_payload, timeout=timeout)
         response.raise_for_status()
         return response.json()["message"]["content"]
     except requests.exceptions.RequestException as e:
@@ -214,7 +226,12 @@ def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
 def escalate_developer_backend(orchestrator) -> None:
     from orchestrator.core.state import log_warning
     role = orchestrator.state.get("last_developer_role", "developer_senior")
-    effective_role = orchestrator.state.setdefault("developer_promotions", {}).get(role, role)
+    task_id = orchestrator.state.get("active_task_id")
+    if task_id:
+        promotions = orchestrator.state.setdefault("task_developer_promotions", {}).setdefault(task_id, {})
+    else:
+        promotions = orchestrator.state.setdefault("developer_promotions", {})
+    effective_role = promotions.get(role, role)
     promoted_role = {
         "developer_junior": "developer_middle",
         "developer_middle": "developer_senior",
@@ -223,6 +240,7 @@ def escalate_developer_backend(orchestrator) -> None:
         log_warning("[!] Already at the highest Developer model tier.")
         return
 
-    orchestrator.state["developer_promotions"][role] = promoted_role
+    promotions[role] = promoted_role
     orchestrator.save_state()
-    log_warning(f"[!] Promoted {role} to {promoted_role} for this run.")
+    scope = f"task {task_id}" if task_id else "this run"
+    log_warning(f"[!] Promoted {role} to {promoted_role} for {scope}.")
