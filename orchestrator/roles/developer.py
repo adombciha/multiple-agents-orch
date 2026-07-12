@@ -180,11 +180,6 @@ class DeveloperAgent(BaseAgent):
             log_error("Requirements or Plan missing. Cannot implement.")
             sys.exit(1)
 
-        with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
-            requirements = f.read()
-        with open(self.orchestrator.plan_path, "r", encoding="utf-8") as f:
-            plan = f.read()
-
         tasks = self.orchestrator.state.get("tasks", [])
         pending_tasks = [t for t in tasks if t["status"] == "pending"]
 
@@ -214,16 +209,36 @@ class DeveloperAgent(BaseAgent):
             effective_role = self.orchestrator.state.get("developer_promotions", {}).get(agent_role, agent_role)
             backend = self.orchestrator.get_backend(effective_role)
 
+            target_files = task.get("target_files", [])
+            machine_contract = {
+                "stage": "IMPLEMENTING",
+                "allowed_actions": ["modify_files"],
+                "target_files": target_files,
+                "output_contract": task.get("output_contract", {}),
+            }
+            base_dir = self.orchestrator.workspace
+            worktree = self.orchestrator.ai_dir / "worktree"
+            if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
+                base_dir = worktree
+            current_files = []
+            for filepath in target_files:
+                target_path = (base_dir / filepath).resolve()
+                if base_dir in target_path.parents and target_path.is_file():
+                    current_files.append(
+                        f"[CURRENT_FILE: {filepath}]\n"
+                        f"{target_path.read_text(encoding='utf-8')}\n"
+                        f"[END_CURRENT_FILE: {filepath}]"
+                    )
+
             prompt = (
-                f"We are implementing the project in the workspace root. Here are the requirements:\n"
-                f"```markdown\n{requirements}\n```\n\n"
-                f"And here is our implementation plan:\n"
-                f"```markdown\n{plan}\n```\n\n"
-                f"Please implement the following task:\n"
+                "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
                 f"Description: {task['description']}\n"
-                f"Machine contract: {json.dumps({'stage': 'IMPLEMENTING', 'allowed_actions': ['modify_files'], 'target_files': task.get('target_files', []), 'output_contract': task.get('output_contract', {})})}\n\n"
+                f"Machine contract: {json.dumps(machine_contract)}\n"
+                "Modify only target_files. Preserve all unrelated content and existing Markdown headings.\n"
             )
+            if current_files:
+                prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
                 prompt += (

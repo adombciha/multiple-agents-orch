@@ -443,6 +443,23 @@ def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator,
     assert "respond only with [file_start" in call_agent.call_args.args[2].lower()
 
 
+def test_implementing_prompt_includes_only_current_target_files(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    (initialized_orchestrator.workspace / "README.md").write_text("# Keep me\n", encoding="utf-8")
+    (initialized_orchestrator.workspace / "README_en.md").write_text("# Do not include me\n", encoding="utf-8")
+    call_agent = Mock(return_value="[FILE_START: README.md]\n# Keep me\n\nUpdated\n[FILE_END: README.md]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "[CURRENT_FILE: README.md]\n# Keep me" in prompt
+    assert "Do not include me" not in prompt
+
+
 def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
