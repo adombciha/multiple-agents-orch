@@ -427,6 +427,9 @@ class AgentOrchestrator:
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
+                if isinstance(error, ResponseContractError) and response_schema is not None:
+                    log_warning(f"{backend}/{model} violated the strict JSON contract; stopping without a token-consuming fallback.")
+                    raise RuntimeError(f"Strict JSON contract failed for {role}: {error}") from error
                 if not isinstance(error, ResponseContractError) and route not in failed_routes:
                     failed_routes.append(route)
                     self.save_state()

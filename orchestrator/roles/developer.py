@@ -3,7 +3,7 @@ import sys
 import json
 import re
 from pathlib import Path
-from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
+from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
 
 TASK_PLAN_SCHEMA = {
     "type": "object",
@@ -18,7 +18,7 @@ TASK_PLAN_SCHEMA = {
 
 def is_task_plan_response(response: str) -> bool:
     try:
-        parsed = json.loads(extract_json_response(response))
+        parsed = json.loads(response.strip())
         return isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list)
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -81,7 +81,7 @@ class DeveloperAgent(BaseAgent):
         )
 
         # Clean potential markdown wrapping
-        clean_json = extract_json_response(parsed_items_raw)
+        clean_json = parsed_items_raw.strip()
 
         try:
             parsed = json.loads(clean_json)

@@ -42,6 +42,13 @@ def is_json_response(response: str) -> bool:
     except (TypeError, ValueError):
         return False
 
+def is_strict_json_response(response: str) -> bool:
+    try:
+        json.loads(response.strip())
+        return True
+    except (TypeError, json.JSONDecodeError):
+        return False
+
 def inject_ponytail_prompt(system_prompt: str | None, use_ponytail: bool, role: str | None = None) -> str | None:
     """Injects PONYTAIL_PROMPT if active and role is eligible (manager, developer, reviewer)."""
     if not use_ponytail:

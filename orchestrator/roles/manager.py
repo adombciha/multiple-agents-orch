@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sys
 import json
-from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
+from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
 
 JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
 REQUIREMENT_HEADINGS = (
@@ -50,7 +50,7 @@ RESEARCH_TRACKS_SCHEMA = {
 
 def is_requirements_json_response(response: str) -> bool:
     try:
-        data = json.loads(extract_json_response(response))
+        data = json.loads(response.strip())
         return all(key in data for key in REQUIREMENTS_SCHEMA["required"])
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
@@ -88,7 +88,7 @@ class ManagerAgent(BaseAgent):
         sales_selection = self.call_manager(
             f"""Decide whether this request needs a Sales specialist before requirements are written:\n\n{request}\n\nRespond only with {{"use_sales": true}} when business scope, users, value, or acceptance criteria are unclear; otherwise respond with {{"use_sales": false}}.""",
             f"You are a Project Manager. {JSON_RULES}",
-            is_json_response,
+            is_strict_json_response,
             SALES_SELECTION_SCHEMA,
         )
         try:
@@ -111,7 +111,7 @@ class ManagerAgent(BaseAgent):
             response_validator=is_requirements_json_response,
             response_schema=REQUIREMENTS_SCHEMA,
         )
-        requirements_data = json.loads(extract_json_response(requirements_json))
+        requirements_data = json.loads(requirements_json.strip())
         self.orchestrator.requirements_json_path.write_text(
             json.dumps(requirements_data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
@@ -126,7 +126,7 @@ class ManagerAgent(BaseAgent):
             tracks = self.call_manager(
                 f"""Split this research request into 1-3 independent Sales or RA research tracks.\n\n{request}\n\nRespond only with JSON: {{\"tracks\":[{{\"role\":\"sales\" or \"ra\",\"focus\":\"specific research question\"}}]}}.""",
                 f"You are a research program manager. {JSON_RULES}",
-                is_json_response,
+                is_strict_json_response,
                 RESEARCH_TRACKS_SCHEMA,
             )
             try:

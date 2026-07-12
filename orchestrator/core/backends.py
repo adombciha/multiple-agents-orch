@@ -188,16 +188,27 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
 
 def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
     from orchestrator.core.state import log_info
-    full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
+    full_prompt = prompt if response_schema else (f"{system_prompt}\n\n{prompt}" if system_prompt else prompt)
     model = model or orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
     cmd = ["grok", "-p", full_prompt, "-m", model]
     effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if effort:
         cmd.extend(["--effort", effort])
     if response_schema:
-        cmd.extend(["--json-schema", json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))])
+        cmd.extend([
+            "--json-schema", json.dumps(response_schema, ensure_ascii=False, separators=(",", ":")),
+            "--output-format", "json",
+            "--system-prompt-override",
+            "Return exactly one JSON object matching the supplied schema. Do not inspect files, use tools, plan, call subagents, explain, or output Markdown.",
+            "--max-turns", "1",
+            "--no-plan",
+            "--no-subagents",
+            "--no-memory",
+            "--disable-web-search",
+            "--verbatim",
+        ])
     started = time.monotonic()
-    log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'} schema={'yes' if response_schema else 'no'}")
+    log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'} schema={'strict' if response_schema else 'no'}")
     result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, timeout=1800, check=False)
     elapsed = time.monotonic() - started
