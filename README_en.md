@@ -30,7 +30,7 @@ PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 
 The PM analyzes requirements and staffs optional specialists. Their findings are passed to the Architect for plan review. RD implements the tasks, QA runs the configured test command and reports results, Reviewer evaluates the requirements, plan, tests, specialist findings, and Git diff, and Assistant creates `CHANGELOG.md` when complete.
 
-`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.json`, the generated human-readable `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`. Machine-to-machine artifacts use JSON where possible; human-facing output uses Markdown.
+`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.json`, the generated human-readable `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.json`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`. Machine-to-machine artifacts use JSON where possible; human-facing output uses Markdown.
 
 ## Configuration
 
@@ -47,7 +47,7 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 
 ## Grok specialists
 
-Grok is an external CLI backend for dynamic RA and Sales specialists, both configured as `grok` by default. It is neither a top-level workflow state nor a direct replacement for PM, Architect, RD, QA, or Reviewer. The PM selects RA or Sales during requirements analysis and staffing only when the task calls for the specialist; the resulting analysis informs the Architect's plan review.
+Grok is an external CLI backend available to PM, Architect, Reviewer, RA, and Sales. `orchestrator/core/grok.py` centralizes Grok CLI modes, JSON-envelope extraction, and single-turn restrictions. PM, Architect, and Reviewer use strict machine-readable JSON that Python renders into human-readable Markdown. A Developer routed to Grok runs without plan mode, subagents, memory, web search, or tools and may return only the requested file or section blocks. RA and Sales retain normal research mode.
 
 Install a working, authenticated `grok` CLI before a workflow selects either role. The direct interface used by the project is:
 
@@ -57,13 +57,7 @@ grok -p "<prompt>" -m grok-4.5
 
 The supported configured Grok model is `grok-4.5`. Configure the backend and model in `.ai-company/config.json` with `backends.ra` / `backends.sales`, `role_models.ra` / `role_models.sales`, `role_model_backends.ra` / `role_model_backends.sales`, `role_model_tiers.ra` / `role_model_tiers.sales`, and `model_tiers.grok`. The role model resolves from `role_model_tiers`, then `role_models`, then `grok-4.5`.
 
-`set-backend` supports the `grok` backend directly. If Grok is unavailable or its request fails, the role falls back in this order:
-
-```text
-grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
-```
-
-RA output is a model review, not verified legal research. The project does not provide a direct CLI subcommand to force a specialist or set a backend to `grok`.
+`set-backend` supports the `grok` backend directly. When Grok is unavailable, fallback follows that role's `role_model_routes`. A strict JSON contract failure stops without calling another paid model. RA output is a model review, not verified legal research; PM still selects specialists based on task needs.
 
 ## Automatic and human review
 

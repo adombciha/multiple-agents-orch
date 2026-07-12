@@ -2,6 +2,27 @@ from __future__ import annotations
 import json
 from orchestrator.roles.base_agent import BaseAgent
 
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["APPROVED", "REJECTED"]},
+        "feedback": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "feedback"],
+    "additionalProperties": False,
+}
+
+def is_code_review(response: str) -> bool:
+    try:
+        data = json.loads(response.strip())
+        return data.get("status") in {"APPROVED", "REJECTED"} and isinstance(data.get("feedback"), list)
+    except (AttributeError, json.JSONDecodeError):
+        return False
+
+def render_code_review(data: dict) -> str:
+    feedback = "\n".join(f"- {item}" for item in data["feedback"]) or "- No issues found."
+    return f"{data['status']}\n\n{feedback}\n"
+
 class ReviewerAgent(BaseAgent):
     def step_reviewing_code(self):
         from orchestrator.core.state import log_header, log_success, log_warning, log_info
@@ -36,17 +57,25 @@ class ReviewerAgent(BaseAgent):
             roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
         )
 
-        prompt = f"""Review the code changes made. Here is the context:\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify if the implementation matches the assigned tasks and if the tests pass.\nIf acceptable, start your response with 'APPROVED'.\nIf there are bugs, logic errors, style issues, or failures, start your response with 'REJECTED' followed by detailed feedback.\n\nFormat:\n[APPROVED or REJECTED]\n[Feedback details]"""
+        prompt = f"""Review the code changes made.\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify that the implementation matches assigned tasks, tests pass, and no bugs, scope violations, or safety issues remain. Return the verdict and concise feedback using the supplied JSON schema."""
 
-        system_prompt = "You are a Senior Code Reviewer. Review the git diff and test results."
-        review = self.call_agent("reviewer", prompt, system_prompt)
+        review_json = self.call_agent(
+            "reviewer", prompt,
+            "You are a Senior Code Reviewer. Return only JSON with status (APPROVED or REJECTED) and a feedback string array.",
+            response_validator=is_code_review, response_schema=REVIEW_SCHEMA,
+        )
+        review_data = json.loads(review_json)
+        review = render_code_review(review_data)
+        self.orchestrator.reviewer_output_json_path.write_text(
+            json.dumps(review_data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
         with open(self.orchestrator.reviewer_output_path, "w", encoding="utf-8") as f:
             f.write(review)
 
         log_info(f"Code Review response saved. Preview:\n{review[:200]}...")
 
-        is_approved = review.strip().upper().replace("*", "").startswith("APPROVED")
+        is_approved = review_data["status"] == "APPROVED"
 
         if is_approved:
             log_success("Code changes APPROVED by Reviewer!")

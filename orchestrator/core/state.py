@@ -76,6 +76,7 @@ class AgentOrchestrator:
         self.plan_path = self.ai_dir / "implementation_plan.md"
         self.action_items_path = self.ai_dir / "action_items.json"
         self.agent_context_path = self.ai_dir / "agent_context.json"
+        self.reviewer_output_json_path = self.ai_dir / "reviewer_output.json"
         self.reviewer_output_path = self.ai_dir / "reviewer_output.md"
         self.developer_output_path = self.ai_dir / "developer_output.md"
         self.test_results_path = self.ai_dir / "test_results.txt"
@@ -391,19 +392,19 @@ class AgentOrchestrator:
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
                         raise ResponseContractError("Developer response omitted required file blocks")
-                    self.validate_routed_response(role, response)
+                    self.validate_routed_response(role, response, response_schema)
                     if response_validator is not None and not response_validator(response):
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "codex":
                     response = self.call_codex(prompt, system_prompt, role=role, model=model)
-                    self.validate_routed_response(role, response)
+                    self.validate_routed_response(role, response, response_schema)
                     if response_validator is not None and not response_validator(response):
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "agy":
                     response = self.call_agy(prompt, system_prompt, role=role, model=model)
-                    self.validate_routed_response(role, response)
+                    self.validate_routed_response(role, response, response_schema)
                     if response_validator is not None and not response_validator(response):
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
@@ -414,13 +415,13 @@ class AgentOrchestrator:
                     response = self.call_grok(prompt, system_prompt, **grok_kwargs)
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
                         raise ResponseContractError("Developer response omitted required file blocks")
-                    self.validate_routed_response(role, response)
+                    self.validate_routed_response(role, response, response_schema)
                     if response_validator is not None and not response_validator(response):
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "claude":
                     response = self.call_claude(prompt, system_prompt, role=role)
-                    self.validate_routed_response(role, response)
+                    self.validate_routed_response(role, response, response_schema)
                     if response_validator is not None and not response_validator(response):
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
@@ -438,7 +439,9 @@ class AgentOrchestrator:
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
         raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
 
-    def validate_routed_response(self, role: str, response: str):
+    def validate_routed_response(self, role: str, response: str, response_schema: dict | None = None):
+        if response_schema is not None:
+            return
         if role not in {"architect", "reviewer"}:
             return
         if self.state.get("state") not in {"REVIEWING_PLAN", "REVIEWING_CODE"}:

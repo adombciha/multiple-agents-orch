@@ -67,8 +67,8 @@ class BaseAgent:
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None) -> str:
-        return self.orchestrator.call_agent(role, prompt, system_prompt, image_paths, response_validator)
+    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str:
+        return self.orchestrator.call_agent(role, prompt, system_prompt, image_paths, response_validator, response_schema)
 
     def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         return self.orchestrator.call_agent_ollama_fallback(role, prompt, system_prompt)

@@ -10,8 +10,9 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.core import backends
-from orchestrator.core.backends import extract_grok_schema_payload, quota_exhausted
+from orchestrator.core import backends, grok
+from orchestrator.core.backends import quota_exhausted
+from orchestrator.core.grok import extract_schema_payload
 from orchestrator.roles.base_agent import is_json_response
 from orchestrator.roles.developer import is_task_plan_response
 from orchestrator.roles.manager import is_requirements_json_response, render_requirements
@@ -368,7 +369,7 @@ def test_call_ollama_request_exception_raises_runtime_error(initialized_orchestr
 def test_grok_structured_call_uses_schema_and_logs_capable_command(initialized_orchestrator, monkeypatch):
     completed = Mock(returncode=0, stdout='{"ok":true}', stderr="")
     runner = Mock(return_value=completed)
-    monkeypatch.setattr(backends.subprocess, "run", runner)
+    monkeypatch.setattr(grok.subprocess, "run", runner)
 
     assert backends.call_grok(
         initialized_orchestrator,
@@ -395,7 +396,33 @@ def test_grok_json_envelope_extracts_schema_payload():
     envelope = json.dumps({"session_id": "123", "result": {"content": json.dumps(payload)}})
     schema = {"required": list(payload)}
 
-    assert json.loads(extract_grok_schema_payload(envelope, schema)) == payload
+    assert json.loads(extract_schema_payload(envelope, schema)) == payload
+
+
+def test_grok_developer_uses_single_turn_coding_mode(initialized_orchestrator, monkeypatch):
+    completed = Mock(
+        returncode=0,
+        stdout="[FILE_START: hello.py]\nprint('ok')\n[FILE_END: hello.py]",
+        stderr="",
+    )
+    runner = Mock(return_value=completed)
+    monkeypatch.setattr(grok.subprocess, "run", runner)
+
+    backends.call_grok(
+        initialized_orchestrator,
+        "edit prompt",
+        role="developer_middle",
+        model="grok-4.5",
+    )
+
+    command = runner.call_args.args[0]
+    assert "--json-schema" not in command
+    assert "--max-turns" in command
+    assert "--no-plan" in command
+    assert "--no-subagents" in command
+    assert "--no-memory" in command
+    assert "--disable-web-search" in command
+    assert "--verbatim" in command
 
 
 def test_task_plan_validator_requires_tasks_array():
@@ -1054,17 +1081,19 @@ def test_step_dispatches_known_states(initialized_orchestrator, monkeypatch, sta
 def test_step_reviewing_plan_approved_moves_to_implementing(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="[APPROVED]\nok"))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value='{"status":"APPROVED","feedback":["ok"]}'))
 
     initialized_orchestrator.step_reviewing_plan()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert json.loads(initialized_orchestrator.reviewer_output_json_path.read_text())["status"] == "APPROVED"
+    assert initialized_orchestrator.reviewer_output_path.read_text().startswith("PLAN_STATUS: APPROVED")
 
 
 def test_step_reviewing_plan_rejected_revises_until_max(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="REJECTED\nfix it"))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'))
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
     initialized_orchestrator.step_reviewing_plan()
@@ -1130,11 +1159,13 @@ def test_step_reviewing_code_approved_moves_to_completed(initialized_orchestrato
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
     initialized_orchestrator.test_results_path.write_text("tests", encoding="utf-8")
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="APPROVED\nok"))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value='{"status":"APPROVED","feedback":["ok"]}'))
 
     initialized_orchestrator.step_reviewing_code()
 
     assert initialized_orchestrator.state["state"] == "COMPLETED"
+    assert json.loads(initialized_orchestrator.reviewer_output_json_path.read_text())["status"] == "APPROVED"
+    assert initialized_orchestrator.reviewer_output_path.read_text().startswith("APPROVED")
 
 
 def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monkeypatch):
@@ -1143,7 +1174,7 @@ def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monke
     initialized_orchestrator.test_results_path.write_text("tests passed", encoding="utf-8")
     initialized_orchestrator.has_git = True
     monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(side_effect=[(0, "diff"), (0, "stdout:\n?? docs/new.md\nstderr:\n"), (1, "new file contents")]))
-    call_agent = Mock(return_value="APPROVED")
+    call_agent = Mock(return_value='{"status":"APPROVED","feedback":[]}')
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
     initialized_orchestrator.step_reviewing_code()
@@ -1156,7 +1187,7 @@ def test_step_reviewing_code_rejected_revises_until_max(initialized_orchestrator
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
     initialized_orchestrator.test_results_path.write_text("tests", encoding="utf-8")
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="REJECTED\nfix it"))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'))
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
     initialized_orchestrator.step_reviewing_code()

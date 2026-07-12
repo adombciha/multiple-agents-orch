@@ -30,7 +30,7 @@ PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 
 PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進行 plan review。RD 實作任務，QA 執行設定的 test command 並報告結果，Reviewer 評估需求、計畫、測試、specialist 結果和 Git diff，Assistant 在完成後建立 `CHANGELOG.md`。
 
-`init` 建立 `.ai-company/`，其中包括 `config.json`、`state.json`、`request.md`、`requirements.json`、由程式產生的人類可讀 `requirements.md`、`implementation_plan.md`、`action_items.json`、agent 輸出、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md` 和 `final_report.md`。機器交換資料優先使用 JSON，人類閱讀使用 Markdown。
+`init` 建立 `.ai-company/`，其中包括 `config.json`、`state.json`、`request.md`、`requirements.json`、由程式產生的人類可讀 `requirements.md`、`implementation_plan.md`、`action_items.json`、agent 輸出、`test_results.txt`、`qa_report.md`、`reviewer_output.json`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md` 和 `final_report.md`。機器交換資料優先使用 JSON，人類閱讀使用 Markdown。
 
 ## 設定
 
@@ -86,7 +86,7 @@ python3 orchestrator.py start "Review the settings screen" --image /absolute/pat
 
 ## Grok specialists 說明
 
-Grok 是動態 RA 和 Sales specialists 使用的外部 CLI backend，預設兩者都設定為 `grok`。它不是頂層 workflow state，也不替代 PM、Architect、RD、QA 或 Reviewer。PM 只在任務需要時於需求分析和 staffing 階段選擇 RA 或 Sales；分析結果會提供給 Architect 進行 plan review。
+Grok 是 PM、Architect、Reviewer、RA 與 Sales 可使用的外部 CLI backend。`orchestrator/core/grok.py` 集中處理 Grok CLI 模式、JSON envelope 解包與單回合限制。PM、Architect 和 Reviewer 使用 strict JSON machine output，再由 Python 產生人類可讀 Markdown；Developer 使用 Grok 時會關閉 plan、subagent、memory、web search 與工具，只接受指定 file/section blocks。RA 與 Sales 保留一般研究模式。
 
 在 workflow 選擇任一 role 前，請安裝可用且已認證的 `grok` CLI。專案使用的直接介面是：
 
@@ -96,13 +96,7 @@ grok -p "<prompt>" -m grok-4.5
 
 支援設定的 Grok model 是 `grok-4.5`。請在 `.ai-company/config.json` 中設定 `backends.ra` / `backends.sales`、`role_models.ra` / `role_models.sales`、`role_model_backends.ra` / `role_model_backends.sales`、`role_model_tiers.ra` / `role_model_tiers.sales` 和 `model_tiers.grok`。role model 依序從 `role_model_tiers`、`role_models`，最後從 `grok-4.5` 解析。
 
-`set-backend` 支援設定 `grok`；若 Grok 不可用或請求失敗，role 按以下順序 fallback：
-
-```text
-grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
-```
-
-RA 輸出是 model review，不是經過驗證的法律研究。專案沒有直接強制選擇 specialist 或將 backend 設為 `grok` 的 CLI 子命令。
+`set-backend` 支援設定 `grok`；Grok 不可用時依該 role 的 `role_model_routes` 順序 fallback。strict JSON 契約失敗會停止，不會額外呼叫付費模型。RA 輸出是 model review，不是經過驗證的法律研究；specialist 仍由 PM 依任務需求選擇。
 
 ## 自動 review 與 human review
 

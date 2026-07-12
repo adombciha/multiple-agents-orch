@@ -1,42 +1,8 @@
 from __future__ import annotations
-import json
 import base64
 import subprocess
-import time
 import requests
 from pathlib import Path
-
-def extract_grok_schema_payload(output: str, schema: dict) -> str:
-    """Extract the schema-shaped assistant payload from Grok CLI's JSON envelope."""
-    try:
-        envelope = json.loads(output)
-    except json.JSONDecodeError:
-        return output
-
-    required = set(schema.get("required", []))
-
-    def find(value):
-        if isinstance(value, dict):
-            if required.issubset(value):
-                return value
-            for child in value.values():
-                match = find(child)
-                if match is not None:
-                    return match
-        elif isinstance(value, list):
-            for child in value:
-                match = find(child)
-                if match is not None:
-                    return match
-        elif isinstance(value, str):
-            try:
-                return find(json.loads(value))
-            except json.JSONDecodeError:
-                return None
-        return None
-
-    payload = find(envelope)
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) if payload is not None else output
 
 def get_backend(orchestrator, role: str) -> str:
     backends = orchestrator.config.get("backends", {})
@@ -219,37 +185,8 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
     return result.stdout
 
 def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
-    from orchestrator.core.state import log_info
-    full_prompt = prompt if response_schema else (f"{system_prompt}\n\n{prompt}" if system_prompt else prompt)
-    model = model or orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
-    cmd = ["grok", "-p", full_prompt, "-m", model]
-    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
-    if effort:
-        cmd.extend(["--effort", effort])
-    if response_schema:
-        cmd.extend([
-            "--json-schema", json.dumps(response_schema, ensure_ascii=False, separators=(",", ":")),
-            "--output-format", "json",
-            "--system-prompt-override",
-            "Return exactly one JSON object matching the supplied schema. Do not inspect files, use tools, plan, call subagents, explain, or output Markdown.",
-            "--max-turns", "1",
-            "--no-plan",
-            "--no-subagents",
-            "--no-memory",
-            "--disable-web-search",
-            "--verbatim",
-        ])
-    started = time.monotonic()
-    log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'} schema={'strict' if response_schema else 'no'}")
-    result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, timeout=1800, check=False)
-    elapsed = time.monotonic() - started
-    if result.returncode != 0:
-        log_info(f"Grok failed role={role} model={model} elapsed={elapsed:.1f}s")
-        raise RuntimeError(f"Grok Build failed with code {result.returncode}:\n{result.stderr}")
-    output = extract_grok_schema_payload(result.stdout, response_schema) if response_schema else result.stdout
-    log_info(f"Grok completed role={role} model={model} elapsed={elapsed:.1f}s output_chars={len(result.stdout)} payload_chars={len(output)}")
-    return output
+    from orchestrator.core import grok
+    return grok.call(orchestrator, prompt, system_prompt, role, model, response_schema)
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
