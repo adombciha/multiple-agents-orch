@@ -53,15 +53,15 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
-| PM | 每次任務 | `gpt-5.6-sol` | `gemini-3.5-flash` | `qwen3:8b` |
-| Architect | 每次任務 | `gemma4:latest` | `qwen3:8b` | `qwen2.5-coder:7b` |
-| RD Senior | 跨模組／架構／高風險實作 | `grok-4.5` | `gpt-oss:20b` | `granite4.1:8b` |
-| RD Middle | 一般功能實作 | `grok-4.5` | `granite4.1:8b` | `codegemma:7b` |
-| RD Junior | 重複、明確、小修改 | `codegemma:7b` | `granite4.1:8b` | `qwen2.5-coder:7b` |
+| PM | 每次任務 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `qwen3:8b` |
+| Architect | 每次任務 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `gemma4:latest` |
+| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-luna` (`low`) | `gpt-oss:20b` | `granite4.1:8b` |
+| RD Middle | 一般功能實作 | `granite4.1:8b` | `codegemma:7b` | `qwen2.5-coder:7b` |
+| RD Junior | 重複、明確、小修改 | `gemma4:latest` | `qwen2.5-coder:7b` | `codegemma:7b` |
 | QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| Reviewer | 最終程式碼審查 | `gpt-5.6-sol` | `deepseek-coder:6.7b` | `gemma4:latest` |
+| Reviewer | 最終程式碼審查 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `gemma4:latest` |
 | Security | auth、secrets、PII、payment、攻擊面 | `deepseek-coder:6.7b` | `gemma4:latest` | `qwen2.5-coder:7b` |
 | DevOps | CI/CD、Docker、release、rollback、pipeline | `granite4.1:8b` | `qwen2.5-coder:7b` | `gemma4:latest` |
 | RA | 法規、合規、產業規範 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
