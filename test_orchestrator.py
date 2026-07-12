@@ -11,7 +11,7 @@ import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
 from orchestrator.core import backends
-from orchestrator.core.backends import quota_exhausted
+from orchestrator.core.backends import extract_grok_schema_payload, quota_exhausted
 from orchestrator.roles.base_agent import is_json_response
 from orchestrator.roles.developer import is_task_plan_response
 from orchestrator.roles.manager import is_requirements_json_response, render_requirements
@@ -383,6 +383,19 @@ def test_grok_structured_call_uses_schema_and_logs_capable_command(initialized_o
     assert "--effort" in command
     assert "medium" in command
     assert "--json-schema" in command
+
+
+def test_grok_json_envelope_extracts_schema_payload():
+    payload = {
+        "project_overview": "Sync docs",
+        "functional_requirements": [],
+        "technical_specifications": [],
+        "scope_boundaries": [],
+    }
+    envelope = json.dumps({"session_id": "123", "result": {"content": json.dumps(payload)}})
+    schema = {"required": list(payload)}
+
+    assert json.loads(extract_grok_schema_payload(envelope, schema)) == payload
 
 
 def test_task_plan_validator_requires_tasks_array():

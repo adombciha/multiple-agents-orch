@@ -6,6 +6,38 @@ import time
 import requests
 from pathlib import Path
 
+def extract_grok_schema_payload(output: str, schema: dict) -> str:
+    """Extract the schema-shaped assistant payload from Grok CLI's JSON envelope."""
+    try:
+        envelope = json.loads(output)
+    except json.JSONDecodeError:
+        return output
+
+    required = set(schema.get("required", []))
+
+    def find(value):
+        if isinstance(value, dict):
+            if required.issubset(value):
+                return value
+            for child in value.values():
+                match = find(child)
+                if match is not None:
+                    return match
+        elif isinstance(value, list):
+            for child in value:
+                match = find(child)
+                if match is not None:
+                    return match
+        elif isinstance(value, str):
+            try:
+                return find(json.loads(value))
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    payload = find(envelope)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")) if payload is not None else output
+
 def get_backend(orchestrator, role: str) -> str:
     backends = orchestrator.config.get("backends", {})
     if role.startswith("developer_"):
@@ -215,8 +247,9 @@ def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role:
     if result.returncode != 0:
         log_info(f"Grok failed role={role} model={model} elapsed={elapsed:.1f}s")
         raise RuntimeError(f"Grok Build failed with code {result.returncode}:\n{result.stderr}")
-    log_info(f"Grok completed role={role} model={model} elapsed={elapsed:.1f}s output_chars={len(result.stdout)}")
-    return result.stdout
+    output = extract_grok_schema_payload(result.stdout, response_schema) if response_schema else result.stdout
+    log_info(f"Grok completed role={role} model={model} elapsed={elapsed:.1f}s output_chars={len(result.stdout)} payload_chars={len(output)}")
+    return output
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
