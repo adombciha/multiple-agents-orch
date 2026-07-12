@@ -13,37 +13,13 @@ class DeveloperAgent(BaseAgent):
         with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
             requirements = f.read()
 
-        prompt = (
-            f"Please read the following project requirements:\n\n"
-            f"{requirements}\n\n"
-            f"Draft a step-by-step implementation plan in Markdown. The plan should include:\n"
-            f"1. Target files to create or modify.\n"
-            f"2. Specific changes or logic details for each file.\n"
-            f"3. Sequence of work (action items).\n"
-            f"4. Testing strategy.\n\n"
-            f"Use these exact Markdown headings: '## Target Files', '## Implementation Steps', and '## Verification'.\n\n"
-            f"Write ONLY the Markdown implementation plan. Do not include any conversational preamble or postscript."
-        )
-
+        planning_input = requirements
         if self.orchestrator.state["plan_revisions"] > 0 and self.orchestrator.reviewer_output_path.exists():
             with open(self.orchestrator.reviewer_output_path, "r", encoding="utf-8") as f:
                 feedback = f.read()
-            prompt = (
-                f"Your previous implementation plan was REJECTED by the reviewer with feedback:\n\n"
-                f"{feedback}\n\n"
-                f"Please revise the implementation plan to address all reviewer comments.\n"
-                f"Write the complete updated implementation plan in Markdown using these exact headings: '## Target Files', '## Implementation Steps', and '## Verification'. Only output the plan content."
-            )
+            planning_input += f"\n\nPrevious plan review feedback:\n{feedback}"
 
-        system_prompt = "You are a Lead Software Developer. Generate a clear step-by-step implementation plan."
-        plan = self.call_agent("developer_senior", prompt, system_prompt)
-
-        with open(self.orchestrator.plan_path, "w", encoding="utf-8") as f:
-            f.write(plan)
-        log_success(f"Implementation plan generated and saved to {self.orchestrator.plan_path}")
-
-        # Manager assigns tasks and scales the RD/QA team within configured capacity.
-        log_info("Parsing implementation plan into structured action items...")
+        log_info("Creating structured action items from requirements...")
         capacity = self.orchestrator.config.get("staffing_limits", {})
         capabilities = {
             "backends": self.orchestrator.config.get("backends", {}),
@@ -51,11 +27,11 @@ class DeveloperAgent(BaseAgent):
             "role_models": self.orchestrator.config.get("role_models", {}),
         }
         workload = {
-            "plan_characters": len(plan),
+            "requirements_characters": len(planning_input),
             "plan_revisions": self.orchestrator.state.get("plan_revisions", 0),
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
         }
-        parse_prompt = f"""Read this implementation plan:\n\n{plan}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
 
@@ -111,6 +87,12 @@ class DeveloperAgent(BaseAgent):
                     level_key = f"{role}_level"
                     if task.get(level_key) not in {"junior", "middle", "senior"}:
                         task[level_key] = legacy_level if legacy_level in {"junior", "middle", "senior"} else "senior"
+            target_files = list(dict.fromkeys(path for task in tasks for path in task["target_files"]))
+            plan = "# Implementation Plan\n\n## Target Files\n" + "".join(f"- `{path}`\n" for path in target_files)
+            plan += "\n## Implementation Steps\n" + "".join(f"- {task['description']}\n" for task in tasks)
+            plan += "\n## Verification\n- Run the configured test command.\n- Run `git diff --check`.\n"
+            self.orchestrator.plan_path.write_text(plan, encoding="utf-8")
+            log_success(f"Implementation plan generated and saved to {self.orchestrator.plan_path}")
             self.orchestrator.allocate_workers("rd", tasks)
             self.orchestrator.allocate_workers("qa", tasks)
             # Retain completed work only when the revised task is unchanged.

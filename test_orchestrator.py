@@ -599,6 +599,22 @@ def test_developing_plan_saves_manager_staffing(initialized_orchestrator, monkey
     assert initialized_orchestrator.state["tasks"][0]["assignee_level"] == "junior"
 
 
+def test_developing_plan_uses_manager_tasks_without_developer_planner(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("Add a setting", encoding="utf-8")
+    developer_call = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", developer_call)
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "T-1", "description": "add setting", "target_files": ["app.py"], "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    developer_call.assert_not_called()
+    assert "`app.py`" in initialized_orchestrator.plan_path.read_text(encoding="utf-8")
+
+
 def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
