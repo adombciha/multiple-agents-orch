@@ -398,8 +398,8 @@ class DeveloperAgent(BaseAgent):
                     "id": f"{task_id}-{index}",
                     "target_files": [path],
                     "output_contract": {
-                        "format": "file_blocks",
-                        "response_must_start_with": "[FILE_START:",
+                        "format": "markdown_section_replacements" if task.get("section_heading") else "file_blocks",
+                        "response_must_start_with": "[SECTION_EDIT_START:" if task.get("section_heading") else "[FILE_START:",
                         "allow_prose": False,
                     },
                 }
@@ -473,10 +473,16 @@ class DeveloperAgent(BaseAgent):
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 base_dir = worktree
-            contract_format = task.get("output_contract", {}).get("format")
+            if task.get("section_heading"):
+                # A scoped repair is always section-based, even if an older
+                # persisted task still carries the file-level contract.
+                task["output_contract"] = {
+                    "format": "markdown_section_replacements",
+                    "response_must_start_with": "[SECTION_EDIT_START:",
+                    "allow_prose": False,
+                }
             use_section_blocks = (
-                contract_format in {None, "markdown_section_replacements"}
-                and bool(task.get("section_heading"))
+                bool(task.get("section_heading"))
                 and bool(target_files)
                 and all(
                     Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
