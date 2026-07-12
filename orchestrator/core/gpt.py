@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 
 import requests
 
@@ -53,35 +54,58 @@ def is_gpt_oss(model: str | None) -> bool:
     return bool(model and model.split(":", 1)[0] == "gpt-oss")
 
 
-def _file_blocks(payload: str) -> str:
+def _file_blocks(payload: str, allowed_paths: list[str] | None = None) -> str:
     try:
         data = json.loads(payload)
         files = data["files"]
         if not isinstance(files, list) or not files:
             raise ValueError("files must be a non-empty array")
+        if allowed_paths and any(item.get("path") not in allowed_paths for item in files if isinstance(item, dict)):
+            raise ValueError(f"files contain paths outside task contract: {allowed_paths}")
+        if not all(isinstance(item, dict) and isinstance(item.get("path"), str) and isinstance(item.get("content"), str) for item in files):
+            raise ValueError("every file item must contain string path and content")
         return "\n".join(
             f"[FILE_START: {item['path']}]\n{item['content']}\n[FILE_END: {item['path']}]"
             for item in files
-            if isinstance(item, dict) and isinstance(item.get("path"), str) and isinstance(item.get("content"), str)
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError(f"gpt-oss returned invalid JSON file payload: {error}") from error
 
 
-def _section_blocks(payload: str) -> str:
+def _section_blocks(payload: str, allowed_paths: list[str] | None = None) -> str:
     try:
         data = json.loads(payload)
         sections = data["sections"]
         if not isinstance(sections, list) or not sections:
             raise ValueError("sections must be a non-empty array")
+        if allowed_paths and any(item.get("path") not in allowed_paths for item in sections if isinstance(item, dict)):
+            raise ValueError(f"sections contain paths outside task contract: {allowed_paths}")
+        if not all(isinstance(item, dict) and isinstance(item.get("path"), str) and isinstance(item.get("content"), str) for item in sections):
+            raise ValueError("every section item must contain string path and content")
         return "\n".join(
             f"[SECTION_EDIT_START: {item['path']}]\n[HEADING]\n\n[CONTENT]\n{item['content']}\n[SECTION_EDIT_END: {item['path']}]"
             for item in sections
-            if isinstance(item, dict)
-            and all(isinstance(item.get(key), str) for key in ("path", "content"))
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError(f"gpt-oss returned invalid JSON section payload: {error}") from error
+
+
+def _target_files_from_prompt(prompt: str) -> list[str]:
+    marker = "Machine contract:"
+    if marker not in prompt:
+        return []
+    try:
+        contract, _ = json.JSONDecoder().raw_decode(prompt.split(marker, 1)[1].lstrip())
+        return [path for path in contract.get("target_files", []) if isinstance(path, str)]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+
+
+def _schema_for_paths(schema: dict, key: str, paths: list[str]) -> dict:
+    result = deepcopy(schema)
+    if paths:
+        result["properties"][key]["items"]["properties"]["path"]["enum"] = paths
+    return result
 
 
 def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str = "gpt-oss:20b", image_paths: list[str] | None = None) -> str:
@@ -90,11 +114,17 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
     import base64
 
     section_mode = "[SECTION_EDIT_START:" in prompt or "[SECTION_EDIT_START:" in (system_prompt or "")
-    response_schema = SECTION_RESPONSE_SCHEMA if section_mode else FILE_RESPONSE_SCHEMA
+    allowed_paths = _target_files_from_prompt(prompt)
+    response_schema = _schema_for_paths(
+        SECTION_RESPONSE_SCHEMA if section_mode else FILE_RESPONSE_SCHEMA,
+        "sections" if section_mode else "files",
+        allowed_paths,
+    )
     messages = []
     system = system_prompt or ""
-    output_kind = "sections array with path, heading, and replacement content" if section_mode else "files array with path and complete file content"
-    system += f" Return only one JSON object with a non-empty {output_kind}. Do not include thinking or explanatory text outside the JSON object."
+    output_kind = "sections array with path and replacement content" if section_mode else "files array with path and complete file content"
+    paths_hint = f" Allowed paths are exactly: {', '.join(allowed_paths)}." if allowed_paths else ""
+    system += f" Return only one JSON object with a non-empty {output_kind}. Do not include thinking or explanatory text outside the JSON object.{paths_hint}"
     messages.append({"role": "system", "content": system})
     messages.append({
         "role": "user",
@@ -130,7 +160,8 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
             retry_payload.pop("think")
             response = requests.post(url, json=retry_payload, timeout=timeout)
         response.raise_for_status()
-        result = _section_blocks(response.json()["message"]["content"]) if section_mode else _file_blocks(response.json()["message"]["content"])
+        content = response.json()["message"]["content"]
+        result = _section_blocks(content, allowed_paths) if section_mode else _file_blocks(content, allowed_paths)
         log_info(f"GPT Ollama completed model={model} elapsed={time.monotonic() - started:.1f}s")
         return result
     except requests.exceptions.RequestException as error:
