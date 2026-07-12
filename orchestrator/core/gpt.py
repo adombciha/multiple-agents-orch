@@ -139,6 +139,7 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
         "stream": False,
         "format": response_schema,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
+        "options": {"num_predict": orchestrator.config.get("ollama_num_predict", 8192)},
     }
     think = orchestrator.config.get("ollama_think", "high")
     no_think_models = getattr(orchestrator, "_ollama_no_think_models", set())
@@ -161,7 +162,19 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
             response = requests.post(url, json=retry_payload, timeout=timeout)
         response.raise_for_status()
         content = response.json()["message"]["content"]
-        result = _section_blocks(content, allowed_paths) if section_mode else _file_blocks(content, allowed_paths)
+        try:
+            result = _section_blocks(content, allowed_paths) if section_mode else _file_blocks(content, allowed_paths)
+        except RuntimeError as error:
+            truncation_errors = ("Unterminated string", "Expecting value", "Expecting property name", "Expecting ',' delimiter", "Extra data")
+            if not any(marker in str(error) for marker in truncation_errors):
+                raise
+            log_info(f"GPT model {model} returned truncated JSON; retrying with a larger output limit.")
+            retry_payload = dict(payload)
+            retry_payload["options"] = {"num_predict": max(16384, retry_payload["options"]["num_predict"] * 2)}
+            response = requests.post(url, json=retry_payload, timeout=timeout)
+            response.raise_for_status()
+            content = response.json()["message"]["content"]
+            result = _section_blocks(content, allowed_paths) if section_mode else _file_blocks(content, allowed_paths)
         log_info(f"GPT Ollama completed model={model} elapsed={time.monotonic() - started:.1f}s")
         return result
     except requests.exceptions.RequestException as error:

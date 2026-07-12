@@ -5,6 +5,7 @@ DEFAULT_CONFIG = {
     "ollama_model": "gemma4:latest",
     "ollama_keep_alive": 0,
     "ollama_timeout": 1800,
+    "ollama_num_predict": 8192,
     "ollama_think": "high",
     "max_visual_image_bytes": 10 * 1024 * 1024,
     "test_command": "python3 -m pytest -q",

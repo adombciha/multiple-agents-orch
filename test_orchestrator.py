@@ -330,6 +330,7 @@ def test_gpt_oss_developer_uses_json_files_and_returns_file_blocks(initialized_o
     payload = post.call_args.kwargs["json"]
     assert payload["format"] == gpt.FILE_RESPONSE_SCHEMA
     assert payload["think"] == "high"
+    assert payload["options"]["num_predict"] == 8192
     assert "complete file content" in payload["messages"][0]["content"]
     assert "GPT-OSS output override" in payload["messages"][1]["content"]
 
@@ -378,6 +379,24 @@ def test_gpt_oss_rejects_path_outside_task_contract(initialized_orchestrator, mo
             model="gpt-oss:20b",
         )
 
+
+def test_gpt_oss_retries_truncated_json_with_larger_output_limit(initialized_orchestrator, monkeypatch):
+    truncated = Mock(status_code=200)
+    truncated.json.return_value = {"message": {"content": '{"sections":[{"path":"README_ja.md","content":"unterminated'}}
+    complete = Mock(status_code=200)
+    complete.json.return_value = {"message": {"content": json.dumps({"sections": [{"path": "README_ja.md", "content": "fixed"}]})}}
+    post = Mock(side_effect=[truncated, complete])
+    monkeypatch.setattr(gpt.requests, "post", post)
+
+    result = backends.call_ollama(
+        initialized_orchestrator,
+        'Machine contract: {"target_files":["README_ja.md"]}\n[SECTION_EDIT_START: README_ja.md]',
+        role="developer_senior",
+        model="gpt-oss:20b",
+    )
+
+    assert "fixed" in result
+    assert post.call_args_list[1].kwargs["json"]["options"]["num_predict"] == 16384
 
 def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.config["ollama_model"] = "fallback-model"
