@@ -24,6 +24,57 @@ def is_task_plan_response(response: str) -> bool:
         return False
 
 class DeveloperAgent(BaseAgent):
+    def _markdown_headings(self, base_dir: Path, filepath: str) -> list[str]:
+        path = base_dir / filepath
+        if path.suffix.lower() != ".md" or not path.is_file():
+            return []
+        content = path.read_text(encoding="utf-8")
+        return [
+            line for line in content.splitlines()
+            if re.match(r"^#{1,6}\s+\S", line)
+        ]
+
+    def _section_heading_for_file(
+        self,
+        base_dir: Path,
+        filepath: str,
+        requested_heading: str | None,
+        reference_headings: list[str] | None = None,
+    ) -> str | None:
+        headings = self._markdown_headings(base_dir, filepath)
+        if not requested_heading:
+            return None
+        if requested_heading in headings:
+            return requested_heading
+        if reference_headings and requested_heading in reference_headings:
+            index = reference_headings.index(requested_heading)
+            if index < len(headings):
+                return headings[index]
+        return None
+
+    def _reference_headings_for_fix_task(
+        self,
+        tasks: list[dict],
+        task: dict,
+        base_dir: Path,
+    ) -> list[str]:
+        requested_heading = task.get("section_heading")
+        if not requested_heading:
+            return []
+        task_root = re.sub(r"-\d+$", "", str(task.get("id", "")))
+        candidates = [task]
+        candidates.extend(
+            candidate for candidate in tasks
+            if candidate is not task
+            and re.sub(r"-\d+$", "", str(candidate.get("id", ""))) == task_root
+        )
+        for candidate in candidates:
+            for filepath in candidate.get("target_files", []):
+                headings = self._markdown_headings(base_dir, filepath)
+                if requested_heading in headings:
+                    return headings
+        return []
+
     def step_developing_plan(self):
         from orchestrator.core.state import log_header, log_success, log_info, log_warning
 
@@ -357,24 +408,22 @@ class DeveloperAgent(BaseAgent):
 
         tasks = self.orchestrator.state.get("tasks", [])
         for task in tasks:
-            if task.get("status") != "pending" or not str(task.get("id", "")).startswith("FIX-") or task.get("section_heading"):
+            if task.get("status") != "pending" or not str(task.get("id", "")).startswith("FIX-"):
                 continue
             section_base = self.orchestrator.workspace
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 section_base = worktree
+            reference_headings = self._reference_headings_for_fix_task(tasks, task, section_base)
             for filepath in task.get("target_files", []):
-                path = section_base / filepath
-                if path.suffix.lower() != ".md" or not path.is_file():
-                    continue
-                content = path.read_text(encoding="utf-8")
-                marker = "replacement content below the heading"
-                marker_index = content.find(marker)
-                if marker_index < 0:
-                    continue
-                headings = [line for line in content[:marker_index].splitlines() if re.match(r"^#{1,6}\s+\S", line)]
-                if headings:
-                    task["section_heading"] = headings[-1]
+                heading = self._section_heading_for_file(
+                    section_base,
+                    filepath,
+                    task.get("section_heading"),
+                    reference_headings,
+                )
+                if heading and len(task.get("target_files", [])) == 1:
+                    task["section_heading"] = heading
                     task["output_contract"] = {
                         "format": "markdown_section_replacements",
                         "response_must_start_with": "[SECTION_EDIT_START:",
@@ -392,8 +441,14 @@ class DeveloperAgent(BaseAgent):
                 continue
             task_index = tasks.index(task)
             task_id = task["id"]
-            split_tasks = [
-                {
+            section_base = self.orchestrator.workspace
+            worktree = self.orchestrator.ai_dir / "worktree"
+            if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
+                section_base = worktree
+            reference_headings = self._reference_headings_for_fix_task(tasks, task, section_base)
+            split_tasks = []
+            for index, path in enumerate(target_files, 1):
+                split_task = {
                     **task,
                     "id": f"{task_id}-{index}",
                     "target_files": [path],
@@ -403,8 +458,20 @@ class DeveloperAgent(BaseAgent):
                         "allow_prose": False,
                     },
                 }
-                for index, path in enumerate(target_files, 1)
-            ]
+                heading = self._section_heading_for_file(
+                    section_base,
+                    path,
+                    task.get("section_heading"),
+                    reference_headings,
+                )
+                if heading:
+                    split_task["section_heading"] = heading
+                    split_task["output_contract"] = {
+                        "format": "markdown_section_replacements",
+                        "response_must_start_with": "[SECTION_EDIT_START:",
+                        "allow_prose": False,
+                    }
+                split_tasks.append(split_task)
             tasks[task_index:task_index + 1] = split_tasks
             for state_key in ("task_developer_promotions", "task_failed_model_routes"):
                 task_state = self.orchestrator.state.setdefault(state_key, {})
@@ -524,7 +591,11 @@ class DeveloperAgent(BaseAgent):
                     )
             if (
                 (base_dir / "README.md").is_file()
-                and any(Path(filepath).name in {"README_en.md", "README_ja.md", "README_zh-CN.md"} for filepath in target_files)
+                and any(
+                    Path(filepath).name.startswith("README_")
+                    and Path(filepath).suffix.lower() == ".md"
+                    for filepath in target_files
+                )
                 and "README.md" not in target_files
             ):
                 current_files.append(

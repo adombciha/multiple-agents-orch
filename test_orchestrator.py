@@ -685,33 +685,37 @@ def test_split_scoped_fix_tasks_keep_section_contract(initialized_orchestrator, 
     initialized_orchestrator.config["backends"]["developer_senior"] = "ollama"
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    translation_files = [f"README_{index}.md" for index in range(2)]
     initialized_orchestrator.state["tasks"] = [{
         "id": "FIX-REV-2",
         "description": "repair damaged README sections",
-        "target_files": ["README_en.md", "README_ja.md"],
-        "section_heading": "## Workflow and files",
+        "target_files": translation_files,
+        "section_heading": "## Source section",
         "output_contract": {"format": "file_blocks"},
         "status": "pending",
         "rd_level": "senior",
         "qa_level": "junior",
     }]
     initialized_orchestrator.state["staffing"] = {"rd": {"senior": 1}, "qa": {"junior": 1}}
-    for path in ("README_en.md", "README_ja.md"):
-        (initialized_orchestrator.workspace / path).write_text(
-            "# Project\n\n## Workflow and files\n\nOld\n\n## Other\n\nKeep\n",
-            encoding="utf-8",
-        )
+    (initialized_orchestrator.workspace / translation_files[0]).write_text(
+        "# Project\n\n## Intro\n\nIntro\n\n## Source section\n\nOld\n\n## Other\n\nKeep\n",
+        encoding="utf-8",
+    )
+    (initialized_orchestrator.workspace / translation_files[1]).write_text(
+        "# Project\n\n## Intro\n\nIntro\n\n## Target section\n\nOld\n\n## Other\n\nKeep\n",
+        encoding="utf-8",
+    )
     call_agent = Mock(side_effect=[
-        "[SECTION_EDIT_START: README_en.md]\n[HEADING]\n## Workflow and files\n[CONTENT]\nUpdated EN\n[SECTION_EDIT_END: README_en.md]",
-        "[SECTION_EDIT_START: README_ja.md]\n[HEADING]\n## Workflow and files\n[CONTENT]\nUpdated JA\n[SECTION_EDIT_END: README_ja.md]",
+        f"[SECTION_EDIT_START: {translation_files[0]}]\n[HEADING]\n## Source section\n[CONTENT]\nUpdated first\n[SECTION_EDIT_END: {translation_files[0]}]",
+        f"[SECTION_EDIT_START: {translation_files[1]}]\n[HEADING]\n## Target section\n[CONTENT]\nUpdated second\n[SECTION_EDIT_END: {translation_files[1]}]",
     ])
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
     initialized_orchestrator.step_implementing()
 
     assert all("[SECTION_EDIT_START:" in call.args[1] for call in call_agent.call_args_list)
-    assert "Updated EN" in (initialized_orchestrator.workspace / "README_en.md").read_text(encoding="utf-8")
-    assert "Updated JA" in (initialized_orchestrator.workspace / "README_ja.md").read_text(encoding="utf-8")
+    assert "Updated first" in (initialized_orchestrator.workspace / translation_files[0]).read_text(encoding="utf-8")
+    assert "Updated second" in (initialized_orchestrator.workspace / translation_files[1]).read_text(encoding="utf-8")
 
 
 def test_translation_task_receives_read_only_primary_readme(initialized_orchestrator, monkeypatch):
