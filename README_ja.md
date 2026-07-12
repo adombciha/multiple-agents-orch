@@ -30,7 +30,7 @@ PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 
 PM は要件を分析して任意の specialists を配置します。その結果は Architect の plan review に渡されます。RD はタスクを実装し、QA は設定済みの test command を実行して結果を報告します。Reviewer は要件、計画、tests、specialist の結果、Git diff を評価し、Assistant は完了時に `CHANGELOG.md` を作成します。
 
-`init` は `.ai-company/` を作成します。これには `config.json`、`state.json`、`request.md`、`requirements.md`、`implementation_plan.md`、`action_items.json`、agent outputs、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md`、`final_report.md` が含まれます。
+`init` は `.ai-company/` を作成します。これには `config.json`、`state.json`、`request.md`、`requirements.json`、プログラムが生成する人間向けの `requirements.md`、`implementation_plan.md`、`action_items.json`、agent outputs、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md`、`final_report.md` が含まれます。機械間のデータ交換には可能な限り JSON を使い、人間向けの出力には Markdown を使います。
 
 ## 設定
 

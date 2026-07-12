@@ -4,6 +4,23 @@ import json
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
 
 JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
+REQUIREMENT_HEADINGS = (
+    "Project Overview & Context",
+    "Specific Functional Requirements",
+    "Technical Specifications & Stack constraints",
+    "Scope boundaries",
+)
+REQUIREMENTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "project_overview": {"type": "string"},
+        "functional_requirements": {"type": "array", "items": {"type": "string"}},
+        "technical_specifications": {"type": "array", "items": {"type": "string"}},
+        "scope_boundaries": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["project_overview", "functional_requirements", "technical_specifications", "scope_boundaries"],
+    "additionalProperties": False,
+}
 SALES_SELECTION_SCHEMA = {
     "type": "object",
     "properties": {"use_sales": {"type": "boolean"}},
@@ -30,6 +47,27 @@ RESEARCH_TRACKS_SCHEMA = {
     "required": ["tracks"],
     "additionalProperties": False,
 }
+
+def is_requirements_json_response(response: str) -> bool:
+    try:
+        data = json.loads(extract_json_response(response))
+        return all(key in data for key in REQUIREMENTS_SCHEMA["required"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+def render_requirements(data: dict) -> str:
+    def render(value):
+        if isinstance(value, list):
+            return "\n".join(f"- {item}" for item in value)
+        return str(value)
+
+    return (
+        "# Requirements\n\n"
+        f"## {REQUIREMENT_HEADINGS[0]}\n{render(data['project_overview'])}\n\n"
+        f"## {REQUIREMENT_HEADINGS[1]}\n{render(data['functional_requirements'])}\n\n"
+        f"## {REQUIREMENT_HEADINGS[2]}\n{render(data['technical_specifications'])}\n\n"
+        f"## {REQUIREMENT_HEADINGS[3]}\n{render(data['scope_boundaries'])}\n"
+    )
 
 class ManagerAgent(BaseAgent):
     def step_planning(self):
@@ -65,9 +103,19 @@ class ManagerAgent(BaseAgent):
                 "You are the project's Sales specialist.",
             )
 
-        system_prompt = """You are the Project Manager of an AI software company. Your job is to analyze the user's request and write a detailed, clear requirements document in Markdown format.\nRequirements must contain:\n1. Project Overview & Context\n2. Specific Functional Requirements\n3. Technical Specifications & Stack constraints\n4. Scope boundaries (what is NOT included)\n\nOutput ONLY the Markdown content for requirements.md. Do not add any greeting, preamble, or conversational introduction."""
+        system_prompt = """You are the Project Manager of an AI software company. Convert the request into a structured requirements object. Output only one valid JSON object matching the supplied schema. Do not output Markdown, code fences, explanations, progress messages, or prose."""
         requirements_prompt = f"{request}\n\nSales Notes:\n{sales_notes or 'No sales consultation required.'}"
-        requirements = self.call_manager(requirements_prompt, system_prompt)
+        requirements_json = self.call_manager(
+            requirements_prompt,
+            system_prompt,
+            response_validator=is_requirements_json_response,
+            response_schema=REQUIREMENTS_SCHEMA,
+        )
+        requirements_data = json.loads(extract_json_response(requirements_json))
+        self.orchestrator.requirements_json_path.write_text(
+            json.dumps(requirements_data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        requirements = render_requirements(requirements_data)
 
         # Save requirements
         with open(self.orchestrator.requirements_path, "w", encoding="utf-8") as f:

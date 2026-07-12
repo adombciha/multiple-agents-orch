@@ -14,6 +14,7 @@ from orchestrator.core import backends
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.roles.base_agent import is_json_response
 from orchestrator.roles.developer import is_task_plan_response
+from orchestrator.roles.manager import is_requirements_json_response, render_requirements
 
 
 def write_ai_company(
@@ -387,6 +388,18 @@ def test_grok_structured_call_uses_schema_and_logs_capable_command(initialized_o
 def test_task_plan_validator_requires_tasks_array():
     assert not is_task_plan_response('{"requirements": "not a task plan"}')
     assert is_task_plan_response('{"tasks": [], "staffing": {}, "specialists": []}')
+
+
+def test_requirements_validator_requires_structured_json():
+    assert not is_requirements_json_response("I'll inspect the Python implementation first.")
+    data = {
+        "project_overview": "Build it",
+        "functional_requirements": ["It works"],
+        "technical_specifications": ["Python"],
+        "scope_boundaries": ["No redesign"],
+    }
+    assert is_requirements_json_response(json.dumps(data))
+    assert "## Project Overview & Context" in render_requirements(data)
 
 
 def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):

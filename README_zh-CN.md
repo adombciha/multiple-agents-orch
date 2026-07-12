@@ -30,7 +30,7 @@ PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 
 PM 分析需求并安排可选 specialists。其结果会提供给 Architect 进行 plan review。RD 实现任务，QA 执行配置的 test command 并报告结果，Reviewer 评估需求、计划、测试、specialist 结果和 Git diff，Assistant 在完成后创建 `CHANGELOG.md`。
 
-`init` 创建 `.ai-company/`，其中包括 `config.json`、`state.json`、`request.md`、`requirements.md`、`implementation_plan.md`、`action_items.json`、agent 输出、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md` 和 `final_report.md`。
+`init` 创建 `.ai-company/`，其中包括 `config.json`、`state.json`、`request.md`、`requirements.json`、由程序生成的人类可读 `requirements.md`、`implementation_plan.md`、`action_items.json`、agent 输出、`test_results.txt`、`qa_report.md`、`reviewer_output.md`、`specialist_reviews.md`、`human_report.md` 和 `final_report.md`。机器之间交换的数据尽可能使用 JSON，人类阅读的输出使用 Markdown。
 
 ## 配置
 

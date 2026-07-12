@@ -30,7 +30,7 @@ PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 
 The PM analyzes requirements and staffs optional specialists. Their findings are passed to the Architect for plan review. RD implements the tasks, QA runs the configured test command and reports results, Reviewer evaluates the requirements, plan, tests, specialist findings, and Git diff, and Assistant creates `CHANGELOG.md` when complete.
 
-`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`.
+`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.json`, the generated human-readable `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`. Machine-to-machine artifacts use JSON where possible; human-facing output uses Markdown.
 
 ## Configuration
 

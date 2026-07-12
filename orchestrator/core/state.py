@@ -71,6 +71,7 @@ class AgentOrchestrator:
 
         # Files for data sharing
         self.request_path = self.ai_dir / "request.md"
+        self.requirements_json_path = self.ai_dir / "requirements.json"
         self.requirements_path = self.ai_dir / "requirements.md"
         self.plan_path = self.ai_dir / "implementation_plan.md"
         self.action_items_path = self.ai_dir / "action_items.json"
