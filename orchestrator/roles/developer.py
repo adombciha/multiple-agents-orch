@@ -174,6 +174,7 @@ class DeveloperAgent(BaseAgent):
 
     def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False, allowed_heading: str | None = None) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
+        placeholders = {"// code contents here", "full file content here", "replacement content below the heading"}
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
         edit_pattern = re.compile(
@@ -192,6 +193,9 @@ class DeveloperAgent(BaseAgent):
         for filepath_str, content in matches:
             filepath_str = filepath_str.strip()
             content = content.strip()
+            if not content or content.lower() in placeholders:
+                log_warning(f"Skipping placeholder-only file content: {filepath_str}")
+                continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
                 log_warning(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
@@ -269,6 +273,9 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             heading = heading.strip()
             content = content.strip("\n")
+            if content.strip().lower() in placeholders:
+                log_warning(f"Skipping placeholder-only section content: {filepath_str}: {heading}")
+                continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
                 log_warning(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
@@ -369,6 +376,18 @@ class DeveloperAgent(BaseAgent):
             backend = self.orchestrator.get_backend(effective_role)
 
             target_files = task.get("target_files", [])
+            if not target_files and str(task.get("id", "")).startswith("FIX-"):
+                target_files = list(dict.fromkeys(
+                    path
+                    for existing_task in tasks
+                    for path in existing_task.get("target_files", [])
+                ))
+                task["target_files"] = target_files
+                task["output_contract"] = {
+                    "format": "file_blocks",
+                    "response_must_start_with": "[FILE_START:",
+                    "allow_prose": False,
+                }
             machine_contract = {
                 "stage": "IMPLEMENTING",
                 "allowed_actions": ["modify_files"],
@@ -379,9 +398,15 @@ class DeveloperAgent(BaseAgent):
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 base_dir = worktree
-            use_section_blocks = bool(target_files) and all(
-                Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
-                for filepath in target_files
+            contract_format = task.get("output_contract", {}).get("format")
+            use_section_blocks = (
+                contract_format in {None, "markdown_section_replacements"}
+                and bool(task.get("section_heading"))
+                and bool(target_files)
+                and all(
+                    Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
+                    for filepath in target_files
+                )
             )
             if use_section_blocks:
                 machine_contract["output_contract"] = {
@@ -430,18 +455,15 @@ class DeveloperAgent(BaseAgent):
             if backend in ["ollama", "agy", "grok"]:
                 if use_section_blocks:
                     filepath = target_files[0]
-                    required_heading = task.get("section_heading")
-                    heading_instruction = (
-                        f"Use exactly this heading: {required_heading}\n" if required_heading
-                        else "Choose one existing heading exactly as shown in CURRENT_FILE.\n"
-                    )
+                    required_heading = task["section_heading"]
                     prompt += (
                         "Return only heading-bounded section replacement blocks for the declared target file. "
-                        + heading_instruction
+                        + f"Use exactly this heading: {required_heading}\n"
                         + f"[SECTION_EDIT_START: {filepath}]\n"
-                        "[HEADING]\n## Exact existing heading\n[CONTENT]\nreplacement content below the heading\n"
+                        f"[HEADING]\n{required_heading}\n[CONTENT]\n"
                         f"[SECTION_EDIT_END: {filepath}]\n"
-                        "Your response MUST begin with [SECTION_EDIT_START:. CONTENT must not repeat HEADING. "
+                        "Insert the complete replacement section content between [CONTENT] and [SECTION_EDIT_END:]. "
+                        "Your response MUST begin with [SECTION_EDIT_START:. CONTENT must not repeat HEADING or be empty. "
                         "Preserve existing nested headings unless the task explicitly updates them. Do not return the complete file, "
                         "other files, analysis, Markdown fences, or explanations."
                     )
@@ -450,8 +472,8 @@ class DeveloperAgent(BaseAgent):
                         "Please write the code for any files that need to be created or modified. "
                         "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
                         "[FILE_START: path/to/file.ext]\n"
-                        "// code contents here\n"
                         "[FILE_END: path/to/file.ext]\n\n"
+                        "Insert the complete file content between the two markers. "
                         "Make sure the path is relative to the project root. "
                         "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
                         "Do not output analysis, a plan, Markdown fences, or explanations."

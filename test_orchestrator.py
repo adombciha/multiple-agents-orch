@@ -527,6 +527,21 @@ def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrat
     assert initialized_orchestrator.state["failed_model_routes"] == []
 
 
+def test_ollama_developer_retries_invalid_contract_once(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [["ollama", "gemma4:latest"]]
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    call = Mock(side_effect=["I changed it.", "[FILE_START: app.py]\nok\n[FILE_END: app.py]"])
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", call)
+
+    result = initialized_orchestrator.call_agent(
+        "developer_junior", "prompt", response_validator=lambda response: "app.py" in response
+    )
+
+    assert "app.py" in result
+    assert call.call_count == 2
+
+
 def test_implementing_route_failures_are_scoped_to_active_task(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.state["active_task_id"] = "T-1"
@@ -569,7 +584,7 @@ def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator,
 def test_implementing_prompt_includes_only_current_target_files(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "section_heading": "## Quick Start", "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "section_heading": "## Quick Start", "output_contract": {"format": "markdown_section_replacements"}, "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
     initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
     (initialized_orchestrator.workspace / "README.md").write_text("# Project\n\n## Quick Start\n\nKeep me\n\n## Other\n\nDo not include this section\n", encoding="utf-8")
     (initialized_orchestrator.workspace / "README_en.md").write_text("# Do not include me\n", encoding="utf-8")
@@ -585,6 +600,28 @@ def test_implementing_prompt_includes_only_current_target_files(initialized_orch
     assert "Do not include me" not in prompt
 
 
+def test_whole_markdown_task_keeps_declared_file_block_contract(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "sync README", "target_files": ["README.md"],
+        "output_contract": {"format": "file_blocks"}, "status": "pending",
+        "rd_level": "junior", "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\n## Install\n\nOld\n", encoding="utf-8")
+    call_agent = Mock(return_value="[FILE_START: README.md]\n# Project\n\n## Install\n\nNew\n[FILE_END: README.md]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "[FILE_START: path/to/file.ext]" in prompt
+    assert "[SECTION_EDIT_START:" not in prompt
+    assert "New" in readme.read_text(encoding="utf-8")
+
+
 def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
@@ -597,6 +634,22 @@ def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, 
 
     assert initialized_orchestrator.state["tasks"][0]["status"] == "completed"
     call_agent.assert_not_called()
+
+
+def test_legacy_fix_task_inherits_original_target_files(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {"id": "T-1", "description": "change app", "target_files": ["app.py"], "status": "completed", "rd_level": "junior", "qa_level": "junior"},
+        {"id": "FIX-REV-1", "description": "fix app", "status": "pending", "rd_level": "middle", "qa_level": "junior"},
+    ]
+    initialized_orchestrator.state["staffing"] = {"rd": {"middle": 1, "junior": 1}, "qa": {"junior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="[FILE_START: app.py]\nfixed\n[FILE_END: app.py]"))
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
+    assert (initialized_orchestrator.workspace / "app.py").read_text(encoding="utf-8") == "fixed"
 
 
 def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator, monkeypatch):
@@ -672,6 +725,15 @@ def test_markdown_section_blocks_reject_wrong_task_heading(initialized_orchestra
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install") == []
     assert "Keep" in readme.read_text(encoding="utf-8")
+
+
+def test_markdown_section_blocks_reject_example_placeholder(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\n## Install\n\nOld\n", encoding="utf-8")
+    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nreplacement content below the heading\n[SECTION_EDIT_END: README.md]"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install") == []
+    assert "Old" in readme.read_text(encoding="utf-8")
 
 
 def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orchestrator, monkeypatch):
@@ -1137,6 +1199,11 @@ def test_step_testing_failed_command_cannot_pass_on_qa_response(initialized_orch
 def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "change app", "target_files": ["app.py"],
+        "status": "completed", "rd_level": "junior", "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
     monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed")))
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="FAILED\nfix it"))
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
@@ -1147,7 +1214,8 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
     assert initialized_orchestrator.state["tasks"][-1]["id"] == "FIX-QA-1"
     assert initialized_orchestrator.state["tasks"][-1]["rd_level"] == "senior"
-    assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "senior"
+    assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "junior"
+    assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
 
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_testing()
@@ -1187,6 +1255,10 @@ def test_step_reviewing_code_rejected_revises_until_max(initialized_orchestrator
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
     initialized_orchestrator.test_results_path.write_text("tests", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "change app", "target_files": ["app.py"],
+        "status": "completed", "rd_level": "junior", "qa_level": "junior",
+    }]
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'))
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
@@ -1197,6 +1269,7 @@ def test_step_reviewing_code_rejected_revises_until_max(initialized_orchestrator
     assert initialized_orchestrator.state["tasks"][-1]["id"] == "FIX-REV-1"
     assert initialized_orchestrator.state["tasks"][-1]["rd_level"] == "senior"
     assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "senior"
+    assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
 
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config["max_revisions"]
     initialized_orchestrator.step_reviewing_code()

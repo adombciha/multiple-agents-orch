@@ -82,6 +82,10 @@ class QAAgent(BaseAgent):
                 self.orchestrator.state["tasks"].append({
                     "id": fix_task_id,
                     "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\nQA feedback:\n{qa_report[:2000]}",
+                    "target_files": list(dict.fromkeys(
+                        path for task in self.orchestrator.state["tasks"] for path in task.get("target_files", [])
+                    )),
+                    "output_contract": {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False},
                     "status": "pending",
                     **self.orchestrator.fix_task_levels(),
                 })

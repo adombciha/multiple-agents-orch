@@ -390,10 +390,19 @@ class AgentOrchestrator:
                 log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
                 if backend == "ollama":
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
-                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
+                    implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith("developer")
+                    has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
+                    contract_ok = response_validator is None or response_validator(response)
+                    if implementing and (not has_blocks or not contract_ok):
+                        log_warning(f"ollama/{model} returned an invalid Developer contract; retrying the same local model once.")
+                        retry_prompt = prompt + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
+                        response = self.call_agent_ollama_fallback(role, retry_prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                        has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
+                        contract_ok = response_validator is None or response_validator(response)
+                    if implementing and not has_blocks:
                         raise ResponseContractError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(response):
+                    if not contract_ok:
                         raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "codex":

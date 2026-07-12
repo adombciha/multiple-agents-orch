@@ -92,6 +92,10 @@ class ReviewerAgent(BaseAgent):
                 self.orchestrator.state["tasks"].append({
                     "id": fix_task_id,
                     "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
+                    "target_files": list(dict.fromkeys(
+                        path for task in self.orchestrator.state["tasks"] for path in task.get("target_files", [])
+                    )),
+                    "output_contract": {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False},
                     "status": "pending",
                     **self.orchestrator.fix_task_levels(),
                 })
