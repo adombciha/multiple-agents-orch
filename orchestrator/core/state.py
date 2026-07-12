@@ -375,28 +375,49 @@ class AgentOrchestrator:
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
+                    self.validate_routed_response(role, response)
                     return response
                 if backend == "codex":
-                    return self.call_codex(prompt, system_prompt, role=role, model=model)
+                    response = self.call_codex(prompt, system_prompt, role=role, model=model)
+                    self.validate_routed_response(role, response)
+                    return response
                 if backend == "agy":
-                    return self.call_agy(prompt, system_prompt, role=role, model=model)
+                    response = self.call_agy(prompt, system_prompt, role=role, model=model)
+                    self.validate_routed_response(role, response)
+                    return response
                 if backend == "grok":
                     response = self.call_grok(prompt, system_prompt, role=role, model=model)
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
+                    self.validate_routed_response(role, response)
                     return response
                 if backend == "claude":
-                    return self.call_claude(prompt, system_prompt, role=role)
+                    response = self.call_claude(prompt, system_prompt, role=role)
+                    self.validate_routed_response(role, response)
+                    return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
-                if backend == "ollama":
+                if route not in self.state["failed_model_routes"]:
                     self.state["failed_model_routes"].append(route)
                     self.save_state()
                 if backends.quota_exhausted(error):
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
         raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
+
+    def validate_routed_response(self, role: str, response: str):
+        if role not in {"architect", "reviewer"}:
+            return
+        if self.state.get("state") not in {"REVIEWING_PLAN", "REVIEWING_CODE"}:
+            return
+        first_line = next((line.strip().upper().strip("[]*") for line in response.splitlines() if line.strip()), "")
+        if role == "architect":
+            valid = first_line in {"PLAN_STATUS: APPROVED", "PLAN_STATUS: REJECTED", "APPROVED", "REJECTED"}
+        else:
+            valid = first_line.startswith("APPROVED") or first_line.startswith("REJECTED")
+        if not valid:
+            raise RuntimeError(f"{role} response omitted required status field")
 
     def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str:
         from orchestrator.core import backends

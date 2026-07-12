@@ -10,6 +10,7 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
+from orchestrator.core import backends
 from orchestrator.core.backends import quota_exhausted
 
 
@@ -386,6 +387,19 @@ def test_developer_plan_does_not_require_file_blocks(initialized_orchestrator, m
     monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value="# Plan"))
 
     assert initialized_orchestrator.call_agent("developer_senior", "prompt") == "# Plan"
+
+
+def test_invalid_architect_status_falls_back_to_next_route(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "REVIEWING_PLAN"
+    initialized_orchestrator.config["role_model_routes"]["architect"] = [["grok", "grok-4.5"], ["ollama", "qwen3:8b"]]
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value="..."))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", Mock(return_value="PLAN_STATUS: APPROVED\nok"))
+
+    result = initialized_orchestrator.call_agent("architect", "prompt")
+
+    assert result.startswith("PLAN_STATUS: APPROVED")
+    assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
 
 
 def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator, monkeypatch):
