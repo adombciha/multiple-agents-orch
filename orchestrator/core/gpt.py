@@ -54,9 +54,12 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
 
     messages = []
     system = system_prompt or ""
-    system += " Return only one JSON object with a non-empty files array; each item must contain path and complete content. Do not include thinking or prose in content."
+    system += " Return only one JSON object with a non-empty files array; each item must contain path and complete file content. Do not include thinking or explanatory text outside the JSON object."
     messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
+    messages.append({
+        "role": "user",
+        "content": prompt + "\n\nGPT-OSS output override: ignore any file-marker example in the task prompt and return only the JSON object required by the system instruction.",
+    })
     if image_paths:
         messages[-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
 

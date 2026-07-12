@@ -330,6 +330,8 @@ def test_gpt_oss_developer_uses_json_files_and_returns_file_blocks(initialized_o
     payload = post.call_args.kwargs["json"]
     assert payload["format"] == gpt.FILE_RESPONSE_SCHEMA
     assert payload["think"] == "high"
+    assert "complete file content" in payload["messages"][0]["content"]
+    assert "GPT-OSS output override" in payload["messages"][1]["content"]
 
 
 def test_gpt_oss_retries_json_without_thinking(initialized_orchestrator, monkeypatch):
