@@ -197,7 +197,7 @@ def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role:
     if response_schema:
         cmd.extend(["--json-schema", json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))])
     started = time.monotonic()
-    log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'}")
+    log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'} schema={'yes' if response_schema else 'no'}")
     result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, timeout=1800, check=False)
     elapsed = time.monotonic() - started

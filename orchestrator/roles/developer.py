@@ -16,6 +16,13 @@ TASK_PLAN_SCHEMA = {
     "additionalProperties": True,
 }
 
+def is_task_plan_response(response: str) -> bool:
+    try:
+        parsed = json.loads(extract_json_response(response))
+        return isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+
 class DeveloperAgent(BaseAgent):
     def step_developing_plan(self):
         from orchestrator.core.state import log_header, log_success, log_info, log_warning
@@ -69,7 +76,7 @@ class DeveloperAgent(BaseAgent):
         parsed_items_raw = self.call_manager(
             parse_prompt,
             "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
-            is_json_response,
+            is_task_plan_response,
             TASK_PLAN_SCHEMA,
         )
 

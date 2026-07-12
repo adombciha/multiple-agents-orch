@@ -13,6 +13,7 @@ from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
 from orchestrator.core import backends
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.roles.base_agent import is_json_response
+from orchestrator.roles.developer import is_task_plan_response
 
 
 def write_ai_company(
@@ -381,6 +382,11 @@ def test_grok_structured_call_uses_schema_and_logs_capable_command(initialized_o
     assert "--effort" in command
     assert "medium" in command
     assert "--json-schema" in command
+
+
+def test_task_plan_validator_requires_tasks_array():
+    assert not is_task_plan_response('{"requirements": "not a task plan"}')
+    assert is_task_plan_response('{"tasks": [], "staffing": {}, "specialists": []}')
 
 
 def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
