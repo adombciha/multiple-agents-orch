@@ -4,6 +4,32 @@ import json
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
 
 JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
+SALES_SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {"use_sales": {"type": "boolean"}},
+    "required": ["use_sales"],
+    "additionalProperties": False,
+}
+RESEARCH_TRACKS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tracks": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "enum": ["sales", "ra"]},
+                    "focus": {"type": "string"},
+                },
+                "required": ["role", "focus"],
+                "additionalProperties": False,
+            },
+            "maxItems": 3,
+        }
+    },
+    "required": ["tracks"],
+    "additionalProperties": False,
+}
 
 class ManagerAgent(BaseAgent):
     def step_planning(self):
@@ -25,6 +51,7 @@ class ManagerAgent(BaseAgent):
             f"""Decide whether this request needs a Sales specialist before requirements are written:\n\n{request}\n\nRespond only with {{"use_sales": true}} when business scope, users, value, or acceptance criteria are unclear; otherwise respond with {{"use_sales": false}}.""",
             f"You are a Project Manager. {JSON_RULES}",
             is_json_response,
+            SALES_SELECTION_SCHEMA,
         )
         try:
             use_sales = bool(json.loads(extract_json_response(sales_selection)).get("use_sales"))
@@ -52,6 +79,7 @@ class ManagerAgent(BaseAgent):
                 f"""Split this research request into 1-3 independent Sales or RA research tracks.\n\n{request}\n\nRespond only with JSON: {{\"tracks\":[{{\"role\":\"sales\" or \"ra\",\"focus\":\"specific research question\"}}]}}.""",
                 f"You are a research program manager. {JSON_RULES}",
                 is_json_response,
+                RESEARCH_TRACKS_SCHEMA,
             )
             try:
                 selected = json.loads(extract_json_response(tracks)).get("tracks", [])

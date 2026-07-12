@@ -66,5 +66,5 @@ class BaseAgent:
     def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         return self.orchestrator.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None) -> str:
-        return self.orchestrator.call_manager(prompt, system_prompt, response_validator)
+    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None, response_schema: dict | None = None) -> str:
+        return self.orchestrator.call_manager(prompt, system_prompt, response_validator, response_schema)

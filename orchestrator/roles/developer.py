@@ -5,6 +5,17 @@ import re
 from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
 
+TASK_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tasks": {"type": "array", "items": {"type": "object"}},
+        "staffing": {"type": "object"},
+        "specialists": {"type": "array", "items": {"type": "object"}},
+    },
+    "required": ["tasks", "staffing", "specialists"],
+    "additionalProperties": True,
+}
+
 class DeveloperAgent(BaseAgent):
     def step_developing_plan(self):
         from orchestrator.core.state import log_header, log_success, log_info, log_warning
@@ -46,12 +57,20 @@ class DeveloperAgent(BaseAgent):
                 line for line in path.read_text(encoding="utf-8").splitlines()
                 if re.match(r"^#{1,6}\s+\S", line)
             ]
-        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add 'section_heading' copied exactly from the heading inventory below. Do not combine several unrelated sections into one task. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
+        whole_file_docs = docs_only and any(marker in request_text.lower() for marker in ("one task per file", "one task for each", "do not split", "禁止再依 markdown heading 拆分", "每個語系一個 task"))
+        markdown_task_rule = (
+            "For this documentation-only request, create exactly one whole-file task per requested Markdown file. Do not split by heading and do not include section_heading."
+            if whole_file_docs else
+            "For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add section_heading copied exactly from the heading inventory below."
+        )
+        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(
             parse_prompt,
             "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
             is_json_response,
+            TASK_PLAN_SCHEMA,
         )
 
         # Clean potential markdown wrapping
@@ -66,20 +85,28 @@ class DeveloperAgent(BaseAgent):
             tasks = [task for task in tasks if not str(task.get("description", "")).lstrip().lower().startswith(planning_prefixes)]
             if not tasks:
                 raise ValueError("Manager returned no file-change tasks")
-            docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
             if docs_only:
                 files = requested_markdown
                 allowed = set(files)
-                tasks = [
-                    task for task in tasks
-                    if task.get("target_files")
-                    and len(task["target_files"]) == 1
-                    and task["target_files"][0] in allowed
-                    and task.get("section_heading") in markdown_headings.get(task["target_files"][0], [])
-                ]
+                if whole_file_docs:
+                    by_file = {}
+                    for task in tasks:
+                        targets = task.get("target_files")
+                        if isinstance(targets, list) and len(targets) == 1 and targets[0] in allowed:
+                            task.pop("section_heading", None)
+                            by_file.setdefault(targets[0], task)
+                    tasks = list(by_file.values())
+                else:
+                    tasks = [
+                        task for task in tasks
+                        if task.get("target_files")
+                        and len(task["target_files"]) == 1
+                        and task["target_files"][0] in allowed
+                        and task.get("section_heading") in markdown_headings.get(task["target_files"][0], [])
+                    ]
                 covered = {task["target_files"][0] for task in tasks}
                 if covered != allowed:
-                    raise ValueError("Manager must split every requested Markdown file into valid heading-level tasks")
+                    raise ValueError("Manager must create one valid task for every requested Markdown file")
             if isinstance(parsed, dict):
                 self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
                 specialists = parsed.get("specialists", [])
@@ -393,7 +420,7 @@ class DeveloperAgent(BaseAgent):
             if current_files:
                 prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"
 
-            if backend in ["ollama", "gemini", "agy", "grok"]:
+            if backend in ["ollama", "agy", "grok"]:
                 if use_section_blocks:
                     filepath = target_files[0]
                     required_heading = task.get("section_heading")
@@ -441,7 +468,7 @@ class DeveloperAgent(BaseAgent):
 
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
-            if backend in ["ollama", "gemini", "agy", "grok"]:
+            if backend in ["ollama", "agy", "grok"]:
                 if use_section_blocks:
                     system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."
                 else:
@@ -462,7 +489,7 @@ class DeveloperAgent(BaseAgent):
                 self.retry_task_or_pause(task, str(error))
                 return
 
-            if backend in ["ollama", "gemini", "agy", "grok"]:
+            if backend in ["ollama", "agy", "grok"]:
                 written = self.parse_and_write_files(dev_output, task.get("target_files"), allowed_heading=task.get("section_heading"))
                 if written:
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")

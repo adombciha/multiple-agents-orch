@@ -363,6 +363,26 @@ def test_call_ollama_request_exception_raises_runtime_error(initialized_orchestr
         initialized_orchestrator.call_ollama("hello")
 
 
+def test_grok_structured_call_uses_schema_and_logs_capable_command(initialized_orchestrator, monkeypatch):
+    completed = Mock(returncode=0, stdout='{"ok":true}', stderr="")
+    runner = Mock(return_value=completed)
+    monkeypatch.setattr(backends.subprocess, "run", runner)
+
+    assert backends.call_grok(
+        initialized_orchestrator,
+        "prompt",
+        role="manager",
+        model="grok-4.5",
+        response_schema={"type": "object"},
+    ) == '{"ok":true}'
+
+    command = runner.call_args.args[0]
+    assert command[0:2] == ["grok", "-p"]
+    assert "--effort" in command
+    assert "medium" in command
+    assert "--json-schema" in command
+
+
 def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
     initialized_orchestrator.state["staffing"] = {"qa": {"senior": 4, "junior": -1}}
 
@@ -417,7 +437,7 @@ def test_invalid_architect_status_falls_back_to_next_route(initialized_orchestra
     result = initialized_orchestrator.call_agent("architect", "prompt")
 
     assert result.startswith("PLAN_STATUS: APPROVED")
-    assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
+    assert initialized_orchestrator.state["failed_model_routes"] == []
 
 
 def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrator, monkeypatch):
@@ -445,7 +465,7 @@ def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrat
     )
 
     assert "good.py" in result
-    assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
+    assert initialized_orchestrator.state["failed_model_routes"] == []
 
 
 def test_implementing_route_failures_are_scoped_to_active_task(initialized_orchestrator, monkeypatch):
@@ -458,7 +478,7 @@ def test_implementing_route_failures_are_scoped_to_active_task(initialized_orche
     with pytest.raises(RuntimeError):
         initialized_orchestrator.call_agent("developer_junior", "prompt")
 
-    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == ["grok/grok-4.5"]
+    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == []
     assert initialized_orchestrator.state["failed_model_routes"] == []
     initialized_orchestrator.state["active_task_id"] = "T-2"
     assert initialized_orchestrator.state["task_failed_model_routes"].get("T-2", []) == []
@@ -625,7 +645,7 @@ def test_manager_invalid_json_falls_back_to_next_route(initialized_orchestrator,
     )
 
     assert result == '{"use_sales": false}'
-    assert initialized_orchestrator.state["failed_model_routes"] == ["grok/grok-4.5"]
+    assert initialized_orchestrator.state["failed_model_routes"] == []
 
 
 def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):

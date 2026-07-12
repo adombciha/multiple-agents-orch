@@ -55,7 +55,7 @@ def main():
 
     backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
     backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"], help="The agent role")
-    backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "gemini", "agy"], help="The backend to use")
+    backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "agy", "grok"], help="The backend to use")
 
     ollama_url_parser = subparsers.add_parser("set-ollama-url", help="Set the Ollama API URL")
     ollama_url_parser.add_argument("url", help="Ollama API base URL, for example http://172.17.144.1:11434")

@@ -13,6 +13,9 @@ from orchestrator.core.config import DEFAULT_CONFIG
 
 from orchestrator.roles.base_agent import PONYTAIL_PROMPT, inject_ponytail_prompt
 
+class ResponseContractError(RuntimeError):
+    """The provider responded, but not in the format required by this call."""
+
 class Colors:
     HEADER = '\033[95m'
     BLUE = '\033[94m'
@@ -314,9 +317,9 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.call_agy(self, prompt, system_prompt, role, model)
 
-    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_grok(self, prompt, system_prompt, role, model)
+        return backends.call_grok(self, prompt, system_prompt, role, model, response_schema)
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
         from orchestrator.core import backends
@@ -326,8 +329,8 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.escalate_developer_backend(self)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None) -> str:
-        return self.call_agent("manager", prompt, system_prompt, response_validator=response_validator)
+    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None, response_schema: dict | None = None) -> str:
+        return self.call_agent("manager", prompt, system_prompt, response_validator=response_validator, response_schema=response_schema)
 
     def call_agy_quota_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         from orchestrator.core import backends
@@ -363,7 +366,7 @@ class AgentOrchestrator:
                 )
             raise
 
-    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None) -> str | None:
+    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str | None:
         from orchestrator.core import backends
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
@@ -386,41 +389,44 @@ class AgentOrchestrator:
                 if backend == "ollama":
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
-                        raise RuntimeError("Developer response omitted required file blocks")
+                        raise ResponseContractError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
-                        raise RuntimeError("Agent response failed the task output contract")
+                        raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "codex":
                     response = self.call_codex(prompt, system_prompt, role=role, model=model)
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
-                        raise RuntimeError("Agent response failed the task output contract")
+                        raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "agy":
                     response = self.call_agy(prompt, system_prompt, role=role, model=model)
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
-                        raise RuntimeError("Agent response failed the task output contract")
+                        raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "grok":
-                    response = self.call_grok(prompt, system_prompt, role=role, model=model)
+                    grok_kwargs = {"role": role, "model": model}
+                    if response_schema is not None:
+                        grok_kwargs["response_schema"] = response_schema
+                    response = self.call_grok(prompt, system_prompt, **grok_kwargs)
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
-                        raise RuntimeError("Developer response omitted required file blocks")
+                        raise ResponseContractError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
-                        raise RuntimeError("Agent response failed the task output contract")
+                        raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 if backend == "claude":
                     response = self.call_claude(prompt, system_prompt, role=role)
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
-                        raise RuntimeError("Agent response failed the task output contract")
+                        raise ResponseContractError("Agent response failed the task output contract")
                     return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
-                if route not in failed_routes:
+                if not isinstance(error, ResponseContractError) and route not in failed_routes:
                     failed_routes.append(route)
                     self.save_state()
                 if backends.quota_exhausted(error):
@@ -439,16 +445,16 @@ class AgentOrchestrator:
         else:
             valid = first_line.startswith("APPROVED") or first_line.startswith("REJECTED")
         if not valid:
-            raise RuntimeError(f"{role} response omitted required status field")
+            raise ResponseContractError(f"{role} response omitted required status field")
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None) -> str:
+    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str:
         from orchestrator.core import backends
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
         system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
 
-        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths, response_validator)
+        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths, response_validator, response_schema)
         if routed is not None:
             return routed
 

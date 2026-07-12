@@ -57,7 +57,7 @@ grok -p "<prompt>" -m grok-4.5
 
 The supported configured Grok model is `grok-4.5`. Configure the backend and model in `.ai-company/config.json` with `backends.ra` / `backends.sales`, `role_models.ra` / `role_models.sales`, `role_model_backends.ra` / `role_model_backends.sales`, `role_model_tiers.ra` / `role_model_tiers.sales`, and `model_tiers.grok`. The role model resolves from `role_model_tiers`, then `role_models`, then `grok-4.5`.
 
-`set-backend` can select the `ra` and `sales` roles, but its backend choices do not include `grok`; configure Grok by editing the JSON file. If Grok is unavailable or its request fails, the role falls back in this order:
+`set-backend` supports the `grok` backend directly. If Grok is unavailable or its request fails, the role falls back in this order:
 
 ```text
 grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
@@ -110,7 +110,7 @@ Run `python3 orchestrator.py --help` for the current command list. Every command
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: continue after approval; default off | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. `python3 orchestrator.py review revise --run` |
 | `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`; default `PLANNING`, accepts a string state value | Clears revision/runtime routing data, removes the worktree without merging it, and stores the selected state. `python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `claude`, `gemini`, `agy`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `claude`, `agy`, `grok`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
 
 Each subcommand also supports `--help`, for example `python3 orchestrator.py review --help`. Invalid role/backend/decision values are rejected by argparse. `status`, `approve`, `review`, `reset`, and `set-backend` report that initialization is required when `.ai-company/` is absent; `approve` and `review` also reject states other than `WAITING_FOR_OWNER`.
 
@@ -169,6 +169,6 @@ Real workflow execution still needs the selected backend CLI and login, an acces
 
 - Specialist selection is dynamic; no CLI command forces Grok, RA, or Sales for a task.
 - Grok's configured model list contains `grok-4.5`; it has no configured second Grok-model fallback.
-- `set-backend` supports only its documented roles and backend values, and cannot set `grok`.
+- `set-backend` supports only its documented roles and backend values; `grok` can be selected after the Grok CLI is authenticated.
 - `reset --state` accepts a string; use valid workflow states to resume meaningful work.
 - AI workflow commands can modify the target project's Git worktree and can incur provider usage or charges.

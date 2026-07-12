@@ -57,7 +57,7 @@ grok -p "<prompt>" -m grok-4.5
 
 支持配置的 Grok model 是 `grok-4.5`。请在 `.ai-company/config.json` 中配置 `backends.ra` / `backends.sales`、`role_models.ra` / `role_models.sales`、`role_model_backends.ra` / `role_model_backends.sales`、`role_model_tiers.ra` / `role_model_tiers.sales` 和 `model_tiers.grok`。role model 依次从 `role_model_tiers`、`role_models`，最后从 `grok-4.5` 解析。
 
-`set-backend` 可以选择 `ra` 和 `sales` roles，但 backend choices 不包含 `grok`；请编辑 JSON 文件配置 Grok。若 Grok 不可用或请求失败，role 按以下顺序 fallback：
+`set-backend` 支持直接配置 `grok` backend。若 Grok 不可用或请求失败，role 按以下顺序 fallback：
 
 ```text
 grok CLI → AGY (gpt-oss-120b) → Ollama (configured model) → error
@@ -110,7 +110,7 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`：approval 后继续；默认关闭 | 仅在 `WAITING_FOR_OWNER` 有效；从记录的 state 恢复。`python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 后继续；默认关闭 | 仅在 `WAITING_FOR_OWNER` 有效；输出 recorded-decision message。`python3 orchestrator.py review revise --run` |
 | `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`；默认 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合并，并保存选定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`claude`、`gemini`、`agy`。`developer` 和 `qa` 会更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`claude`、`agy`、`grok`。`developer` 和 `qa` 会更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
 
 每个 subcommand 也支持 `--help`，例如 `python3 orchestrator.py review --help`。无效的 role/backend/decision 值会被 argparse 拒绝。`.ai-company/` 缺失时，`status`、`approve`、`review`、`reset` 和 `set-backend` 会报告需要初始化；`approve` 和 `review` 也会拒绝非 `WAITING_FOR_OWNER` state。
 
@@ -169,6 +169,6 @@ git diff --check
 
 - Specialist 选择是动态的；没有 CLI command 可以强制选择 Grok、RA 或 Sales。
 - Grok 的配置 model list 包含 `grok-4.5`；没有第二个配置的 Grok-model fallback。
-- `set-backend` 只支持文档列出的 roles 和 backend values，不能设置 `grok`。
+- `set-backend` 只支持文档列出的 roles 和 backend values；完成 Grok CLI 认证后即可设置 `grok`。
 - `reset --state` 接受 string；请使用有效 workflow states 才能恢复有意义的工作。
 - AI workflow commands 可能修改目标项目的 Git worktree，并可能产生 provider 使用费用。
