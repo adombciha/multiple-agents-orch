@@ -36,10 +36,9 @@ SECTION_RESPONSE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "heading": {"type": "string"},
                     "content": {"type": "string"},
                 },
-                "required": ["path", "heading", "content"],
+                "required": ["path", "content"],
                 "additionalProperties": False,
             },
             "minItems": 1,
@@ -76,10 +75,10 @@ def _section_blocks(payload: str) -> str:
         if not isinstance(sections, list) or not sections:
             raise ValueError("sections must be a non-empty array")
         return "\n".join(
-            f"[SECTION_EDIT_START: {item['path']}]\n[HEADING]\n{item['heading']}\n[CONTENT]\n{item['content']}\n[SECTION_EDIT_END: {item['path']}]"
+            f"[SECTION_EDIT_START: {item['path']}]\n[HEADING]\n\n[CONTENT]\n{item['content']}\n[SECTION_EDIT_END: {item['path']}]"
             for item in sections
             if isinstance(item, dict)
-            and all(isinstance(item.get(key), str) for key in ("path", "heading", "content"))
+            and all(isinstance(item.get(key), str) for key in ("path", "content"))
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise RuntimeError(f"gpt-oss returned invalid JSON section payload: {error}") from error
@@ -90,7 +89,7 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
     from pathlib import Path
     import base64
 
-    section_mode = "[SECTION_EDIT_START:" in prompt
+    section_mode = "[SECTION_EDIT_START:" in prompt or "[SECTION_EDIT_START:" in (system_prompt or "")
     response_schema = SECTION_RESPONSE_SCHEMA if section_mode else FILE_RESPONSE_SCHEMA
     messages = []
     system = system_prompt or ""

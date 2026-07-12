@@ -350,7 +350,7 @@ def test_gpt_oss_retries_json_without_thinking(initialized_orchestrator, monkeyp
 
 def test_gpt_oss_section_mode_returns_section_blocks(initialized_orchestrator, monkeypatch):
     response = Mock(status_code=200)
-    response.json.return_value = {"message": {"content": json.dumps({"sections": [{"path": "README.md", "heading": "## Install", "content": "Updated"}]})}}
+    response.json.return_value = {"message": {"content": json.dumps({"sections": [{"path": "README.md", "content": "Updated"}]})}}
     post = Mock(return_value=response)
     monkeypatch.setattr(gpt.requests, "post", post)
 
@@ -361,7 +361,7 @@ def test_gpt_oss_section_mode_returns_section_blocks(initialized_orchestrator, m
         model="gpt-oss:20b",
     )
 
-    assert result == "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nUpdated\n[SECTION_EDIT_END: README.md]"
+    assert result == "[SECTION_EDIT_START: README.md]\n[HEADING]\n\n[CONTENT]\nUpdated\n[SECTION_EDIT_END: README.md]"
     assert post.call_args.kwargs["json"]["format"] == gpt.SECTION_RESPONSE_SCHEMA
 def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.config["ollama_model"] = "fallback-model"

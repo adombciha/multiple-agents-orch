@@ -287,8 +287,11 @@ class DeveloperAgent(BaseAgent):
                 log_warning(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
             if allowed_heading and heading != allowed_heading:
-                log_warning(f"Skipping section not declared by task contract: {heading}")
-                continue
+                if not heading:
+                    heading = allowed_heading
+                else:
+                    log_warning(f"Skipping section not declared by task contract: {heading}")
+                    continue
             if allowed_heading is None:
                 log_warning(f"Skipping section block for a file-level task: {filepath_str}")
                 continue
