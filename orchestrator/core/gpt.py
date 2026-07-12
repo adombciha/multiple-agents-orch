@@ -118,7 +118,8 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
     url = f"{orchestrator.config['ollama_url']}/api/chat"
     timeout = orchestrator.config.get("ollama_timeout", 1800)
     started = time.monotonic()
-    log_info(f"GPT Ollama calling model: {model} mode=json_files")
+    mode = "json_sections" if section_mode else "json_files"
+    log_info(f"GPT Ollama calling model: {model} mode={mode}")
     try:
         response = requests.post(url, json=payload, timeout=timeout)
         if payload.get("think") and response.status_code == 400:
