@@ -911,10 +911,10 @@ def test_single_markdown_response_is_wrapped_only_when_complete(initialized_orch
     assert "Changed" in readme.read_text(encoding="utf-8")
 
 
-def test_markdown_section_blocks_reject_example_placeholder(initialized_orchestrator):
+def test_markdown_section_blocks_reject_unchanged_content(initialized_orchestrator):
     readme = initialized_orchestrator.workspace / "README.md"
     readme.write_text("# Project\n\n## Install\n\nOld\n", encoding="utf-8")
-    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nreplacement content below the heading\n[SECTION_EDIT_END: README.md]"
+    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nOld\n[SECTION_EDIT_END: README.md]"
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install") == []
     assert "Old" in readme.read_text(encoding="utf-8")

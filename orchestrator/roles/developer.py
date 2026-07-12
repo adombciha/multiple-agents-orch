@@ -225,7 +225,6 @@ class DeveloperAgent(BaseAgent):
 
     def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False, allowed_heading: str | None = None) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
-        placeholders = {"// code contents here", "full file content here", "replacement content below the heading"}
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
         edit_pattern = re.compile(
@@ -251,8 +250,8 @@ class DeveloperAgent(BaseAgent):
         for filepath_str, content in matches:
             filepath_str = filepath_str.strip()
             content = content.strip()
-            if not content or content.lower() in placeholders:
-                log_warning(f"Skipping placeholder-only file content: {filepath_str}")
+            if not content:
+                log_warning(f"Skipping empty file content: {filepath_str}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
                 log_warning(f"Skipping file not declared by task contract: {filepath_str}")
@@ -281,6 +280,9 @@ class DeveloperAgent(BaseAgent):
                 continue
             if target_path.suffix.lower() == ".md" and target_path.exists():
                 original = target_path.read_text(encoding="utf-8")
+                if content == original:
+                    log_warning(f"Skipping unchanged file response: {filepath_str}")
+                    continue
                 headings = [line for line in original.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
                 if any(heading not in content for heading in headings):
                     log_warning(f"Skipping Markdown rewrite that removes existing headings: {filepath_str}")
@@ -318,6 +320,9 @@ class DeveloperAgent(BaseAgent):
                 log_warning(f"Skipping edit whose OLD text is not unique: {filepath_str}")
                 continue
             updated = original.replace(old, new, 1)
+            if updated == original:
+                log_warning(f"Skipping unchanged edit response: {filepath_str}")
+                continue
             headings = [line for line in original.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
             if any(heading not in updated for heading in headings):
                 log_warning(f"Skipping Markdown edit that removes existing headings: {filepath_str}")
@@ -331,8 +336,8 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             heading = heading.strip()
             content = content.strip("\n")
-            if content.strip().lower() in placeholders:
-                log_warning(f"Skipping placeholder-only section content: {filepath_str}: {heading}")
+            if not content.strip():
+                log_warning(f"Skipping empty section content: {filepath_str}: {heading}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
                 log_warning(f"Skipping file not declared by task contract: {filepath_str}")
@@ -371,7 +376,14 @@ class DeveloperAgent(BaseAgent):
                 if next_heading and len(next_heading.group(1)) <= level:
                     end = index
                     break
+            original_body = "".join(lines[start:end]).strip()
+            if content.strip() == original_body:
+                log_warning(f"Skipping unchanged section response: {filepath_str}: {heading}")
+                continue
             updated = "".join(lines[:start]) + f"\n{content}\n\n" + "".join(lines[end:])
+            if updated == original:
+                log_warning(f"Skipping unchanged section response: {filepath_str}: {heading}")
+                continue
             headings = [line.rstrip("\r\n") for line in lines if re.match(r"^#{1,6}\s+\S", line)]
             if any(existing_heading not in updated for existing_heading in headings):
                 log_warning(f"Skipping Markdown section edit that removes existing headings: {filepath_str}")
