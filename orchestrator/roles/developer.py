@@ -119,7 +119,7 @@ class DeveloperAgent(BaseAgent):
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()
 
-    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None) -> list[str]:
+    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
@@ -160,6 +160,10 @@ class DeveloperAgent(BaseAgent):
                 if any(heading not in content for heading in headings):
                     log_warning(f"Skipping Markdown rewrite that removes existing headings: {filepath_str}")
                     continue
+
+            if dry_run:
+                written_files.append(filepath_str)
+                continue
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             with open(target_path, "w", encoding="utf-8") as f:
@@ -253,12 +257,33 @@ class DeveloperAgent(BaseAgent):
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
             if backend in ["ollama", "gemini", "agy", "grok"]:
                 system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
-            try:
-                dev_output = self.call_agent(effective_role, prompt, system_prompt)
-            except RuntimeError as error:
-                self.orchestrator.pause_for_human_review("Developer", str(error), "IMPLEMENTING", "IMPLEMENTING")
-                return
             self.orchestrator.state["last_developer_role"] = agent_role
+
+            def valid_file_response(response):
+                return bool(self.parse_and_write_files(response, task.get("target_files"), dry_run=True))
+
+            try:
+                dev_output = self.call_agent(
+                    effective_role,
+                    prompt,
+                    system_prompt,
+                    response_validator=valid_file_response,
+                )
+            except RuntimeError as error:
+                self.orchestrator.escalate_developer_backend()
+                max_rev = self.orchestrator.config.get("max_revisions", 2)
+                if self.orchestrator.state["code_revisions"] < max_rev:
+                    self.orchestrator.state["code_revisions"] += 1
+                    self.orchestrator.state["state"] = "IMPLEMENTING"
+                    self.orchestrator.state["last_developer_error"] = str(error)
+                    self.orchestrator.save_state()
+                    log_info(
+                        f"Revising implementation after Developer contract failure "
+                        f"(Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
+                    )
+                else:
+                    self.orchestrator.pause_for_human_review("Developer", str(error), "IMPLEMENTING", "IMPLEMENTING")
+                return
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
                 written = self.parse_and_write_files(dev_output, task.get("target_files"))
@@ -266,12 +291,24 @@ class DeveloperAgent(BaseAgent):
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:
                     log_warning("No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks.")
-                    self.orchestrator.pause_for_human_review(
-                        "Developer",
-                        f"Task {task['id']} produced no permitted file changes.",
-                        "IMPLEMENTING",
-                        "IMPLEMENTING",
-                    )
+                    self.orchestrator.escalate_developer_backend()
+                    max_rev = self.orchestrator.config.get("max_revisions", 2)
+                    if self.orchestrator.state["code_revisions"] < max_rev:
+                        self.orchestrator.state["code_revisions"] += 1
+                        self.orchestrator.state["state"] = "IMPLEMENTING"
+                        self.orchestrator.state["last_developer_error"] = f"Task {task['id']} produced no permitted file changes."
+                        self.orchestrator.save_state()
+                        log_info(
+                            f"Revising implementation after empty Developer output "
+                            f"(Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
+                        )
+                    else:
+                        self.orchestrator.pause_for_human_review(
+                            "Developer",
+                            f"Task {task['id']} produced no permitted file changes.",
+                            "IMPLEMENTING",
+                            "IMPLEMENTING",
+                        )
                     return
 
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")

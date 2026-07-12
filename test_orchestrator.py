@@ -402,6 +402,34 @@ def test_invalid_architect_status_falls_back_to_next_route(initialized_orchestra
     assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
 
 
+def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
+        ["grok", "grok-4.5"],
+        ["ollama", "qwen3:8b"],
+    ]
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_grok",
+        Mock(return_value="[FILE_START: bad.py]\ninvalid\n[FILE_END: bad.py]"),
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent_ollama_fallback",
+        Mock(return_value="[FILE_START: good.py]\nvalid\n[FILE_END: good.py]"),
+    )
+
+    result = initialized_orchestrator.call_agent(
+        "developer_junior",
+        "prompt",
+        response_validator=lambda response: "good.py" in response,
+    )
+
+    assert "good.py" in result
+    assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
+
+
 def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
@@ -438,8 +466,8 @@ def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator
 
     initialized_orchestrator.step_implementing()
 
-    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
-    assert initialized_orchestrator.state["human_review_source"] == "Developer"
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert initialized_orchestrator.state["code_revisions"] == 1
 
 
 def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator):
@@ -473,7 +501,8 @@ def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orche
 
     initialized_orchestrator.step_implementing()
 
-    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert initialized_orchestrator.state["code_revisions"] == 1
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
 
 

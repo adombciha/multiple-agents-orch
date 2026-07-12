@@ -356,7 +356,7 @@ class AgentOrchestrator:
                 )
             raise
 
-    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str | None:
+    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None) -> str | None:
         from orchestrator.core import backends
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
@@ -376,24 +376,34 @@ class AgentOrchestrator:
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
+                    if response_validator is not None and not response_validator(response):
+                        raise RuntimeError("Agent response failed the task output contract")
                     return response
                 if backend == "codex":
                     response = self.call_codex(prompt, system_prompt, role=role, model=model)
                     self.validate_routed_response(role, response)
+                    if response_validator is not None and not response_validator(response):
+                        raise RuntimeError("Agent response failed the task output contract")
                     return response
                 if backend == "agy":
                     response = self.call_agy(prompt, system_prompt, role=role, model=model)
                     self.validate_routed_response(role, response)
+                    if response_validator is not None and not response_validator(response):
+                        raise RuntimeError("Agent response failed the task output contract")
                     return response
                 if backend == "grok":
                     response = self.call_grok(prompt, system_prompt, role=role, model=model)
                     if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
                         raise RuntimeError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
+                    if response_validator is not None and not response_validator(response):
+                        raise RuntimeError("Agent response failed the task output contract")
                     return response
                 if backend == "claude":
                     response = self.call_claude(prompt, system_prompt, role=role)
                     self.validate_routed_response(role, response)
+                    if response_validator is not None and not response_validator(response):
+                        raise RuntimeError("Agent response failed the task output contract")
                     return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
@@ -419,14 +429,14 @@ class AgentOrchestrator:
         if not valid:
             raise RuntimeError(f"{role} response omitted required status field")
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None) -> str:
+    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None) -> str:
         from orchestrator.core import backends
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
         system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
 
-        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths)
+        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths, response_validator)
         if routed is not None:
             return routed
 
