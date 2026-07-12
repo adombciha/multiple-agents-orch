@@ -6,18 +6,7 @@
 
 ## 要件とインストール
 
-以下のコマンドをシェルから実行します。デフォルトの Git worktree workflow には Git と Python 3 が必要です。プロジェクトは `requests` を使用し、tests には `pytest` も使用します。
-
-```bash
-git clone https://github.com/adombciha/multiple-agents-orch.git
-cd multiple-agents-orch
-python3 -m pip install requests pytest
-python3 orchestrator.py --help
-```
-
-最後のコマンドは CLI の読み込みを確認します。AI backend への接続や worktree の作成は行いません。`--version` option はありません。
-
-AI workflow を実行するには、`.ai-company/config.json` で選択された CLI backend（`grok`、`codex`、`agy`、`claude`）をインストールして認証するか、`ollama` role 用に Ollama service を実行します。追加の Grok API-key environment variable は定義されません。`grok` CLI はその CLI の要件に従って認証してください。Git worktree isolation が利用できない、または不要な場合だけ `use_worktree` を `false` にします。
+replacement content below the heading
 
 ## ワークフローとファイル
 
