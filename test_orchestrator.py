@@ -369,10 +369,10 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
 
 
 def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
-    assert initialized_orchestrator.get_active_model_for_role("developer_senior", "grok") == "grok-4.5"
-    assert initialized_orchestrator.get_active_model_for_role("developer_middle", "grok") == "grok-4.5"
-    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "codegemma:7b"
-    assert initialized_orchestrator.get_active_model_for_role("architect", "ollama") == "gemma4:latest"
+    assert initialized_orchestrator.get_active_model_for_role("developer_senior", "codex") == "gpt-5.6-luna"
+    assert initialized_orchestrator.get_active_model_for_role("developer_middle", "ollama") == "granite4.1:8b"
+    assert initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama") == "gemma4:latest"
+    assert initialized_orchestrator.get_active_model_for_role("architect", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("sales", "grok") == "grok-4.5"
     assert initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama") == "deepseek-r1:7b"
@@ -390,7 +390,7 @@ def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
     app.load_config_and_state()
 
     assert app.get_backend("developer_junior") == "codex"
-    assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-sol"
+    assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-luna"
     assert app.config["ollama_keep_alive"] == 0
 
 
@@ -619,26 +619,32 @@ def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orc
     assert initialized_orchestrator.state["human_review_source"] == "Orchestrator"
 
 
-def test_manager_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
-    codex = Mock(side_effect=RuntimeError("maximum context length"))
-    agy = Mock(return_value="fallback")
-    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
-    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
-
-    assert initialized_orchestrator.call_manager("prompt") == "fallback"
-    codex.assert_called_once_with("prompt", None, role="manager", model="gpt-5.6-sol")
-    agy.assert_called_once_with("prompt", None, role="manager", model="gemini-3.5-flash")
-
-
-def test_reviewer_retries_terra_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
+def test_manager_retries_luna_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
+    grok = Mock(side_effect=RuntimeError("maximum context length"))
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
+    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
+
+    assert initialized_orchestrator.call_manager("prompt") == "fallback"
+    grok.assert_called_once_with("prompt", None, role="manager", model="grok-4.5")
+    codex.assert_called_once_with("prompt", None, role="manager", model="gpt-5.6-luna")
+    ollama.assert_called_once_with("manager", "prompt", None, model="qwen3:8b")
+
+
+def test_reviewer_retries_luna_then_ollama_after_token_failure(initialized_orchestrator, monkeypatch):
+    grok = Mock(side_effect=RuntimeError("maximum context length"))
+    codex = Mock(side_effect=RuntimeError("maximum context length"))
+    ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
-    codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
-    ollama.assert_called_once_with("reviewer", "prompt", None, model="deepseek-coder:6.7b")
+    grok.assert_called_once_with("prompt", None, role="reviewer", model="grok-4.5")
+    codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-luna")
+    ollama.assert_called_once_with("reviewer", "prompt", None, model="gemma4:latest")
 
 
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
@@ -659,8 +665,8 @@ def test_allocate_workers_persists_round_robin_assignments(initialized_orchestra
 
 
 def test_token_fallback_promotes_manager_only_for_token_errors(initialized_orchestrator):
-    assert initialized_orchestrator.token_fallback_model("manager", RuntimeError("maximum context length")) == "gpt-5.6-terra"
-    assert initialized_orchestrator.get_active_model_for_role("manager", "codex") == "gpt-5.6-sol"
+    assert initialized_orchestrator.token_fallback_model("manager", RuntimeError("maximum context length")) == "gpt-5.6-luna"
+    assert initialized_orchestrator.get_active_model_for_role("manager", "codex") == "gpt-5.6-luna"
     assert initialized_orchestrator.token_fallback_model("reviewer", RuntimeError("connection failed")) is None
 
 

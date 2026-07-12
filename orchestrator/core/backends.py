@@ -101,6 +101,9 @@ def call_codex(orchestrator, prompt: str, system_prompt: str | None = None, role
     model = model or orchestrator.get_active_model_for_role(role, "codex")
     if model:
         cmd.extend(["-m", model])
+    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
+    if effort:
+        cmd.extend(["-c", f"model_reasoning_effort={effort!r}"])
     cmd.append("-")
 
     log_info(f"Running Codex: {' '.join(cmd)}")
@@ -187,6 +190,9 @@ def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role:
     full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
     model = model or orchestrator.get_active_model_for_role(role, "grok") or "grok-4.5"
     cmd = ["grok", "-p", full_prompt, "-m", model]
+    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
+    if effort:
+        cmd.extend(["--effort", effort])
     log_info(f"Running Grok Build: grok -p ... -m {model}")
     result = subprocess.run(cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, timeout=1800, check=False)
