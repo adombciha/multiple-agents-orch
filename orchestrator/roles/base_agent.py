@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 
 PONYTAIL_PROMPT = (
     "\n\n[PONYTAIL RULE ACTIVE]\n"
@@ -16,6 +17,30 @@ PONYTAIL_PROMPT = (
     "- Deletion over addition. Shortest working diff wins.\n"
     "- Non-trivial logic must leave one runnable check behind."
 )
+
+def extract_json_response(response: str) -> str:
+    """Return the first valid JSON value, tolerating a Markdown code fence."""
+    text = response.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]).strip()
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(text):
+        if character not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+            return json.dumps(value, ensure_ascii=False)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("response does not contain valid JSON")
+
+def is_json_response(response: str) -> bool:
+    try:
+        extract_json_response(response)
+        return True
+    except (TypeError, ValueError):
+        return False
 
 def inject_ponytail_prompt(system_prompt: str | None, use_ponytail: bool, role: str | None = None) -> str | None:
     """Injects PONYTAIL_PROMPT if active and role is eligible (manager, developer, reviewer)."""
@@ -41,5 +66,5 @@ class BaseAgent:
     def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         return self.orchestrator.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
-        return self.orchestrator.call_manager(prompt, system_prompt)
+    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None) -> str:
+        return self.orchestrator.call_manager(prompt, system_prompt, response_validator)

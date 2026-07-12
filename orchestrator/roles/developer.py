@@ -3,7 +3,7 @@ import sys
 import json
 import re
 from pathlib import Path
-from orchestrator.roles.base_agent import BaseAgent
+from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
 
 class DeveloperAgent(BaseAgent):
     def step_developing_plan(self):
@@ -48,17 +48,14 @@ class DeveloperAgent(BaseAgent):
             ]
         parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add 'section_heading' copied exactly from the heading inventory below. Do not combine several unrelated sections into one task. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
-        parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
+        parsed_items_raw = self.call_manager(
+            parse_prompt,
+            "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
+            is_json_response,
+        )
 
         # Clean potential markdown wrapping
-        clean_json = parsed_items_raw.strip()
-        if clean_json.startswith("```"):
-            lines = clean_json.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines[-1].startswith("```"):
-                lines = lines[:-1]
-            clean_json = "\n".join(lines).strip()
+        clean_json = extract_json_response(parsed_items_raw)
 
         try:
             parsed = json.loads(clean_json)

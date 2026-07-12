@@ -12,6 +12,7 @@ import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
 from orchestrator.core import backends
 from orchestrator.core.backends import quota_exhausted
+from orchestrator.roles.base_agent import is_json_response
 
 
 def write_ai_company(
@@ -608,6 +609,23 @@ def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orche
     assert initialized_orchestrator.state["code_revisions"] == 0
     assert initialized_orchestrator.state["tasks"][0]["revisions"] == 1
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+
+
+def test_manager_invalid_json_falls_back_to_next_route(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["role_model_routes"]["manager"] = [
+        ["grok", "grok-4.5"], ["codex", "gpt-5.6-luna"]
+    ]
+    grok = Mock(return_value="Here is the JSON you requested: not valid")
+    codex = Mock(return_value='{"use_sales": false}')
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
+    monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
+
+    result = initialized_orchestrator.call_agent(
+        "manager", "prompt", response_validator=is_json_response
+    )
+
+    assert result == '{"use_sales": false}'
+    assert initialized_orchestrator.state["failed_model_routes"] == ["grok/grok-4.5"]
 
 
 def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(initialized_orchestrator, monkeypatch):

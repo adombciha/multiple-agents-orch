@@ -1,7 +1,9 @@
 from __future__ import annotations
 import sys
 import json
-from orchestrator.roles.base_agent import BaseAgent
+from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_json_response
+
+JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
 
 class ManagerAgent(BaseAgent):
     def step_planning(self):
@@ -21,10 +23,11 @@ class ManagerAgent(BaseAgent):
 
         sales_selection = self.call_manager(
             f"""Decide whether this request needs a Sales specialist before requirements are written:\n\n{request}\n\nRespond only with {{"use_sales": true}} when business scope, users, value, or acceptance criteria are unclear; otherwise respond with {{"use_sales": false}}.""",
-            "You are a Project Manager. Output only JSON.",
+            f"You are a Project Manager. {JSON_RULES}",
+            is_json_response,
         )
         try:
-            use_sales = bool(json.loads(sales_selection).get("use_sales"))
+            use_sales = bool(json.loads(extract_json_response(sales_selection)).get("use_sales"))
         except (json.JSONDecodeError, AttributeError):
             use_sales = False
         sales_notes = ""
@@ -47,10 +50,11 @@ class ManagerAgent(BaseAgent):
         if self.orchestrator.state.get("workflow_mode") == "research":
             tracks = self.call_manager(
                 f"""Split this research request into 1-3 independent Sales or RA research tracks.\n\n{request}\n\nRespond only with JSON: {{\"tracks\":[{{\"role\":\"sales\" or \"ra\",\"focus\":\"specific research question\"}}]}}.""",
-                "You are a research program manager. Output only JSON.",
+                f"You are a research program manager. {JSON_RULES}",
+                is_json_response,
             )
             try:
-                selected = json.loads(tracks).get("tracks", [])
+                selected = json.loads(extract_json_response(tracks)).get("tracks", [])
                 self.orchestrator.state["specialists"] = [{"role": item["role"], "reason": item["focus"]} for item in selected if item.get("role") in {"sales", "ra"}][:3]
             except (json.JSONDecodeError, KeyError, TypeError):
                 self.orchestrator.state["specialists"] = []

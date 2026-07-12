@@ -326,8 +326,8 @@ class AgentOrchestrator:
         from orchestrator.core import backends
         return backends.escalate_developer_backend(self)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None) -> str:
-        return self.call_agent("manager", prompt, system_prompt)
+    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None) -> str:
+        return self.call_agent("manager", prompt, system_prompt, response_validator=response_validator)
 
     def call_agy_quota_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
         from orchestrator.core import backends
