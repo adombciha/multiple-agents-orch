@@ -49,6 +49,9 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
     messages.append({"role": "user", "content": prompt})
 
     model = model or orchestrator.get_active_model_for_role(role, "ollama") or orchestrator.config.get("ollama_model", "gemma2:2b")
+    from orchestrator.core import gpt
+    if role.startswith("developer") and gpt.is_gpt_oss(model):
+        return gpt.call(orchestrator, prompt, system_prompt, role, model, image_paths)
     log_info(f"Ollama calling model: {model}")
     payload = {
         "model": model,

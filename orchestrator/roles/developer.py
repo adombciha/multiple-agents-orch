@@ -187,6 +187,13 @@ class DeveloperAgent(BaseAgent):
             re.DOTALL,
         )
         section_edits = section_pattern.findall(text)
+        if not matches and not edits and not section_edits and allowed_files and len(allowed_files) == 1:
+            filepath = str(Path(allowed_files[0]))
+            candidate = text.strip()
+            if Path(filepath).suffix.lower() == ".md" and candidate.startswith("#"):
+                if candidate.startswith("```") and candidate.endswith("```"):
+                    candidate = "\n".join(candidate.splitlines()[1:-1]).strip()
+                matches = [(filepath, candidate)]
         allowed = {str(Path(path)) for path in allowed_files} if allowed_files is not None else None
 
         written_files = []
@@ -282,6 +289,9 @@ class DeveloperAgent(BaseAgent):
             if allowed_heading and heading != allowed_heading:
                 log_warning(f"Skipping section not declared by task contract: {heading}")
                 continue
+            if allowed_heading is None:
+                log_warning(f"Skipping section block for a file-level task: {filepath_str}")
+                continue
 
             base_dir = self.orchestrator.workspace
             worktree = self.orchestrator.ai_dir / "worktree"
@@ -343,6 +353,42 @@ class DeveloperAgent(BaseAgent):
             sys.exit(1)
 
         tasks = self.orchestrator.state.get("tasks", [])
+        for task in list(tasks):
+            if task.get("status") != "pending" or not str(task.get("id", "")).startswith("FIX-"):
+                continue
+            target_files = task.get("target_files") or list(dict.fromkeys(
+                path for existing_task in tasks for path in existing_task.get("target_files", [])
+            ))
+            if len(target_files) <= 1:
+                continue
+            task_index = tasks.index(task)
+            task_id = task["id"]
+            split_tasks = [
+                {
+                    **task,
+                    "id": f"{task_id}-{index}",
+                    "target_files": [path],
+                    "output_contract": {
+                        "format": "file_blocks",
+                        "response_must_start_with": "[FILE_START:",
+                        "allow_prose": False,
+                    },
+                }
+                for index, path in enumerate(target_files, 1)
+            ]
+            tasks[task_index:task_index + 1] = split_tasks
+            for state_key in ("task_developer_promotions", "task_failed_model_routes"):
+                task_state = self.orchestrator.state.setdefault(state_key, {})
+                inherited = task_state.pop(task_id, None)
+                if inherited is not None:
+                    for split_task in split_tasks:
+                        task_state[split_task["id"]] = inherited.copy()
+            if self.orchestrator.state.get("active_task_id") == task_id:
+                self.orchestrator.state.pop("active_task_id")
+            log_info(f"Split multi-file revision {task_id} into {len(split_tasks)} file-scoped tasks.")
+            self.orchestrator.save_state()
+            with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
+                json.dump(tasks, f, indent=2)
         pending_tasks = [t for t in tasks if t["status"] == "pending"]
 
         if not pending_tasks:
@@ -441,13 +487,24 @@ class DeveloperAgent(BaseAgent):
                         f"{current_content}\n"
                         f"[END_CURRENT_FILE: {filepath}]"
                     )
+            if (
+                (base_dir / "README.md").is_file()
+                and any(Path(filepath).name in {"README_en.md", "README_ja.md", "README_zh-CN.md"} for filepath in target_files)
+                and "README.md" not in target_files
+            ):
+                current_files.append(
+                    "[READ_ONLY_REFERENCE: README.md]\n"
+                    + (base_dir / "README.md").read_text(encoding="utf-8")
+                    + "\n[END_READ_ONLY_REFERENCE: README.md]"
+                )
 
             prompt = (
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
                 f"Description: {task['description']}\n"
                 f"Machine contract: {json.dumps(machine_contract)}\n"
-                "Modify only target_files. Preserve all unrelated content and existing Markdown headings.\n"
+                "Modify only target_files. Preserve all unrelated content and existing Markdown headings. "
+                "Any READ_ONLY_REFERENCE content is for factual comparison only and must never be modified.\n"
             )
             if current_files:
                 prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"

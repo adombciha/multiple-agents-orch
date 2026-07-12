@@ -10,7 +10,7 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.core import backends, grok
+from orchestrator.core import backends, grok, gpt
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.core.grok import extract_schema_payload
 from orchestrator.roles.base_agent import is_json_response
@@ -318,6 +318,33 @@ def test_call_ollama_retries_without_thinking_when_model_rejects_it(initialized_
     assert "plain-model" in initialized_orchestrator._ollama_no_think_models
 
 
+def test_gpt_oss_developer_uses_json_files_and_returns_file_blocks(initialized_orchestrator, monkeypatch):
+    response = Mock(status_code=200)
+    response.json.return_value = {"message": {"content": json.dumps({"files": [{"path": "app.py", "content": "print('ok')"}]})}}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(gpt.requests, "post", post)
+
+    result = backends.call_ollama(initialized_orchestrator, "write app", role="developer_senior", model="gpt-oss:20b")
+
+    assert result == "[FILE_START: app.py]\nprint('ok')\n[FILE_END: app.py]"
+    payload = post.call_args.kwargs["json"]
+    assert payload["format"] == gpt.FILE_RESPONSE_SCHEMA
+    assert payload["think"] == "high"
+
+
+def test_gpt_oss_retries_json_without_thinking(initialized_orchestrator, monkeypatch):
+    rejected = Mock(status_code=400)
+    accepted = Mock(status_code=200)
+    accepted.json.return_value = {"message": {"content": json.dumps({"files": [{"path": "app.py", "content": "ok"}]})}}
+    post = Mock(side_effect=[rejected, accepted])
+    monkeypatch.setattr(gpt.requests, "post", post)
+
+    backends.call_ollama(initialized_orchestrator, "write app", role="developer_senior", model="gpt-oss:20b")
+
+    assert "think" in post.call_args_list[0].kwargs["json"]
+    assert "think" not in post.call_args_list[1].kwargs["json"]
+    assert "format" in post.call_args_list[1].kwargs["json"]
+
 def test_call_ollama_falls_back_to_configured_model(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.config["ollama_model"] = "fallback-model"
     monkeypatch.setattr(initialized_orchestrator, "get_active_model_for_role", Mock(return_value=None))
@@ -600,6 +627,28 @@ def test_implementing_prompt_includes_only_current_target_files(initialized_orch
     assert "Do not include me" not in prompt
 
 
+def test_translation_task_receives_read_only_primary_readme(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "sync translation README", "target_files": ["README_en.md"],
+        "output_contract": {"format": "file_blocks"}, "status": "pending",
+        "rd_level": "junior", "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    (initialized_orchestrator.workspace / "README.md").write_text("# Canonical\n", encoding="utf-8")
+    (initialized_orchestrator.workspace / "README_en.md").write_text("# Translation\n", encoding="utf-8")
+    call_agent = Mock(return_value="[FILE_START: README_en.md]\n# Translation\n[FILE_END: README_en.md]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "[READ_ONLY_REFERENCE: README.md]" in prompt
+    assert "# Canonical" in prompt
+    assert "must never be modified" in prompt
+
+
 def test_whole_markdown_task_keeps_declared_file_block_contract(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
@@ -650,6 +699,32 @@ def test_legacy_fix_task_inherits_original_target_files(initialized_orchestrator
 
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
     assert (initialized_orchestrator.workspace / "app.py").read_text(encoding="utf-8") == "fixed"
+
+
+def test_multi_file_fix_task_splits_and_keeps_route_state(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "FIX-REV-1", "description": "fix translations",
+        "target_files": ["README_en.md", "README_ja.md"], "status": "pending",
+        "rd_level": "middle", "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"middle": 1}, "qa": {"junior": 1}}
+    initialized_orchestrator.state["task_developer_promotions"] = {"FIX-REV-1": {"developer_middle": "developer_senior"}}
+    initialized_orchestrator.state["task_failed_model_routes"] = {"FIX-REV-1": ["codex/gpt-5.6-luna"]}
+    call_agent = Mock(side_effect=[
+        "[FILE_START: README_en.md]\nEnglish\n[FILE_END: README_en.md]",
+        "[FILE_START: README_ja.md]\nJapanese\n[FILE_END: README_ja.md]",
+    ])
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    split_tasks = initialized_orchestrator.state["tasks"]
+    assert [task["target_files"] for task in split_tasks] == [["README_en.md"], ["README_ja.md"]]
+    assert all(initialized_orchestrator.state["task_developer_promotions"][task["id"]]["developer_middle"] == "developer_senior" for task in split_tasks)
+    assert all(initialized_orchestrator.state["task_failed_model_routes"][task["id"]] == ["codex/gpt-5.6-luna"] for task in split_tasks)
+    assert call_agent.call_count == 2
 
 
 def test_implementing_pauses_when_all_model_routes_fail(initialized_orchestrator, monkeypatch):
@@ -725,6 +800,24 @@ def test_markdown_section_blocks_reject_wrong_task_heading(initialized_orchestra
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install") == []
     assert "Keep" in readme.read_text(encoding="utf-8")
+
+
+def test_file_level_task_rejects_section_blocks(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\n## Install\n\nOld\n", encoding="utf-8")
+    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nChanged\n[SECTION_EDIT_END: README.md]"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == []
+    assert "Old" in readme.read_text(encoding="utf-8")
+
+
+def test_single_markdown_response_is_wrapped_only_when_complete(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\n## Install\n\nOld\n", encoding="utf-8")
+    output = "# Project\n\n## Install\n\nChanged\n"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == ["README.md"]
+    assert "Changed" in readme.read_text(encoding="utf-8")
 
 
 def test_markdown_section_blocks_reject_example_placeholder(initialized_orchestrator):

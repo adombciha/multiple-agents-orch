@@ -399,7 +399,7 @@ class AgentOrchestrator:
                         response = self.call_agent_ollama_fallback(role, retry_prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
                         has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
                         contract_ok = response_validator is None or response_validator(response)
-                    if implementing and not has_blocks:
+                    if implementing and not has_blocks and response_validator is None:
                         raise ResponseContractError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response, response_schema)
                     if not contract_ok:
