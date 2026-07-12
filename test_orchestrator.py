@@ -430,6 +430,16 @@ def test_output_contract_failure_falls_back_to_next_route(initialized_orchestrat
     assert "grok/grok-4.5" in initialized_orchestrator.state["failed_model_routes"]
 
 
+def test_developer_route_accepts_markdown_edit_blocks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [["grok", "grok-4.5"]]
+    response = "[FILE_EDIT_START: README.md]\n[OLD]\nold\n[NEW]\nnew\n[FILE_EDIT_END: README.md]"
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value=response))
+
+    assert initialized_orchestrator.call_agent("developer_junior", "prompt") == response
+
+
 def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
@@ -457,6 +467,7 @@ def test_implementing_prompt_includes_only_current_target_files(initialized_orch
 
     prompt = call_agent.call_args.args[1]
     assert "[CURRENT_FILE: README.md]\n# Keep me" in prompt
+    assert "[FILE_EDIT_START: README.md]" in prompt
     assert "Do not include me" not in prompt
 
 
@@ -506,6 +517,26 @@ def test_file_blocks_cannot_remove_existing_markdown_headings(initialized_orches
 
     assert written == []
     assert readme.read_text(encoding="utf-8") == "# Install\n\n## Workflow\n\nOriginal\n"
+
+
+def test_markdown_edit_blocks_replace_only_exact_text(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Install\n\nOld command\n\n## Workflow\n\nKeep this\n", encoding="utf-8")
+    output = "[FILE_EDIT_START: README.md]\n[OLD]\nOld command\n[NEW]\nNew command\n[FILE_EDIT_END: README.md]"
+
+    written = initialized_orchestrator.parse_and_write_files(output, ["README.md"])
+
+    assert written == ["README.md"]
+    assert readme.read_text(encoding="utf-8") == "# Install\n\nNew command\n\n## Workflow\n\nKeep this\n"
+
+
+def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Install\n\nSame\nSame\n", encoding="utf-8")
+    output = "[FILE_EDIT_START: README.md]\n[OLD]\nSame\n[NEW]\nChanged\n[FILE_EDIT_END: README.md]"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == []
+    assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
 
 
 def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orchestrator, monkeypatch):

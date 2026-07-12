@@ -373,7 +373,7 @@ class AgentOrchestrator:
                 log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
                 if backend == "ollama":
                     response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
-                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
+                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:")):
                         raise RuntimeError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):
@@ -393,7 +393,7 @@ class AgentOrchestrator:
                     return response
                 if backend == "grok":
                     response = self.call_grok(prompt, system_prompt, role=role, model=model)
-                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and "[FILE_START:" not in response:
+                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:")):
                         raise RuntimeError("Developer response omitted required file blocks")
                     self.validate_routed_response(role, response)
                     if response_validator is not None and not response_validator(response):

@@ -123,6 +123,11 @@ class DeveloperAgent(BaseAgent):
         from orchestrator.core.state import log_success, log_warning
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
+        edit_pattern = re.compile(
+            r'\[FILE_EDIT_START:\s*(.*?)\]\s*\[OLD\]\n?(.*?)\n?\[NEW\]\n?(.*?)\n?\[FILE_EDIT_END:\s*\1\]',
+            re.DOTALL,
+        )
+        edits = edit_pattern.findall(text)
         allowed = {str(Path(path)) for path in allowed_files} if allowed_files is not None else None
 
         written_files = []
@@ -170,7 +175,38 @@ class DeveloperAgent(BaseAgent):
                 f.write(content)
             written_files.append(filepath_str)
             log_success(f"Developer wrote file: {filepath_str}")
-        return written_files
+
+        for filepath_str, old, new in edits:
+            filepath_str = filepath_str.strip()
+            old = old.strip("\n")
+            new = new.strip("\n")
+            if allowed is not None and str(Path(filepath_str)) not in allowed:
+                log_warning(f"Skipping file not declared by task contract: {filepath_str}")
+                continue
+
+            base_dir = self.orchestrator.workspace
+            worktree = self.orchestrator.ai_dir / "worktree"
+            if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
+                base_dir = worktree
+            target_path = (base_dir / filepath_str).resolve()
+            if base_dir not in target_path.parents or not target_path.is_file():
+                log_warning(f"Skipping edit for missing or unsafe file: {filepath_str}")
+                continue
+
+            original = target_path.read_text(encoding="utf-8")
+            if not old or original.count(old) != 1:
+                log_warning(f"Skipping edit whose OLD text is not unique: {filepath_str}")
+                continue
+            updated = original.replace(old, new, 1)
+            headings = [line for line in original.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
+            if any(heading not in updated for heading in headings):
+                log_warning(f"Skipping Markdown edit that removes existing headings: {filepath_str}")
+                continue
+            if not dry_run:
+                target_path.write_text(updated, encoding="utf-8")
+                log_success(f"Developer edited file: {filepath_str}")
+            written_files.append(filepath_str)
+        return list(dict.fromkeys(written_files))
 
     def step_implementing(self):
         from orchestrator.core.state import log_header, log_error, log_success, log_info, log_warning
@@ -220,6 +256,16 @@ class DeveloperAgent(BaseAgent):
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 base_dir = worktree
+            use_edit_blocks = bool(target_files) and all(
+                Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
+                for filepath in target_files
+            )
+            if use_edit_blocks:
+                machine_contract["output_contract"] = {
+                    "format": "exact_replacements",
+                    "response_must_start_with": "[FILE_EDIT_START:",
+                    "allow_prose": False,
+                }
             current_files = []
             for filepath in target_files:
                 target_path = (base_dir / filepath).resolve()
@@ -241,16 +287,28 @@ class DeveloperAgent(BaseAgent):
                 prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                prompt += (
-                    "Please write the code for any files that need to be created or modified. "
-                    "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
-                    "[FILE_START: path/to/file.ext]\n"
-                    "// code contents here\n"
-                    "[FILE_END: path/to/file.ext]\n\n"
-                    "Make sure the path is relative to the project root. "
-                    "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
-                    "Do not output analysis, a plan, Markdown fences, or explanations."
-                )
+                if use_edit_blocks:
+                    filepath = target_files[0]
+                    prompt += (
+                        "Return only exact replacement blocks for the declared target file. "
+                        "Copy each OLD value exactly from CURRENT_FILE and keep it as small as practical:\n"
+                        f"[FILE_EDIT_START: {filepath}]\n"
+                        "[OLD]\nexact existing text\n[NEW]\nreplacement text\n"
+                        f"[FILE_EDIT_END: {filepath}]\n"
+                        "Your response MUST begin with [FILE_EDIT_START:. Do not return the complete file, "
+                        "other files, analysis, Markdown fences, or explanations."
+                    )
+                else:
+                    prompt += (
+                        "Please write the code for any files that need to be created or modified. "
+                        "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
+                        "[FILE_START: path/to/file.ext]\n"
+                        "// code contents here\n"
+                        "[FILE_END: path/to/file.ext]\n\n"
+                        "Make sure the path is relative to the project root. "
+                        "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
+                        "Do not output analysis, a plan, Markdown fences, or explanations."
+                    )
             else:
                 prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
 
@@ -271,7 +329,10 @@ class DeveloperAgent(BaseAgent):
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
+                if use_edit_blocks:
+                    system_prompt += " Respond only with [FILE_EDIT_START: path], [OLD], [NEW], and [FILE_EDIT_END: path] blocks; never provide prose."
+                else:
+                    system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
