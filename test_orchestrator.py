@@ -456,18 +456,19 @@ def test_implementing_prompt_requires_only_file_blocks(initialized_orchestrator,
 def test_implementing_prompt_includes_only_current_target_files(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "update README", "target_files": ["README.md"], "section_heading": "## Quick Start", "status": "pending", "rd_level": "junior", "qa_level": "junior"}]
     initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
-    (initialized_orchestrator.workspace / "README.md").write_text("# Keep me\n", encoding="utf-8")
+    (initialized_orchestrator.workspace / "README.md").write_text("# Project\n\n## Quick Start\n\nKeep me\n\n## Other\n\nDo not include this section\n", encoding="utf-8")
     (initialized_orchestrator.workspace / "README_en.md").write_text("# Do not include me\n", encoding="utf-8")
-    call_agent = Mock(return_value="[FILE_START: README.md]\n# Keep me\n\nUpdated\n[FILE_END: README.md]")
+    call_agent = Mock(return_value="[SECTION_EDIT_START: README.md]\n[HEADING]\n## Quick Start\n[CONTENT]\nUpdated\n[SECTION_EDIT_END: README.md]")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
-    assert "[CURRENT_FILE: README.md]\n# Keep me" in prompt
-    assert "[FILE_EDIT_START: README.md]" in prompt
+    assert "[CURRENT_FILE: README.md]\n## Quick Start" in prompt
+    assert "[SECTION_EDIT_START: README.md]" in prompt
+    assert "Do not include this section" not in prompt
     assert "Do not include me" not in prompt
 
 
@@ -537,6 +538,26 @@ def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == []
     assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
+
+
+def test_markdown_section_blocks_replace_only_named_section(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\nIntro\n\n## Install\n\nOld command\n\n## Workflow\n\nKeep this\n", encoding="utf-8")
+    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Install\n[CONTENT]\nNew command\n[SECTION_EDIT_END: README.md]"
+
+    written = initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install")
+
+    assert written == ["README.md"]
+    assert readme.read_text(encoding="utf-8") == "# Project\n\nIntro\n\n## Install\n\nNew command\n\n## Workflow\n\nKeep this\n"
+
+
+def test_markdown_section_blocks_reject_wrong_task_heading(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Project\n\n## Install\n\nOld\n\n## Workflow\n\nKeep\n", encoding="utf-8")
+    output = "[SECTION_EDIT_START: README.md]\n[HEADING]\n## Workflow\n[CONTENT]\nChanged\n[SECTION_EDIT_END: README.md]"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["README.md"], allowed_heading="## Install") == []
+    assert "Keep" in readme.read_text(encoding="utf-8")
 
 
 def test_implementing_pauses_when_file_contract_writes_nothing(initialized_orchestrator, monkeypatch):
@@ -704,6 +725,22 @@ def test_developing_plan_uses_manager_tasks_without_developer_planner(initialize
 
     developer_call.assert_not_called()
     assert "`app.py`" in initialized_orchestrator.plan_path.read_text(encoding="utf-8")
+
+
+def test_developing_plan_keeps_section_level_readme_tasks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("只允許修改 docs/guide.md", encoding="utf-8")
+    initialized_orchestrator.request_path.write_text("只允許修改 docs/guide.md", encoding="utf-8")
+    guide = initialized_orchestrator.workspace / "docs" / "guide.md"
+    guide.parent.mkdir()
+    guide.write_text("# Project\n\n## Quick Start\n\nOld\n", encoding="utf-8")
+    manager = Mock(return_value='{"tasks": [{"id": "DOC-QUICK", "description": "update Quick Start", "target_files": ["docs/guide.md"], "section_heading": "## Quick Start", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}')
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"][0]["id"] == "DOC-QUICK"
+    assert initialized_orchestrator.state["tasks"][0]["section_heading"] == "## Quick Start"
+    assert "## Quick Start" in manager.call_args.args[0]
 
 
 def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):

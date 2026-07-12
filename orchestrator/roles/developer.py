@@ -31,7 +31,22 @@ class DeveloperAgent(BaseAgent):
             "plan_revisions": self.orchestrator.state.get("plan_revisions", 0),
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
         }
-        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        request_text = self.orchestrator.request_path.read_text(encoding="utf-8") if self.orchestrator.request_path.exists() else planning_input
+        requested_markdown = []
+        for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md\b", request_text, re.IGNORECASE):
+            path = Path(name)
+            target = (self.orchestrator.workspace / path).resolve()
+            if not path.is_absolute() and self.orchestrator.workspace in target.parents and target.is_file():
+                requested_markdown.append(str(path))
+        requested_markdown = list(dict.fromkeys(requested_markdown))
+        markdown_headings = {}
+        for name in requested_markdown:
+            path = self.orchestrator.workspace / name
+            markdown_headings[name] = [
+                line for line in path.read_text(encoding="utf-8").splitlines()
+                if re.match(r"^#{1,6}\s+\S", line)
+            ]
+        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add 'section_heading' copied exactly from the heading inventory below. Do not combine several unrelated sections into one task. Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(parse_prompt, "You are a Project Manager. Output only raw JSON.")
 
@@ -54,18 +69,22 @@ class DeveloperAgent(BaseAgent):
             tasks = [task for task in tasks if not str(task.get("description", "")).lstrip().lower().startswith(planning_prefixes)]
             if not tasks:
                 raise ValueError("Manager returned no file-change tasks")
-            docs_only = "readme" in requirements.lower() and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
+            docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
             if docs_only:
-                request = self.orchestrator.request_path.read_text(encoding="utf-8")
-                files = [name for name in ("README.md", "README_en.md", "README_ja.md", "README_zh-CN.md") if name in request]
+                files = requested_markdown
+                allowed = set(files)
                 tasks = [
-                    {"id": f"DOCS-{index}", "description": f"Update only {name} according to this request:\n{request}", "target_files": [name], "status": "pending", "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}
-                    for index, name in enumerate(files, 1)
+                    task for task in tasks
+                    if task.get("target_files")
+                    and len(task["target_files"]) == 1
+                    and task["target_files"][0] in allowed
+                    and task.get("section_heading") in markdown_headings.get(task["target_files"][0], [])
                 ]
-                self.orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+                covered = {task["target_files"][0] for task in tasks}
+                if covered != allowed:
+                    raise ValueError("Manager must split every requested Markdown file into valid heading-level tasks")
             if isinstance(parsed, dict):
-                if not docs_only:
-                    self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
+                self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
                 specialists = parsed.get("specialists", [])
                 self.orchestrator.state["specialists"] = [
                     item for item in specialists
@@ -79,7 +98,10 @@ class DeveloperAgent(BaseAgent):
                 target_files = task.get("target_files", [])
                 if not isinstance(target_files, list) or not target_files or not all(isinstance(path, str) and path and not path.startswith("/") for path in target_files):
                     raise ValueError("each task requires non-empty relative target_files")
-                task["output_contract"] = {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}
+                if task.get("section_heading"):
+                    task["output_contract"] = {"format": "markdown_section_replacements", "response_must_start_with": "[SECTION_EDIT_START:", "allow_prose": False}
+                else:
+                    task["output_contract"] = {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
                 legacy_level = task.get("assignee_level", "senior")
@@ -97,7 +119,7 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.allocate_workers("qa", tasks)
             # Retain completed work only when the revised task is unchanged.
             task_signature = lambda task: tuple(
-                task.get(key) for key in ("id", "description", "complexity", "rd_level", "qa_level")
+                task.get(key) for key in ("id", "description", "section_heading", "complexity", "rd_level", "qa_level")
             )
             existing_completed = {
                 task_signature(t) for t in self.orchestrator.state["tasks"] if t.get("status") == "completed"
@@ -119,7 +141,7 @@ class DeveloperAgent(BaseAgent):
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()
 
-    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False) -> list[str]:
+    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False, allowed_heading: str | None = None) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
@@ -128,6 +150,11 @@ class DeveloperAgent(BaseAgent):
             re.DOTALL,
         )
         edits = edit_pattern.findall(text)
+        section_pattern = re.compile(
+            r'\[SECTION_EDIT_START:\s*(.*?)\]\s*\[HEADING\]\n?(.*?)\n?\[CONTENT\]\n?(.*?)\n?\[SECTION_EDIT_END:\s*\1\]',
+            re.DOTALL,
+        )
+        section_edits = section_pattern.findall(text)
         allowed = {str(Path(path)) for path in allowed_files} if allowed_files is not None else None
 
         written_files = []
@@ -206,6 +233,51 @@ class DeveloperAgent(BaseAgent):
                 target_path.write_text(updated, encoding="utf-8")
                 log_success(f"Developer edited file: {filepath_str}")
             written_files.append(filepath_str)
+
+        for filepath_str, heading, content in section_edits:
+            filepath_str = filepath_str.strip()
+            heading = heading.strip()
+            content = content.strip("\n")
+            if allowed is not None and str(Path(filepath_str)) not in allowed:
+                log_warning(f"Skipping file not declared by task contract: {filepath_str}")
+                continue
+            if allowed_heading and heading != allowed_heading:
+                log_warning(f"Skipping section not declared by task contract: {heading}")
+                continue
+
+            base_dir = self.orchestrator.workspace
+            worktree = self.orchestrator.ai_dir / "worktree"
+            if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
+                base_dir = worktree
+            target_path = (base_dir / filepath_str).resolve()
+            if base_dir not in target_path.parents or not target_path.is_file():
+                log_warning(f"Skipping section edit for missing or unsafe file: {filepath_str}")
+                continue
+
+            original = target_path.read_text(encoding="utf-8")
+            lines = original.splitlines(keepends=True)
+            indices = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == heading]
+            heading_match = re.match(r"^(#{1,6})\s+\S", heading)
+            if len(indices) != 1 or not heading_match:
+                log_warning(f"Skipping edit whose heading is missing or ambiguous: {filepath_str}: {heading}")
+                continue
+            start = indices[0] + 1
+            level = len(heading_match.group(1))
+            end = len(lines)
+            for index in range(start, len(lines)):
+                next_heading = re.match(r"^(#{1,6})\s+\S", lines[index])
+                if next_heading and len(next_heading.group(1)) <= level:
+                    end = index
+                    break
+            updated = "".join(lines[:start]) + f"\n{content}\n\n" + "".join(lines[end:])
+            headings = [line.rstrip("\r\n") for line in lines if re.match(r"^#{1,6}\s+\S", line)]
+            if any(existing_heading not in updated for existing_heading in headings):
+                log_warning(f"Skipping Markdown section edit that removes existing headings: {filepath_str}")
+                continue
+            if not dry_run:
+                target_path.write_text(updated, encoding="utf-8")
+                log_success(f"Developer edited section {heading} in {filepath_str}")
+            written_files.append(filepath_str)
         return list(dict.fromkeys(written_files))
 
     def step_implementing(self):
@@ -256,23 +328,41 @@ class DeveloperAgent(BaseAgent):
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 base_dir = worktree
-            use_edit_blocks = bool(target_files) and all(
+            use_section_blocks = bool(target_files) and all(
                 Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
                 for filepath in target_files
             )
-            if use_edit_blocks:
+            if use_section_blocks:
                 machine_contract["output_contract"] = {
-                    "format": "exact_replacements",
-                    "response_must_start_with": "[FILE_EDIT_START:",
+                    "format": "markdown_section_replacements",
+                    "response_must_start_with": "[SECTION_EDIT_START:",
                     "allow_prose": False,
                 }
+                if task.get("section_heading"):
+                    machine_contract["section_heading"] = task["section_heading"]
             current_files = []
             for filepath in target_files:
                 target_path = (base_dir / filepath).resolve()
                 if base_dir in target_path.parents and target_path.is_file():
+                    current_content = target_path.read_text(encoding="utf-8")
+                    section_heading = task.get("section_heading")
+                    if section_heading:
+                        lines = current_content.splitlines(keepends=True)
+                        indices = [index for index, line in enumerate(lines) if line.rstrip("\r\n") == section_heading]
+                        heading_match = re.match(r"^(#{1,6})\s+\S", section_heading)
+                        if len(indices) == 1 and heading_match:
+                            start = indices[0]
+                            end = len(lines)
+                            section_level = len(heading_match.group(1))
+                            for index in range(start + 1, len(lines)):
+                                next_heading = re.match(r"^(#{1,6})\s+\S", lines[index])
+                                if next_heading and len(next_heading.group(1)) <= section_level:
+                                    end = index
+                                    break
+                            current_content = "".join(lines[start:end])
                     current_files.append(
                         f"[CURRENT_FILE: {filepath}]\n"
-                        f"{target_path.read_text(encoding='utf-8')}\n"
+                        f"{current_content}\n"
                         f"[END_CURRENT_FILE: {filepath}]"
                     )
 
@@ -287,15 +377,21 @@ class DeveloperAgent(BaseAgent):
                 prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                if use_edit_blocks:
+                if use_section_blocks:
                     filepath = target_files[0]
+                    required_heading = task.get("section_heading")
+                    heading_instruction = (
+                        f"Use exactly this heading: {required_heading}\n" if required_heading
+                        else "Choose one existing heading exactly as shown in CURRENT_FILE.\n"
+                    )
                     prompt += (
-                        "Return only exact replacement blocks for the declared target file. "
-                        "Copy each OLD value exactly from CURRENT_FILE and keep it as small as practical:\n"
-                        f"[FILE_EDIT_START: {filepath}]\n"
-                        "[OLD]\nexact existing text\n[NEW]\nreplacement text\n"
-                        f"[FILE_EDIT_END: {filepath}]\n"
-                        "Your response MUST begin with [FILE_EDIT_START:. Do not return the complete file, "
+                        "Return only heading-bounded section replacement blocks for the declared target file. "
+                        + heading_instruction
+                        + f"[SECTION_EDIT_START: {filepath}]\n"
+                        "[HEADING]\n## Exact existing heading\n[CONTENT]\nreplacement content below the heading\n"
+                        f"[SECTION_EDIT_END: {filepath}]\n"
+                        "Your response MUST begin with [SECTION_EDIT_START:. CONTENT must not repeat HEADING. "
+                        "Preserve existing nested headings unless the task explicitly updates them. Do not return the complete file, "
                         "other files, analysis, Markdown fences, or explanations."
                     )
                 else:
@@ -329,14 +425,14 @@ class DeveloperAgent(BaseAgent):
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += f" (RD {agent_number}). Write and edit code to fulfill the task."
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                if use_edit_blocks:
-                    system_prompt += " Respond only with [FILE_EDIT_START: path], [OLD], [NEW], and [FILE_EDIT_END: path] blocks; never provide prose."
+                if use_section_blocks:
+                    system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."
                 else:
                     system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
-                return bool(self.parse_and_write_files(response, task.get("target_files"), dry_run=True))
+                return bool(self.parse_and_write_files(response, task.get("target_files"), dry_run=True, allowed_heading=task.get("section_heading")))
 
             try:
                 dev_output = self.call_agent(
@@ -362,7 +458,7 @@ class DeveloperAgent(BaseAgent):
                 return
 
             if backend in ["ollama", "gemini", "agy", "grok"]:
-                written = self.parse_and_write_files(dev_output, task.get("target_files"))
+                written = self.parse_and_write_files(dev_output, task.get("target_files"), allowed_heading=task.get("section_heading"))
                 if written:
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:
