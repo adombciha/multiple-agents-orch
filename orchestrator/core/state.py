@@ -269,16 +269,16 @@ class AgentOrchestrator:
             pass
         return "127.0.0.1"
 
+    def agent_workspace(self) -> Path:
+        """Return the workspace where agent commands are allowed to edit."""
+        worktree = self.ai_dir / "worktree"
+        if self.config.get("use_worktree", True) and worktree.exists():
+            return worktree
+        return self.workspace
+
     def run_command(self, cmd: list[str], timeout: int = 1800, capture: bool = True, cwd: Path | None = None) -> tuple[int, str]:
         """Runs a subprocess command safety and returns (returncode, output)."""
-        exec_cwd = cwd or self.workspace
-
-        if self.config.get("use_worktree", True) and not cwd:
-            current_state = self.state.get("state", "PLANNING")
-            if current_state in ["IMPLEMENTING", "TESTING", "REVIEWING_CODE"]:
-                wt_path = self.ai_dir / "worktree"
-                if wt_path.exists():
-                    exec_cwd = wt_path
+        exec_cwd = cwd or self.agent_workspace()
 
         try:
             result = subprocess.run(

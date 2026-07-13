@@ -70,7 +70,7 @@ def call(orchestrator, prompt: str, system_prompt: str | None = None, role: str 
     started = time.monotonic()
     log_info(f"Running Grok Build: grok -p ... -m {model} --effort {effort or 'default'} mode={mode}")
     result = subprocess.run(
-        cmd, cwd=orchestrator.workspace, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cmd, cwd=orchestrator.agent_workspace(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, timeout=1800, check=False,
     )
     elapsed = time.monotonic() - started

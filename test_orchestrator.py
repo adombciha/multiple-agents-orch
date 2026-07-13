@@ -328,6 +328,28 @@ def test_run_command_uses_worktree_cwd_for_agent_states(initialized_orchestrator
     assert run.call_args.kwargs["cwd"] == worktree
 
 
+def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkeypatch):
+    worktree = initialized_orchestrator.ai_dir / "worktree"
+    worktree.mkdir()
+    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    backends.call_agy(initialized_orchestrator, "prompt", role="developer_junior", model="test-model")
+
+    assert run.call_args.kwargs["cwd"] == worktree
+
+
+def test_grok_uses_agent_worktree(initialized_orchestrator, monkeypatch):
+    worktree = initialized_orchestrator.ai_dir / "worktree"
+    worktree.mkdir()
+    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(grok.subprocess, "run", run)
+
+    grok.call(initialized_orchestrator, "prompt", role="developer_junior", model="test-model")
+
+    assert run.call_args.kwargs["cwd"] == worktree
+
+
 def test_run_command_use_worktree_false_runs_in_workspace(initialized_orchestrator, monkeypatch):
     (initialized_orchestrator.ai_dir / "worktree").mkdir()
     initialized_orchestrator.config["use_worktree"] = False

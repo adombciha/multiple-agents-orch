@@ -113,7 +113,7 @@ def call_codex(orchestrator, prompt: str, system_prompt: str | None = None, role
         with open(temp_prompt_file, "r", encoding="utf-8") as pf:
             result = subprocess.run(
                 cmd,
-                cwd=orchestrator.workspace,
+                cwd=orchestrator.agent_workspace(),
                 stdin=pf,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -149,7 +149,7 @@ def call_claude(orchestrator, prompt: str, system_prompt: str | None = None, rol
     log_info(f"Running Claude Code: {' '.join(cmd[:-1])} ...")
     result = subprocess.run(
         cmd,
-        cwd=orchestrator.workspace,
+        cwd=orchestrator.agent_workspace(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -176,7 +176,7 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
     log_info(f"Running agy: {' '.join(cmd[:-1])} ...")
     result = subprocess.run(
         cmd,
-        cwd=orchestrator.workspace,
+        cwd=orchestrator.agent_workspace(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
