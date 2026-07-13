@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import sys
+import types
 from pathlib import Path
 from unittest.mock import Mock, call
 
@@ -11,6 +13,7 @@ import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
 from orchestrator.core import backends, grok, gpt
+from orchestrator.core.telemetry import record_call, summary_markdown
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.core.grok import extract_schema_payload
 from orchestrator.roles.base_agent import is_json_response
@@ -90,6 +93,91 @@ def test_initialized_orchestrator_fixture_loads_temp_config_and_state(initialize
     assert initialized_orchestrator.config == DEFAULT_CONFIG
     assert initialized_orchestrator.state["state"] == "PLANNING"
     assert initialized_orchestrator.has_git is False
+
+
+def test_record_call_writes_metadata_without_prompt_or_output(initialized_orchestrator):
+    record_call(
+        initialized_orchestrator,
+        role="developer_junior",
+        backend="ollama",
+        model="test-model",
+        prompt="secret prompt",
+        system_prompt="private system prompt",
+        output="secret output",
+        elapsed_seconds=0.25,
+    )
+
+    usage_path = initialized_orchestrator.ai_dir / "llm_usage.jsonl"
+    record = json.loads(usage_path.read_text(encoding="utf-8").strip())
+    assert record["role"] == "developer_junior"
+    assert record["backend"] == "ollama"
+    assert record["model"] == "test-model"
+    assert record["input_characters"] > 0
+    assert record["output_characters"] > 0
+    assert "secret prompt" not in usage_path.read_text(encoding="utf-8")
+    assert "secret output" not in usage_path.read_text(encoding="utf-8")
+
+
+def test_record_call_uses_litellm_token_counter(initialized_orchestrator, monkeypatch):
+    fake_litellm = types.ModuleType("litellm")
+    fake_litellm.token_counter = Mock(return_value=7)
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+
+    record_call(
+        initialized_orchestrator,
+        role="qa_junior",
+        backend="ollama",
+        model="gemma4:latest",
+        prompt="prompt",
+        system_prompt=None,
+        output="output",
+        elapsed_seconds=0.1,
+    )
+
+    record = json.loads((initialized_orchestrator.ai_dir / "llm_usage.jsonl").read_text(encoding="utf-8").strip())
+    assert record["input_tokens"] == 7
+    assert record["output_tokens"] == 7
+    assert record["total_tokens"] == 14
+    assert record["token_status"] == "exact"
+
+
+def test_usage_summary_markdown_groups_calls_by_model(initialized_orchestrator, monkeypatch):
+    fake_litellm = types.ModuleType("litellm")
+    fake_litellm.token_counter = Mock(return_value=3)
+    monkeypatch.setitem(sys.modules, "litellm", fake_litellm)
+    record_call(
+        initialized_orchestrator,
+        role="manager",
+        backend="grok",
+        model="grok-4.5",
+        prompt="prompt",
+        system_prompt=None,
+        output="output",
+        elapsed_seconds=0.1,
+    )
+
+    summary = summary_markdown(initialized_orchestrator)
+    assert "## LiteLLM Token Usage" in summary
+    assert "`grok-4.5`" in summary
+    assert "| 6 |" in summary
+
+
+def test_call_with_usage_records_success_and_failure(initialized_orchestrator):
+    assert initialized_orchestrator._call_with_usage(
+        "manager", "grok", "grok-4.5", "prompt", None, lambda: "response",
+    ) == "response"
+
+    with pytest.raises(RuntimeError, match="failed"):
+        initialized_orchestrator._call_with_usage(
+            "manager", "grok", "grok-4.5", "prompt", None,
+            lambda: (_ for _ in ()).throw(RuntimeError("failed")),
+        )
+
+    records = [
+        json.loads(line)
+        for line in (initialized_orchestrator.ai_dir / "llm_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["success"] for record in records] == [True, False]
 
 
 def test_write_ai_company_overrides_do_not_mutate_default_config(tmp_path):

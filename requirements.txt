@@ -1,0 +1,3 @@
+requests
+pytest
+litellm>=1.92,<2

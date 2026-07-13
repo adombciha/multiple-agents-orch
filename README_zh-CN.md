@@ -6,13 +6,14 @@
 
 ## 系统要求与安装
 
-请在 shell 中执行以下命令。默认 Git worktree 流程需要 Git；项目需要 Python 3。项目使用 `requests`，测试还使用 `pytest`。
+请在 shell 中执行以下命令。默认 Git worktree 流程需要 Git；项目需要 Python 3。项目使用 `requests` 和 `litellm`，测试还使用 `pytest`。
 
 ```bash
 git clone https://github.com/adombciha/multiple-agents-orch.git
 cd multiple-agents-orch
-python3 -m pip install requests pytest
-python3 orchestrator.py --help
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python orchestrator.py --help
 ```
 
 最后一条命令只验证 CLI 能加载，不会连接 AI backend 或创建 worktree。项目没有 `--version` 选项。
@@ -35,6 +36,7 @@ replacement content below the heading
 | `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 列表及每个 role 的 model/backend 路由。 |
 | `use_ponytail`、`use_worktree` | 极简提示与 Git-worktree 隔离；默认分别为 `false` 和 `true`。 |
 | `backend_escalation_path`、`staffing_limits` | backend 升级路径及 RD/QA staffing 限制。 |
+| `telemetry_enabled`、`llm_usage_log` | LiteLLM token metadata 记录开关与 JSONL 路径；默认记录到 workflow 目录的 `llm_usage.jsonl`，不保存 prompt/output。 |
 
 ## Grok specialists
 

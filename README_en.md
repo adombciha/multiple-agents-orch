@@ -6,13 +6,14 @@ A Python multi-agent development workflow with a deterministic state machine for
 
 ## Requirements and installation
 
-Run these commands from a shell. Git is required for the default Git worktree workflow; Python 3 is required. The project uses `requests`; tests also use `pytest`.
+Run these commands from a shell. Git is required for the default Git worktree workflow; Python 3 is required. The project uses `requests` and `litellm`; tests also use `pytest`.
 
 ```bash
 git clone https://github.com/adombciha/multiple-agents-orch.git
 cd multiple-agents-orch
-python3 -m pip install requests pytest
-python3 orchestrator.py --help
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python orchestrator.py --help
 ```
 
 The final command verifies that the CLI loads. It does not contact an AI backend or create a worktree. There is no `--version` option.
@@ -35,6 +36,7 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 | `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing. |
 | `use_ponytail`, `use_worktree` | Minimalist prompting and Git-worktree isolation; both default to `false` and `true` respectively. |
 | `backend_escalation_path`, `staffing_limits` | Backend escalation and RD/QA staffing limits. |
+| `telemetry_enabled`, `llm_usage_log` | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
 
 ## Grok specialists
 

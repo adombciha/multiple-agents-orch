@@ -171,6 +171,10 @@ class ManagerAgent(BaseAgent):
 
         system_prompt = "You are a Project Manager. Write a beautiful project final report."
         summary = self.call_manager(prompt, system_prompt)
+        from orchestrator.core.telemetry import summary_markdown
+        usage = summary_markdown(self.orchestrator)
+        if usage:
+            summary = f"{summary.rstrip()}\n\n{usage}\n"
 
         with open(self.orchestrator.final_report_path, "w", encoding="utf-8") as f:
             f.write(summary)

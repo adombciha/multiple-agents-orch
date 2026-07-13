@@ -6,13 +6,14 @@
 
 ## 系統要求與安裝
 
-請在 shell 中執行以下命令。預設 Git worktree 流程需要 Git；專案需要 Python 3。專案使用 `requests`，測試也使用 `pytest`。
+請在 shell 中執行以下命令。預設 Git worktree 流程需要 Git；專案需要 Python 3。專案使用 `requests`、`litellm`，測試也使用 `pytest`。
 
 ```bash
 git clone https://github.com/adombciha/multiple-agents-orch.git
 cd multiple-agents-orch
-python3 -m pip install requests pytest
-python3 orchestrator.py --help
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python orchestrator.py --help
 ```
 
 最後一條命令只驗證 CLI 能載入，不會連線至 AI backend 或建立 worktree。專案沒有 `--version` 選項。
@@ -46,6 +47,7 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | `role_model_routes` | 每個既有 role 的跨 backend model 回退鏈；依表格順序嘗試，quota 耗盡的 backend 會在本次 workflow 跳過。 |
 | `use_ponytail`、`use_worktree` | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。 |
 | `backend_escalation_path`、`staffing_limits` | backend 升級路徑及 RD/QA staffing 限制。 |
+| `telemetry_enabled`、`llm_usage_log` | LiteLLM token metadata 記錄開關與 JSONL 路徑；預設記錄到 workflow 目錄的 `llm_usage.jsonl`，不保存 prompt/output。 |
 
 ## 建議角色與模型路由
 

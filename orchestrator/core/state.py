@@ -5,6 +5,7 @@ import json
 import subprocess
 import shutil
 import re
+import time
 from copy import deepcopy
 from pathlib import Path
 import requests
@@ -233,12 +234,16 @@ class AgentOrchestrator:
             json.dump(self.state, f, indent=2)
 
     def pause_for_human_review(self, source: str, details: str, resume_state: str, pass_state: str):
+        from orchestrator.core.telemetry import summary_markdown
         requirements = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
         chinese = any("\u4e00" <= char <= "\u9fff" for char in requirements)
         title = "人工審核報告" if chinese else "Human Review Report"
         conclusion = f"{source} 驗證未通過，需要人工確認。" if chinese else f"{source} verification requires human review."
         next_step = "確認後執行" if chinese else "After review, run"
+        usage = summary_markdown(self)
         report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}:\n\n```bash\npython3 orchestrator.py approve --run\n```\n"
+        if usage:
+            report += f"\n\n{usage}\n"
         self.human_report_path.write_text(report, encoding="utf-8")
         self.state.update({"state": "WAITING_FOR_OWNER", "human_review_source": source,
                            "resume_state": resume_state, "pass_state": pass_state,
@@ -305,23 +310,44 @@ class AgentOrchestrator:
 
     def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, image_paths: list[str] | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_ollama(self, prompt, system_prompt, role, model, image_paths)
+        selected_model = model or self.get_active_model_for_role(role, "ollama")
+        return self._call_with_usage(
+            role, "ollama", selected_model, prompt, system_prompt,
+            lambda: backends.call_ollama(self, prompt, system_prompt, role, model, image_paths),
+            image_paths=image_paths,
+        )
 
     def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_codex(self, prompt, system_prompt, role, model)
+        selected_model = model or self.get_active_model_for_role(role, "codex")
+        return self._call_with_usage(
+            role, "codex", selected_model, prompt, system_prompt,
+            lambda: backends.call_codex(self, prompt, system_prompt, role, model),
+        )
 
     def call_claude(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
         from orchestrator.core import backends
-        return backends.call_claude(self, prompt, system_prompt, role)
+        selected_model = self.get_active_model_for_role(role, "claude")
+        return self._call_with_usage(
+            role, "claude", selected_model, prompt, system_prompt,
+            lambda: backends.call_claude(self, prompt, system_prompt, role),
+        )
 
     def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_agy(self, prompt, system_prompt, role, model)
+        selected_model = model or self.get_active_model_for_role(role, "agy")
+        return self._call_with_usage(
+            role, "agy", selected_model, prompt, system_prompt,
+            lambda: backends.call_agy(self, prompt, system_prompt, role, model),
+        )
 
     def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
         from orchestrator.core import backends
-        return backends.call_grok(self, prompt, system_prompt, role, model, response_schema)
+        selected_model = model or self.get_active_model_for_role(role, "grok")
+        return self._call_with_usage(
+            role, "grok", selected_model, prompt, system_prompt,
+            lambda: backends.call_grok(self, prompt, system_prompt, role, model, response_schema),
+        )
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
         from orchestrator.core import backends
@@ -365,8 +391,31 @@ class AgentOrchestrator:
                 return self.call_ollama(
                     prompt, system_prompt, role=role,
                     model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:7b"),
+                    **({"image_paths": image_paths} if image_paths else {}),
                 )
             raise
+
+    def _call_with_usage(self, role, backend, model, prompt, system_prompt, callback, image_paths=None):
+        from orchestrator.core.telemetry import record_call
+
+        started = time.monotonic()
+        try:
+            response = callback()
+        except Exception as error:
+            record_call(
+                self, role=role, backend=backend, model=model, prompt=prompt,
+                system_prompt=system_prompt, output=None,
+                elapsed_seconds=time.monotonic() - started,
+                image_count=len(image_paths or []), error=error,
+            )
+            raise
+        record_call(
+            self, role=role, backend=backend, model=model, prompt=prompt,
+            system_prompt=system_prompt, output=response,
+            elapsed_seconds=time.monotonic() - started,
+            image_count=len(image_paths or []),
+        )
+        return response
 
     def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str | None:
         from orchestrator.core import backends
@@ -389,14 +438,20 @@ class AgentOrchestrator:
             try:
                 log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
                 if backend == "ollama":
-                    response = self.call_agent_ollama_fallback(role, prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                    response = self.call_agent_ollama_fallback(
+                        role, prompt, system_prompt, model=model,
+                        **({"image_paths": image_paths} if image_paths else {}),
+                    )
                     implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith("developer")
                     has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
                     contract_ok = response_validator is None or response_validator(response)
                     if implementing and (not has_blocks or not contract_ok):
                         log_warning(f"ollama/{model} returned an invalid Developer contract; retrying the same local model once.")
                         retry_prompt = prompt + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
-                        response = self.call_agent_ollama_fallback(role, retry_prompt, system_prompt, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                        response = self.call_agent_ollama_fallback(
+                            role, retry_prompt, system_prompt, model=model,
+                            **({"image_paths": image_paths} if image_paths else {}),
+                        )
                         has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
                         contract_ok = response_validator is None or response_validator(response)
                     if implementing and not has_blocks and response_validator is None:

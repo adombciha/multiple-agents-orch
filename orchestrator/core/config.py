@@ -7,6 +7,8 @@ DEFAULT_CONFIG = {
     "ollama_timeout": 1800,
     "ollama_num_predict": 8192,
     "ollama_think": "high",
+    "telemetry_enabled": True,
+    "llm_usage_log": "llm_usage.jsonl",
     "max_visual_image_bytes": 10 * 1024 * 1024,
     "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
