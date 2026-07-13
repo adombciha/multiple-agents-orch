@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Review Expert"
+  short_description: "Provide thorough, constructive code reviews."
+  default_prompt: "Provide a thorough and constructive code review for the given code, focusing on correctness, security, performance, and best practices."

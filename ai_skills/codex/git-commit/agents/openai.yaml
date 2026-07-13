@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Commit"
+  short_description: "Suggest commit messages from stashed diffs"
+  default_prompt: "Use $git-commit to analyze the current branch against my stash and suggest an English commit message without committing or pushing."
