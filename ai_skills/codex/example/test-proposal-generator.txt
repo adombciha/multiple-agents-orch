@@ -1,0 +1,96 @@
+  Scope:
+  Generate a full test proposal for run-analyzer.
+
+  Purpose:
+  This is a DEMO scope used to demonstrate how a senior QA Manager / Test Architect would convert a broad full-test request into structured testing scenarios and an automation-ready proposal.
+
+  System under test:
+  - Whole run-analyzer codebase, organized by test layer and module area
+  - qPCR analysis pipeline
+  - calibration / crosstalk compensation
+  - baseline correction
+  - normalization
+  - Ct calculation
+  - judgement generation
+  - JSON / CSV parsing
+  - data model serialization / deserialization
+  - report generation
+  - release evidence package
+
+  Test levels:
+  - build smoke tests
+  - C++ unit tests
+  - integration tests
+  - end-to-end analysis tests
+  - Python3 release evidence validation tests
+  - boundary / abnormal input tests
+  - regression tests
+  - biological / clinical validation planning
+
+  Execution model:
+  - Tests should run headlessly in CI where possible.
+  - C++ core tests may use QtTest or the existing project test framework.
+  - Python3 tests are used for release evidence validation, report validation, fixture comparison, hash verification, and evidence package checks.
+  - If a run-analyzer CLI or test executable exists, Python3 tests may execute it.
+  - If no executable is available, Python3 tests may validate pre-generated output files.
+
+  Included:
+  - build success and smoke execution
+  - input file existence and hash validation
+  - config file existence and hash validation
+  - expected output hash validation
+  - JSON / CSV parser behavior
+  - data model serialization / deserialization behavior
+  - qPCR analysis pipeline correctness
+  - calibration / crosstalk compensation behavior
+  - baseline correction behavior
+  - normalization behavior
+  - Ct calculation behavior
+  - judgement exact-match comparison
+  - numeric tolerance comparison
+  - report schema validation
+  - actual vs expected result comparison
+  - release evidence package completeness
+  - abnormal input and failure reason reporting
+  - regression detection for known high-risk areas
+  - validation planning for biological / clinical correctness
+
+  Excluded:
+  - real hardware control
+  - real-time camera capture
+  - thermal control verification
+  - replacing lab review with software-only automated tests
+  - claiming clinical correctness from demo data
+
+  Biological / clinical validation:
+  - Include validation planning.
+  - Identify required lab-approved datasets, reviewer approval, acceptance criteria, and traceability.
+  - Separate software regression evidence from biological / clinical correctness evidence.
+  - Mark clinical release evidence as pending until approved datasets and reviewer approval are available.
+  - Demo data must not be treated as biological or clinical evidence.
+
+  Golden reference:
+  - Approved golden output is not fully available yet.
+  - The proposal must separate:
+    - automation-ready tests
+    - regression-ready tests
+    - release-evidence-ready tests
+    - clinical-validation-ready tests
+
+  Known risks:
+  - Ct drift
+  - incorrect baseline cycle selection
+  - incorrect threshold calculation
+  - channel mapping mismatch
+  - well index off-by-one
+  - negative sample misclassified as positive
+  - malformed JSON / CSV accepted silently
+  - report schema missing required fields
+  - evidence package missing hash, version, or approval metadata
+
+  Downstream implementation:
+  - Use Python3 for release evidence validation and report comparison.
+  - Prefer pytest if allowed; otherwise use Python standard library unittest.
+  - Use QtTest or the existing C++ test framework for C++ core/unit/integration tests if needed.
+  - Generate machine-readable JSON report and CSV summary.
+  - The downstream skill should not claim release evidence readiness unless approved golden references and required approvals exist.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Flowchart"
+  short_description: "Generate Mermaid flowcharts from scoped code."
+  default_prompt: "Generate a Mermaid flowchart for the specified file, folder, feature, or codebase scope."

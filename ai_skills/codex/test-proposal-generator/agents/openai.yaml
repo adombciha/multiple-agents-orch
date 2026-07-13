@@ -1,0 +1,4 @@
+interface:
+  display_name: "Test Proposal Generator"
+  short_description: "Generate QA testing proposals from clear scopes"
+  default_prompt: "Generate an automation-ready test proposal from this scope:"
