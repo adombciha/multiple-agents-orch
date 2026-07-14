@@ -366,7 +366,7 @@ class AgentOrchestrator:
             log_warning("AGY quota exhausted; falling back to Ollama backend.")
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         try:
-            return self.call_agy(prompt, system_prompt, role=role, model="gpt-oss-120b")
+            return self.call_agy(prompt, system_prompt, role=role)
         except Exception as e:
             if backends.quota_exhausted(e):
                 backends.mark_backend_quota_exhausted(self, "agy")

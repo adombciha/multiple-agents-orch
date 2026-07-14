@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
     "backend_escalation_path": ["ollama", "agy", "codex"],
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
-        "agy": ["gemini-3.5-flash", "gemini-3.1-pro"],
+        "agy": ["Gemini 3.5 Flash (Medium)", "Gemini 3.1 Pro (Low)"],
         "codex": ["gpt-5.6-luna"],
         "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"],
         "grok": ["grok-4.5"],
@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
         "fae": "qwen3:8b",
         "integration": "deepseek-coder:6.7b",
         "sales": "grok-4.5",
-        "sre": "gemini-3.1-pro"
+        "sre": "Gemini 3.1 Pro (Low)"
     },
     "role_model_backends": {
         "manager": "grok",

@@ -339,6 +339,15 @@ def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkey
     assert run.call_args.kwargs["cwd"] == worktree
 
 
+def test_agy_maps_legacy_model_ids_to_supported_gemini_names(initialized_orchestrator, monkeypatch):
+    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    backends.call_agy(initialized_orchestrator, "prompt", model="gemini-3.1-pro")
+
+    assert run.call_args.args[0][0:3] == ["agy", "--model", "Gemini 3.1 Pro (Low)"]
+
+
 def test_grok_uses_agent_worktree(initialized_orchestrator, monkeypatch):
     worktree = initialized_orchestrator.ai_dir / "worktree"
     worktree.mkdir()
@@ -1176,14 +1185,14 @@ def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(initialized_
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     initialized_orchestrator.config["role_model_routes"]["reviewer"] = [
-        ["codex", "gpt-5.6-sol"], ["agy", "gpt-oss-120b"]
+        ["codex", "gpt-5.6-sol"], ["agy", "Gemini 3.5 Flash (Medium)"]
     ]
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
 
     codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-sol")
-    assert agy.call_args_list == [call("prompt", None, role="reviewer", model="gpt-oss-120b")] * 2
+    assert agy.call_args_list == [call("prompt", None, role="reviewer", model="Gemini 3.5 Flash (Medium)")] * 2
 
 
 def test_spending_limit_is_treated_as_quota_exhausted():

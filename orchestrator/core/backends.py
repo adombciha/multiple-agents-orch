@@ -4,6 +4,12 @@ import subprocess
 import requests
 from pathlib import Path
 
+AGY_MODEL_ALIASES = {
+    "gemini-3.5-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-3.1-pro": "Gemini 3.1 Pro (Low)",
+    "gpt-oss-120b": "Gemini 3.5 Flash (Medium)",
+}
+
 def get_backend(orchestrator, role: str) -> str:
     backends = orchestrator.config.get("backends", {})
     if role.startswith("developer_"):
@@ -169,6 +175,7 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
 
     cmd = ["agy"]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
+    model = AGY_MODEL_ALIASES.get(model, model)
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--print", full_prompt])
