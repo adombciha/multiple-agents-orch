@@ -790,6 +790,34 @@ def test_implementing_prompt_includes_only_current_target_files(initialized_orch
     assert "Do not include me" not in prompt
 
 
+def test_implementing_missing_section_heading_falls_back_to_whole_file(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["use_worktree"] = False
+    initialized_orchestrator.config["backends"]["developer_junior"] = "grok"
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    target = initialized_orchestrator.workspace / "docs" / "guide.md"
+    target.parent.mkdir()
+    target.write_text("# Project\n\nExisting\n", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1",
+        "description": "add installation guide",
+        "target_files": ["docs/guide.md"],
+        "section_heading": "## Installation",
+        "output_contract": {"format": "markdown_section_replacements"},
+        "status": "pending",
+        "rd_level": "junior",
+        "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    call_agent = Mock(return_value="[FILE_START: docs/guide.md]\n# Project\n\nExisting\n\n## Installation\n\nRun it\n[FILE_END: docs/guide.md]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    assert "## Installation" in target.read_text(encoding="utf-8")
+    assert "[FILE_START:" in call_agent.call_args.args[1]
+
+
 def test_split_scoped_fix_tasks_keep_section_contract(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.config["use_worktree"] = False
     initialized_orchestrator.config["backends"]["developer_senior"] = "ollama"
@@ -1246,6 +1274,22 @@ def test_developing_plan_keeps_section_level_readme_tasks(initialized_orchestrat
     assert initialized_orchestrator.state["tasks"][0]["id"] == "DOC-QUICK"
     assert initialized_orchestrator.state["tasks"][0]["section_heading"] == "## Quick Start"
     assert "## Quick Start" in manager.call_args.args[0]
+
+
+def test_developing_plan_uses_whole_file_task_for_new_markdown(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("只允許新增 docs/litellm-telemetry.md", encoding="utf-8")
+    initialized_orchestrator.request_path.write_text("建立 docs/litellm-telemetry.md", encoding="utf-8")
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "DOC-NEW", "description": "write telemetry guide", "target_files": ["docs/litellm-telemetry.md"], "section_heading": "## Installation and enablement", "rd_level": "middle", "qa_level": "middle"}], "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    task = initialized_orchestrator.state["tasks"][0]
+    assert "section_heading" not in task
+    assert task["output_contract"]["format"] == "file_blocks"
 
 
 def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):

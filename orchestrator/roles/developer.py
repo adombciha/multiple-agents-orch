@@ -105,7 +105,7 @@ class DeveloperAgent(BaseAgent):
         for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md\b", request_text, re.IGNORECASE):
             path = Path(name)
             target = (self.orchestrator.workspace / path).resolve()
-            if not path.is_absolute() and self.orchestrator.workspace in target.parents and target.is_file():
+            if not path.is_absolute() and self.orchestrator.workspace in target.parents:
                 requested_markdown.append(str(path))
         requested_markdown = list(dict.fromkeys(requested_markdown))
         markdown_headings = {}
@@ -114,9 +114,12 @@ class DeveloperAgent(BaseAgent):
             markdown_headings[name] = [
                 line for line in path.read_text(encoding="utf-8").splitlines()
                 if re.match(r"^#{1,6}\s+\S", line)
-            ]
-        docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only modify these", "只允許修改", "僅允許修改"))
-        whole_file_docs = docs_only and any(marker in request_text.lower() for marker in ("one task per file", "one task for each", "do not split", "禁止再依 markdown heading 拆分", "每個語系一個 task"))
+            ] if path.is_file() else []
+        docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only allow adding", "only allowed to add", "only modify these", "只允許修改", "僅允許修改", "只允許新增", "僅允許新增"))
+        whole_file_docs = docs_only and (
+            any(marker in request_text.lower() for marker in ("one task per file", "one task for each", "do not split", "禁止再依 markdown heading 拆分", "每個語系一個 task"))
+            or any(not (self.orchestrator.workspace / name).is_file() for name in requested_markdown)
+        )
         markdown_task_rule = (
             "For this documentation-only request, create exactly one whole-file task per requested Markdown file. Do not split by heading and do not include section_heading."
             if whole_file_docs else
@@ -564,10 +567,20 @@ class DeveloperAgent(BaseAgent):
                 bool(task.get("section_heading"))
                 and bool(target_files)
                 and all(
-                    Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file()
+                    Path(filepath).suffix.lower() == ".md"
+                    and (base_dir / filepath).is_file()
+                    and task["section_heading"] in self._markdown_headings(base_dir, filepath)
                     for filepath in target_files
                 )
             )
+            if task.get("section_heading") and not use_section_blocks:
+                task.pop("section_heading", None)
+                task["output_contract"] = {
+                    "format": "file_blocks",
+                    "response_must_start_with": "[FILE_START:",
+                    "allow_prose": False,
+                }
+                machine_contract["output_contract"] = task["output_contract"]
             if use_section_blocks:
                 machine_contract["output_contract"] = {
                     "format": "markdown_section_replacements",
