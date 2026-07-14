@@ -1301,6 +1301,25 @@ def test_developing_plan_uses_whole_file_task_for_new_markdown(initialized_orche
     assert task["output_contract"]["format"] == "file_blocks"
 
 
+def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(initialized_orchestrator, monkeypatch):
+    request = "將 README.md 與 README_en.md 互換語言角色，並同步更新多國語系。"
+    initialized_orchestrator.requirements_path.write_text(request, encoding="utf-8")
+    initialized_orchestrator.request_path.write_text(request, encoding="utf-8")
+    (initialized_orchestrator.workspace / "README.md").write_text("# Multi-Agent Orchestrator\n", encoding="utf-8")
+    (initialized_orchestrator.workspace / "README_en.md").write_text("# Multi-Agent Orchestrator\n", encoding="utf-8")
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "README-TW", "description": "rewrite README.md", "target_files": ["README.md"], "section_heading": "# Multi-Agent Orchestrator", "rd_level": "senior", "qa_level": "middle"}, {"id": "README-EN", "description": "rewrite README_en.md", "target_files": ["README_en.md"], "section_heading": "# Multi-Agent Orchestrator", "rd_level": "senior", "qa_level": "middle"}], "staffing": {"rd": {"senior": 1}, "qa": {"middle": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert len(initialized_orchestrator.state["tasks"]) == 2
+    assert all("section_heading" not in task for task in initialized_orchestrator.state["tasks"])
+    assert all(task["output_contract"]["format"] == "file_blocks" for task in initialized_orchestrator.state["tasks"])
+
+
 def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))

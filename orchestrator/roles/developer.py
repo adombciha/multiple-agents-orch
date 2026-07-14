@@ -116,9 +116,18 @@ class DeveloperAgent(BaseAgent):
                 if re.match(r"^#{1,6}\s+\S", line)
             ] if path.is_file() else []
         docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only allow adding", "only allowed to add", "only modify these", "只允許修改", "僅允許修改", "只允許新增", "僅允許新增"))
-        whole_file_docs = docs_only and (
-            any(marker in request_text.lower() for marker in ("one task per file", "one task for each", "do not split", "禁止再依 markdown heading 拆分", "每個語系一個 task"))
-            or any(not (self.orchestrator.workspace / name).is_file() for name in requested_markdown)
+        language_rewrite = any(marker in f"{request_text}\n{requirements}".lower() for marker in (
+            "swap", "role-swap", "exchange", "translation", "multilingual", "localization",
+            "互換", "交換", "語言角色", "語系角色", "多國語系", "整份翻譯", "翻譯成",
+        ))
+        whole_file_docs = bool(requested_markdown) and (
+            language_rewrite
+            or (
+                docs_only and (
+                    any(marker in request_text.lower() for marker in ("one task per file", "one task for each", "do not split", "禁止再依 markdown heading 拆分", "每個語系一個 task"))
+                    or any(not (self.orchestrator.workspace / name).is_file() for name in requested_markdown)
+                )
+            )
         )
         markdown_task_rule = (
             "For this documentation-only request, create exactly one whole-file task per requested Markdown file. Do not split by heading and do not include section_heading."
@@ -146,7 +155,7 @@ class DeveloperAgent(BaseAgent):
             tasks = [task for task in tasks if not str(task.get("description", "")).lstrip().lower().startswith(planning_prefixes)]
             if not tasks:
                 raise ValueError("Manager returned no file-change tasks")
-            if docs_only:
+            if docs_only or whole_file_docs:
                 files = requested_markdown
                 allowed = set(files)
                 if whole_file_docs:
