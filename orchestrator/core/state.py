@@ -610,7 +610,7 @@ class AgentOrchestrator:
     def cleanup_worktree(self, merge=False):
         """Cleans up the git worktree, optionally merging the changes back first."""
         if not self.config.get("use_worktree", True) or not self.has_git:
-            return
+            return True
 
         wt_path = self.ai_dir / "worktree"
 
@@ -625,9 +625,23 @@ class AgentOrchestrator:
                 code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
                 if code != 0:
                     log_error(f"Failed to merge feature branch due to conflict: {output}")
-                    log_warning("ABORTING WORKTREE CLEANUP! Please resolve the git merge conflict manually in your root workspace.")
+                    _, conflict_output = self.run_command(
+                        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=self.workspace
+                    )
+                    conflict_files = [
+                        line.strip()
+                        for line in conflict_output.partition("stdout:\n")[2].partition("\nstderr:")[0].splitlines()
+                        if line.strip()
+                    ]
+                    if not conflict_files:
+                        conflict_files = re.findall(r"Merge conflict in (.+)", output)
+                    self.state["worktree_conflict_files"] = conflict_files
+                    self.state["worktree_merge_error"] = output
+                    self.run_command(["git", "merge", "--abort"], cwd=self.workspace)
+                    self.save_state()
+                    log_warning("Merge was aborted; the preserved feature worktree will be repaired by RD.")
                     log_warning("The 'ai-feature-branch' and your worktree are preserved.")
-                    return
+                    return False
                 else:
                     log_success(f"Successfully merged changes to {self.base_branch}!")
 
@@ -637,6 +651,35 @@ class AgentOrchestrator:
             self.run_command(["git", "worktree", "remove", "--force", str(wt_path)], cwd=self.workspace)
 
         self.run_command(["git", "branch", "-D", "ai-feature-branch"], cwd=self.workspace)
+        return True
+
+    def queue_worktree_repair_task(self):
+        """Queues a scoped RD task for a failed final worktree merge."""
+        tasks = self.state.setdefault("tasks", [])
+        existing_ids = {task.get("id") for task in tasks}
+        revision = 1
+        while f"FIX-MERGE-{revision}" in existing_ids:
+            revision += 1
+        conflict_files = self.state.pop("worktree_conflict_files", [])
+        error = self.state.pop("worktree_merge_error", "Unknown Git merge failure.")
+        task = {
+            "id": f"FIX-MERGE-{revision}",
+            "description": f"Resolve the Git worktree merge failure before final cleanup:\n{error[:2000]}",
+            "target_files": conflict_files,
+            "output_contract": {
+                "format": "file_blocks",
+                "response_must_start_with": "[FILE_START:",
+                "allow_prose": False,
+            },
+            "status": "pending",
+            **self.fix_task_levels(),
+        }
+        tasks.append(task)
+        self.state["state"] = "IMPLEMENTING"
+        self.save_state()
+        with open(self.action_items_path, "w", encoding="utf-8") as f:
+            json.dump(tasks, f, indent=2)
+        return task
 
     # Sub-Agent Allocation Helpers
     def staffing(self, role: str) -> dict[str, int]:

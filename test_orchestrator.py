@@ -1769,6 +1769,8 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(initialized_orchest
         (0, ""),
         (0, ""),
         (1, "conflict"),
+        (0, ""),
+        (0, ""),
     ])
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
@@ -1779,4 +1781,48 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(initialized_orchest
         call(["git", "add", "."], cwd=worktree),
         call(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=worktree),
         call(["git", "merge", "ai-feature-branch"], cwd=initialized_orchestrator.workspace),
+        call(["git", "diff", "--name-only", "--diff-filter=U"], cwd=initialized_orchestrator.workspace),
+        call(["git", "merge", "--abort"], cwd=initialized_orchestrator.workspace),
     ]
+
+
+def test_cleanup_worktree_merge_failure_aborts_and_records_conflict(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.has_git = True
+    worktree = initialized_orchestrator.ai_dir / "worktree"
+    merge_output = "stdout:\nCONFLICT (add/add): Merge conflict in docs/litellm-telemetry.md\nstderr:\n"
+    run = Mock(side_effect=[
+        (0, ""),
+        (0, ""),
+        (0, ""),
+        (1, merge_output),
+        (0, "stdout:\ndocs/litellm-telemetry.md\nstderr:\n"),
+        (0, ""),
+    ])
+    monkeypatch.setattr(initialized_orchestrator, "run_command", run)
+
+    assert initialized_orchestrator.cleanup_worktree(merge=True) is False
+
+    assert initialized_orchestrator.state["worktree_conflict_files"] == ["docs/litellm-telemetry.md"]
+    assert initialized_orchestrator.state["worktree_merge_error"] == merge_output
+    assert run.call_args_list[-1] == call(["git", "merge", "--abort"], cwd=initialized_orchestrator.workspace)
+
+
+def test_manager_queues_rd_task_after_worktree_merge_failure(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.request_path.write_text("request", encoding="utf-8")
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.has_git = False
+    initialized_orchestrator.state["worktree_conflict_files"] = ["docs/litellm-telemetry.md"]
+    initialized_orchestrator.state["worktree_merge_error"] = "merge conflict"
+    monkeypatch.setattr(initialized_orchestrator.manager, "call_manager", Mock(return_value="summary"))
+    monkeypatch.setattr(initialized_orchestrator.assistant, "generate_meeting_memory", Mock(return_value="memory"))
+    monkeypatch.setattr(initialized_orchestrator.assistant, "generate_changelog", Mock(return_value=""))
+    monkeypatch.setattr(initialized_orchestrator, "cleanup_worktree", Mock(return_value=False))
+
+    initialized_orchestrator.step_completed()
+
+    task = initialized_orchestrator.state["tasks"][-1]
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert task["id"] == "FIX-MERGE-1"
+    assert task["status"] == "pending"
+    assert task["target_files"] == ["docs/litellm-telemetry.md"]
+    assert "merge conflict" in task["description"]

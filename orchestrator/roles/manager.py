@@ -142,7 +142,7 @@ class ManagerAgent(BaseAgent):
         self.orchestrator.save_state()
 
     def step_completed(self):
-        from orchestrator.core.state import log_header, log_success, log_info
+        from orchestrator.core.state import log_header, log_success, log_info, log_warning
 
         log_header("7. GENERATING SUMMARY (Ollama Manager)")
 
@@ -199,6 +199,9 @@ class ManagerAgent(BaseAgent):
         log_success("CHANGELOG.md updated successfully!")
 
         # Merge and clean up isolated worktree
-        self.orchestrator.cleanup_worktree(merge=True)
+        if self.orchestrator.cleanup_worktree(merge=True) is False:
+            task = self.orchestrator.queue_worktree_repair_task()
+            log_warning(f"PM queued RD repair task {task['id']} for the worktree merge failure.")
+            return
 
         log_success("Multi-agent workflow process has finished successfully!")
