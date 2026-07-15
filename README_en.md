@@ -159,3 +159,7 @@ Real workflow execution still needs the selected backend CLI and login, an acces
 - `set-backend` supports only its documented roles and backend values; `grok` can be selected after the Grok CLI is authenticated.
 - `reset --state` accepts a string; use valid workflow states to resume meaningful work.
 - AI workflow commands can modify the target project's Git worktree and can incur provider usage or charges.
+
+## Future Direction
+
+This project aims to evolve from a deterministic multi-agent orchestration framework into an AI organization simulator capable of dynamically forming engineering teams, allocating responsibilities, and governing autonomous collaboration.

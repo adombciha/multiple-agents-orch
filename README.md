@@ -207,3 +207,7 @@ git diff --check
 - `set-backend` 只支援文件列出的 roles 和 backend values；`grok` 可直接設定，但必須先完成 Grok CLI 認證。
 - `reset --state` 接受 string；請使用有效 workflow states 才能恢復有意義的工作。
 - AI workflow commands 可能修改目標專案的 Git worktree，並可能產生 provider 使用費用。
+
+## Future Direction
+
+This project aims to evolve from a deterministic multi-agent orchestration framework into an AI organization simulator capable of dynamically forming engineering teams, allocating responsibilities, and governing autonomous collaboration.
