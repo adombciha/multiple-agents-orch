@@ -909,6 +909,43 @@ def test_whole_markdown_task_keeps_declared_file_block_contract(initialized_orch
     assert "New" in readme.read_text(encoding="utf-8")
 
 
+def test_file_blocks_can_replace_headings_for_explicit_full_rewrite(initialized_orchestrator):
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text("# Install\n\n## Workflow\n\nOriginal\n", encoding="utf-8")
+    output = "[FILE_START: README.md]\n# Replacement\n\nNew content\n[FILE_END: README.md]"
+
+    written = initialized_orchestrator.parse_and_write_files(
+        output,
+        ["README.md"],
+        allow_markdown_heading_changes=True,
+    )
+
+    assert written == ["README.md"]
+    assert readme.read_text(encoding="utf-8") == "# Replacement\n\nNew content"
+
+
+def test_direct_developer_task_stays_pending_when_no_file_changes(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["backends"]["developer_senior"] = "codex"
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1",
+        "description": "update app.py",
+        "target_files": ["app.py"],
+        "status": "pending",
+        "rd_level": "senior",
+        "qa_level": "senior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="No edits made"))
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+    assert initialized_orchestrator.state["tasks"][0]["revisions"] == 1
+    assert initialized_orchestrator.call_agent.call_args.args[4] is None
+
+
 def test_implementing_skips_read_only_inventory_tasks(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
@@ -950,6 +987,7 @@ def test_multi_file_fix_task_splits_and_keeps_route_state(initialized_orchestrat
     initialized_orchestrator.state["staffing"] = {"rd": {"middle": 1}, "qa": {"junior": 1}}
     initialized_orchestrator.state["task_developer_promotions"] = {"FIX-REV-1": {"developer_middle": "developer_senior"}}
     initialized_orchestrator.state["task_failed_model_routes"] = {"FIX-REV-1": ["codex/gpt-5.6-luna"]}
+    initialized_orchestrator.config["backends"]["developer_senior"] = "ollama"
     call_agent = Mock(side_effect=[
         "[FILE_START: README_en.md]\nEnglish\n[FILE_END: README_en.md]",
         "[FILE_START: README_ja.md]\nJapanese\n[FILE_END: README_ja.md]",
@@ -1318,6 +1356,7 @@ def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(initiali
     assert len(initialized_orchestrator.state["tasks"]) == 2
     assert all("section_heading" not in task for task in initialized_orchestrator.state["tasks"])
     assert all(task["output_contract"]["format"] == "file_blocks" for task in initialized_orchestrator.state["tasks"])
+    assert all(task["output_contract"]["allow_markdown_heading_changes"] for task in initialized_orchestrator.state["tasks"])
 
 
 def test_developing_plan_covers_non_markdown_requested_file(initialized_orchestrator, monkeypatch):

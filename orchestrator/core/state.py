@@ -807,8 +807,19 @@ class AgentOrchestrator:
         self.save_state()
         log_success(f"Research report saved to {self.human_report_path}")
 
-    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, allowed_heading: str | None = None) -> list[str]:
-        return self.developer.parse_and_write_files(text, allowed_files, allowed_heading=allowed_heading)
+    def parse_and_write_files(
+        self,
+        text: str,
+        allowed_files: list[str] | None = None,
+        allowed_heading: str | None = None,
+        allow_markdown_heading_changes: bool = False,
+    ) -> list[str]:
+        return self.developer.parse_and_write_files(
+            text,
+            allowed_files,
+            allowed_heading=allowed_heading,
+            allow_markdown_heading_changes=allow_markdown_heading_changes,
+        )
 
     # State Dispatching
     def step(self):

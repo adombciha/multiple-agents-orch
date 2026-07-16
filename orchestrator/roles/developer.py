@@ -210,6 +210,19 @@ class DeveloperAgent(BaseAgent):
                     task["output_contract"] = {"format": "markdown_section_replacements", "response_must_start_with": "[SECTION_EDIT_START:", "allow_prose": False}
                 else:
                     task["output_contract"] = {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}
+                if (
+                    whole_file_docs
+                    and any(Path(path).suffix.lower() == ".md" for path in target_files)
+                    and (
+                        language_rewrite
+                        and any(Path(path).name in {"README.md", "README_en.md"} for path in target_files)
+                        or any(
+                            marker in str(task.get("description", "")).lower()
+                            for marker in ("swap", "interchange", "full body", "full content", "互換", "交換", "完整內容", "整份")
+                        )
+                    )
+                ):
+                    task["output_contract"]["allow_markdown_heading_changes"] = True
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
                 legacy_level = task.get("assignee_level", "senior")
@@ -249,7 +262,14 @@ class DeveloperAgent(BaseAgent):
         self.orchestrator.state["state"] = "REVIEWING_PLAN"
         self.orchestrator.save_state()
 
-    def parse_and_write_files(self, text: str, allowed_files: list[str] | None = None, dry_run: bool = False, allowed_heading: str | None = None) -> list[str]:
+    def parse_and_write_files(
+        self,
+        text: str,
+        allowed_files: list[str] | None = None,
+        dry_run: bool = False,
+        allowed_heading: str | None = None,
+        allow_markdown_heading_changes: bool = False,
+    ) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
         pattern = re.compile(r'\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]', re.DOTALL)
         matches = pattern.findall(text)
@@ -310,7 +330,7 @@ class DeveloperAgent(BaseAgent):
                     log_warning(f"Skipping unchanged file response: {filepath_str}")
                     continue
                 headings = [line for line in original.splitlines() if re.match(r"^#{1,6}\s+\S", line)]
-                if any(heading not in content for heading in headings):
+                if any(heading not in content for heading in headings) and not allow_markdown_heading_changes:
                     log_warning(f"Skipping Markdown rewrite that removes existing headings: {filepath_str}")
                     continue
 
@@ -652,12 +672,29 @@ class DeveloperAgent(BaseAgent):
                     + "\n[END_READ_ONLY_REFERENCE: README.md]"
                 )
 
+            allow_markdown_heading_changes = bool(
+                task.get("output_contract", {}).get("allow_markdown_heading_changes")
+            )
+            heading_rule = (
+                "Preserve all unrelated content; this explicit full-file rewrite may replace existing Markdown headings when required by the task."
+                if allow_markdown_heading_changes
+                else
+                "Preserve all unrelated content and existing Markdown headings."
+            )
+            before_contents = {
+                filepath: (
+                    (base_dir / filepath).read_bytes()
+                    if (base_dir / filepath).is_file()
+                    else None
+                )
+                for filepath in target_files
+            }
             prompt = (
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
                 f"Description: {task['description']}\n"
                 f"Machine contract: {json.dumps(machine_contract)}\n"
-                "Modify only target_files. Preserve all unrelated content and existing Markdown headings. "
+                f"Modify only target_files. {heading_rule} "
                 "Any READ_ONLY_REFERENCE content is for factual comparison only and must never be modified.\n"
             )
             if current_files:
@@ -716,27 +753,51 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
-                return bool(self.parse_and_write_files(response, task.get("target_files"), dry_run=True, allowed_heading=task.get("section_heading")))
+                return bool(self.parse_and_write_files(
+                    response,
+                    task.get("target_files"),
+                    dry_run=True,
+                    allowed_heading=task.get("section_heading"),
+                    allow_markdown_heading_changes=allow_markdown_heading_changes,
+                ))
 
             try:
                 dev_output = self.call_agent(
                     effective_role,
                     prompt,
                     system_prompt,
-                    response_validator=valid_file_response,
+                    response_validator=valid_file_response if backend in ["ollama", "agy", "grok"] else None,
                 )
             except RuntimeError as error:
                 self.retry_task_or_pause(task, str(error))
                 return
 
             if backend in ["ollama", "agy", "grok"]:
-                written = self.parse_and_write_files(dev_output, task.get("target_files"), allowed_heading=task.get("section_heading"))
+                written = self.parse_and_write_files(
+                    dev_output,
+                    task.get("target_files"),
+                    allowed_heading=task.get("section_heading"),
+                    allow_markdown_heading_changes=allow_markdown_heading_changes,
+                )
                 if written:
                     log_success(f"Successfully processed files written by Developer: {', '.join(written)}")
                 else:
                     log_warning("No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks.")
                     self.retry_task_or_pause(task, f"Task {task['id']} produced no permitted file changes.")
                     return
+            else:
+                changed_files = [
+                    filepath for filepath in target_files
+                    if (
+                        (base_dir / filepath).read_bytes()
+                        if (base_dir / filepath).is_file()
+                        else None
+                    ) != before_contents[filepath]
+                ]
+                if not changed_files:
+                    self.retry_task_or_pause(task, f"Task {task['id']} produced no permitted file changes.")
+                    return
+                log_success(f"Developer changed files directly: {', '.join(changed_files)}")
 
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")
             task["status"] = "completed"
