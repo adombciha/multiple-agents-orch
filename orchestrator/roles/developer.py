@@ -101,13 +101,16 @@ class DeveloperAgent(BaseAgent):
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
         }
         request_text = self.orchestrator.request_path.read_text(encoding="utf-8") if self.orchestrator.request_path.exists() else planning_input
-        requested_markdown = []
-        for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md\b", request_text, re.IGNORECASE):
+        requested_files = []
+        for name in re.findall(r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])", request_text, re.IGNORECASE):
             path = Path(name)
             target = (self.orchestrator.workspace / path).resolve()
             if not path.is_absolute() and self.orchestrator.workspace in target.parents:
-                requested_markdown.append(str(path))
-        requested_markdown = list(dict.fromkeys(requested_markdown))
+                requested_files.append(str(path))
+        requested_files = list(dict.fromkeys(requested_files))
+        requested_markdown = [
+            name for name in requested_files if Path(name).suffix.lower() == ".md"
+        ]
         markdown_headings = {}
         for name in requested_markdown:
             path = self.orchestrator.workspace / name
@@ -115,7 +118,7 @@ class DeveloperAgent(BaseAgent):
                 line for line in path.read_text(encoding="utf-8").splitlines()
                 if re.match(r"^#{1,6}\s+\S", line)
             ] if path.is_file() else []
-        docs_only = bool(requested_markdown) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only allow adding", "only allowed to add", "only modify these", "只允許修改", "僅允許修改", "只允許新增", "僅允許新增"))
+        docs_only = bool(requested_files) and any(marker in requirements.lower() for marker in ("only allow modifying", "only allowed to modify", "only allow adding", "only allowed to add", "only modify these", "只允許修改", "僅允許修改", "只允許新增", "僅允許新增"))
         language_rewrite = any(marker in f"{request_text}\n{requirements}".lower() for marker in (
             "swap", "role-swap", "exchange", "translation", "multilingual", "localization",
             "互換", "交換", "語言角色", "語系角色", "多國語系", "整份翻譯", "翻譯成",
@@ -134,7 +137,12 @@ class DeveloperAgent(BaseAgent):
             if whole_file_docs else
             "For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add section_heading copied exactly from the heading inventory below."
         )
-        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        file_coverage_rule = (
+            f"Cover every requested file exactly once, including non-Markdown files, as a whole-file task. Requested files: {json.dumps(requested_files, ensure_ascii=False)}."
+            if docs_only or whole_file_docs else
+            ""
+        )
+        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} {file_coverage_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(
             parse_prompt,
@@ -156,8 +164,9 @@ class DeveloperAgent(BaseAgent):
             if not tasks:
                 raise ValueError("Manager returned no file-change tasks")
             if docs_only or whole_file_docs:
-                files = requested_markdown
+                files = requested_files
                 allowed = set(files)
+                markdown_allowed = set(requested_markdown)
                 if whole_file_docs:
                     by_file = {}
                     for task in tasks:
@@ -171,12 +180,17 @@ class DeveloperAgent(BaseAgent):
                         task for task in tasks
                         if task.get("target_files")
                         and len(task["target_files"]) == 1
-                        and task["target_files"][0] in allowed
-                        and task.get("section_heading") in markdown_headings.get(task["target_files"][0], [])
+                        and (
+                            task["target_files"][0] in allowed
+                            and (
+                                task["target_files"][0] not in markdown_allowed
+                                or task.get("section_heading") in markdown_headings.get(task["target_files"][0], [])
+                            )
+                        )
                     ]
                 covered = {task["target_files"][0] for task in tasks}
                 if covered != allowed:
-                    raise ValueError("Manager must create one valid task for every requested Markdown file")
+                    raise ValueError("Manager must create one valid task for every requested file")
             if isinstance(parsed, dict):
                 self.orchestrator.state["staffing"] = parsed.get("staffing", self.orchestrator.state.get("staffing", {}))
                 specialists = parsed.get("specialists", [])

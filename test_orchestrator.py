@@ -1320,6 +1320,28 @@ def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(initiali
     assert all(task["output_contract"]["format"] == "file_blocks" for task in initialized_orchestrator.state["tasks"])
 
 
+def test_developing_plan_covers_non_markdown_requested_file(initialized_orchestrator, monkeypatch):
+    request = "將 README.md 與 README_en.md 完整內容互換，並更新 verify_alignment.py。只允許修改這三個檔案。"
+    initialized_orchestrator.requirements_path.write_text(request, encoding="utf-8")
+    initialized_orchestrator.request_path.write_text(request, encoding="utf-8")
+    for name in ("README.md", "README_en.md"):
+        (initialized_orchestrator.workspace / name).write_text("# Multi-Agent Orchestrator\n", encoding="utf-8")
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "README-TW", "description": "rewrite README.md", "target_files": ["README.md"], "rd_level": "senior", "qa_level": "middle"}, {"id": "README-EN", "description": "rewrite README_en.md", "target_files": ["README_en.md"], "rd_level": "senior", "qa_level": "middle"}, {"id": "ALIGNMENT", "description": "update verify_alignment.py", "target_files": ["verify_alignment.py"], "rd_level": "middle", "qa_level": "middle"}], "staffing": {"rd": {"senior": 1, "middle": 1}, "qa": {"middle": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert {task["target_files"][0] for task in initialized_orchestrator.state["tasks"]} == {
+        "README.md",
+        "README_en.md",
+        "verify_alignment.py",
+    }
+    assert "- `verify_alignment.py`" in initialized_orchestrator.plan_path.read_text(encoding="utf-8")
+
+
 def test_developing_plan_normalizes_task_status_to_pending(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="plan"))
