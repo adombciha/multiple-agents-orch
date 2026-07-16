@@ -206,7 +206,21 @@ class DeveloperAgent(BaseAgent):
                 target_files = task.get("target_files", [])
                 if not isinstance(target_files, list) or not target_files or not all(isinstance(path, str) and path and not path.startswith("/") for path in target_files):
                     raise ValueError("each task requires non-empty relative target_files")
-                if task.get("section_heading"):
+                description_lower = str(task.get("description", "")).lower()
+                navigation_only = (
+                    whole_file_docs
+                    and any(
+                        marker in description_lower
+                        for marker in ("language navigation", "language-switcher", "navigation", "語言導覽", "語系導覽", "導覽", "导航")
+                    )
+                    and any(
+                        marker in description_lower
+                        for marker in ("leave body", "body content", "otherwise unchanged", "preserve", "保留", "不變", "保持")
+                    )
+                )
+                if navigation_only:
+                    task["output_contract"] = {"format": "file_edits", "response_must_start_with": "[FILE_EDIT_START:", "allow_prose": False}
+                elif task.get("section_heading"):
                     task["output_contract"] = {"format": "markdown_section_replacements", "response_must_start_with": "[SECTION_EDIT_START:", "allow_prose": False}
                 else:
                     task["output_contract"] = {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}
@@ -632,6 +646,7 @@ class DeveloperAgent(BaseAgent):
                 }
                 if task.get("section_heading"):
                     machine_contract["section_heading"] = task["section_heading"]
+            use_file_edits = task.get("output_contract", {}).get("format") == "file_edits"
             current_files = []
             for filepath in target_files:
                 target_path = (base_dir / filepath).resolve()
@@ -714,6 +729,14 @@ class DeveloperAgent(BaseAgent):
                         "Your response MUST begin with [SECTION_EDIT_START:. CONTENT must not repeat HEADING or be empty. "
                         "Preserve existing nested headings unless the task explicitly updates them. Do not return the complete file, "
                         "other files, analysis, Markdown fences, or explanations."
+                    )
+                elif use_file_edits:
+                    filepath = target_files[0]
+                    prompt += (
+                        "Return only an exact file edit block for the declared target file. "
+                        "Put the complete existing text to replace in [OLD] and the complete replacement text in [NEW]. "
+                        "Do not return the complete file, other files, analysis, Markdown fences, or explanations.\n"
+                        f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
                     )
                 else:
                     prompt += (

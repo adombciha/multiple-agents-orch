@@ -1359,6 +1359,52 @@ def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(initiali
     assert all(task["output_contract"]["allow_markdown_heading_changes"] for task in initialized_orchestrator.state["tasks"])
 
 
+def test_developing_plan_uses_file_edits_for_navigation_only_task(initialized_orchestrator, monkeypatch):
+    request = "互換 README.md 與 README_en.md，並更新 README_zh-CN.md 的語言導覽；保留 body content。"
+    initialized_orchestrator.requirements_path.write_text(request, encoding="utf-8")
+    initialized_orchestrator.request_path.write_text(request, encoding="utf-8")
+    for name in ("README.md", "README_en.md", "README_zh-CN.md"):
+        (initialized_orchestrator.workspace / name).write_text("# Multi-Agent Orchestrator\n\nNavigation\n\n## Body\n\nKeep\n", encoding="utf-8")
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value='{"tasks": [{"id": "README-TW", "description": "swap README.md", "target_files": ["README.md"], "rd_level": "middle", "qa_level": "middle"}, {"id": "README-EN", "description": "swap README_en.md", "target_files": ["README_en.md"], "rd_level": "middle", "qa_level": "middle"}, {"id": "README-ZH-NAV", "description": "Update language navigation in README_zh-CN.md; leave body content otherwise unchanged.", "target_files": ["README_zh-CN.md"], "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"middle": 1, "junior": 1}, "qa": {"middle": 1, "junior": 1}}}'),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    nav_task = next(task for task in initialized_orchestrator.state["tasks"] if task["id"] == "README-ZH-NAV")
+    assert nav_task["output_contract"] == {
+        "format": "file_edits",
+        "response_must_start_with": "[FILE_EDIT_START:",
+        "allow_prose": False,
+    }
+
+
+def test_implementing_navigation_task_requests_file_edit_blocks(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "NAV-1",
+        "description": "Update language navigation; leave body content otherwise unchanged.",
+        "target_files": ["README_zh-CN.md"],
+        "output_contract": {"format": "file_edits", "response_must_start_with": "[FILE_EDIT_START:", "allow_prose": False},
+        "status": "pending",
+        "rd_level": "junior",
+        "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    target = initialized_orchestrator.workspace / "README_zh-CN.md"
+    target.write_text("# Project\n\nOld navigation\n\n## Body\n\nKeep\n", encoding="utf-8")
+    call_agent = Mock(return_value="[FILE_EDIT_START: README_zh-CN.md]\n[OLD]\nOld navigation\n[NEW]\nNew navigation\n[FILE_EDIT_END: README_zh-CN.md]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    assert "[FILE_EDIT_START: README_zh-CN.md]" in call_agent.call_args.args[1]
+    assert target.read_text(encoding="utf-8") == "# Project\n\nNew navigation\n\n## Body\n\nKeep\n"
+
+
 def test_developing_plan_covers_non_markdown_requested_file(initialized_orchestrator, monkeypatch):
     request = "將 README.md 與 README_en.md 完整內容互換，並更新 verify_alignment.py。只允許修改這三個檔案。"
     initialized_orchestrator.requirements_path.write_text(request, encoding="utf-8")
