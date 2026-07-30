@@ -140,6 +140,58 @@ python3 orchestrator.py review revise --run
 python3 orchestrator.py review reject
 ```
 
+## 自動 weighting と role-play staffing
+
+このシステムは、internal staff（Ollama）と有料 vendor（Claude、Codex、Grok、Agy）を小さな会社のように管理し、roles を演じながら、実際の performance に基づいて trust weight と voting influence を自動調整します。誰を senior や junior として扱うかを手動で固定する必要はありません。
+
+### Staff と vendor
+
+- **Internal staff**: `ollama` backend に routed された `developer_senior/middle/junior` と `qa_senior/middle/junior` roles は、蓄積する trust weight（`worker_weights`）を持つ無料の長期 staff として扱われます。
+- **Paid vendors**: `claude`、`codex`、`agy`、`grok` CLI backends は internal performance に含まれません。代わりに各 `backend/model` pairing が、rating、job count、failure count を持つ独立した **vendor scorecard**（`vendor_scores`）で追跡されます。
+
+### Trust weight と scoring event
+
+- 各 role（`rd`/`qa`）x level（`senior`/`middle`/`junior`）には、`0.2` から `3.0` の trust weight があり、`worker_weights` の値がデフォルトになります。
+- task completion、QA pass/fail、Reviewer approve/reject event は EWMA（exponentially weighted moving average）update を発生させ、時間とともに weight を少しずつ調整します。vendor は代わりに独自の scorecard を更新するため、両者が互いに干渉することはありません。
+
+### QA weighted voting
+
+- QA は unanimous agreement を必要としなくなりました。各 level の vote は trust weight で重み付けされ、weighted ratio が `qa_vote_threshold`（デフォルト `0.6`）に達すると run は pass します。test-command の non-zero exit code は、vote にかかわらず run を直ちに fail させます。
+- weighted majority が minority の FAILED vote を覆した場合、その dissent は QA report に記録され、Reviewer に second check として提示されます。後で human が QA failure を覆した場合、FAILED と投票した level(s) は false positive として penalty を受けます。
+
+### Manager performance review
+
+- 各 run の終了時に、Manager はその run の telemetry に基づいて、`weight_adjustment_max_delta`（デフォルト `0.3`）以内の小さな（±）weight adjustment を提案します。adjustment は legal range に clamp され、自動的に config に書き戻されます。Vendor scorecard は informational only であり、この review では変更されません。
+
+### Daily roster
+
+- task の staffing 前に、Manager は当日の roster を読み取ります。そこには、どの internal staff role が online か（Ollama に reach 可能か）、どの vendor が利用可能か、各自の current weight または rating が含まれます。
+- assigned level が offline の場合、task は最も近い available level に自動 reassignment されます。他の条件が同等なら、より高い weight/rating が優先されます。
+
+### Vendor firefighting
+
+- internal staff が task で継続的に苦戦している場合（revision が少なくなった、trust weight が低下しすぎた、または Ollama に reach できない場合）、システムは `backend_escalation_path` から最も高く rating された利用可能な vendor に task を自動的に引き継がせ、firefight させます。これは deterministic な decision であり、別の model call ではありません。
+
+### Internal company memory（brain）
+
+- Internal staff（Ollama backend のみ）は、failure の lessons と meeting summary を記録する sandbox 化された SQLite + FTS5 の「brain」database にアクセスできます。これらは RAG を使用して関連する future prompt に注入されます。Vendor prompt がこの memory を見ることはないため、company knowledge が sandbox の外に出ることはありません。
+- この database に write するのは固定された code hook だけです。model output が直接書き込まれることはなく、prompt injection による long-term memory の汚染を防ぎます。
+
+### New CLI commands
+
+| Command | Description |
+| --- | --- |
+| `weights` | 現在の internal staff trust weight を表示します。 |
+| `weights set <role> <level> <value>` | weight を手動で上書きします。 |
+| `roster` | 今日利用可能な RD/QA role（staff と vendor）を表示します。 |
+| `vendors` | paid-vendor scorecard を表示します。 |
+| `brain search <query>` | internal company memory を検索します。 |
+| `brain prune [--keep N]` | 古い memory を削除し、最新の N 件だけを保持します。 |
+
+### New configuration keys
+
+`worker_weights`、`qa_vote_threshold`、`weight_adjustment_max_delta`、`vendor_scores`、`vendor_hire_min_jobs`、`brain_db`（デフォルトは `orchestrator/core/config.py` を参照）。
+
 ## テストと検証
 
 repository root から test dependencies をインストールし、利用可能な checks を実行します。

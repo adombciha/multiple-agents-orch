@@ -135,6 +135,58 @@ python3 orchestrator.py review revise --run
 python3 orchestrator.py review reject
 ```
 
+## Automatic weighting 与 role-play staffing
+
+系统将内部 staff（Ollama）和付费 vendors（Claude、Codex、Grok、Agy）作为一个小型公司进行管理，模拟各类 role，并根据实际 performance 自动调整 trust weights 和 voting influence，而不是手动固定谁算 senior 或 junior。
+
+### Staff 与 vendors
+
+- **Internal staff**：路由到 `ollama` backend 的 `developer_senior/middle/junior` 和 `qa_senior/middle/junior` roles，会被视为免费的长期 staff，并累积 trust weight（`worker_weights`）。
+- **Paid vendors**：`claude`、`codex`、`agy` 和 `grok` CLI backends 不计入内部 performance；每个 `backend/model` pairing 会在独立的 **vendor scorecard**（`vendor_scores`）中跟踪，包括 rating、job count 和 failure count。
+
+### Trust weights 与 scoring events
+
+- 每个 role（`rd`/`qa`）x level（`senior`/`middle`/`junior`）都有介于 `0.2` 和 `3.0` 之间的 trust weight，默认使用 `worker_weights` 中的值。
+- Task completion、QA pass/fail 以及 Reviewer approve/reject events 会触发 EWMA（exponentially weighted moving average）更新，使 weight 随时间逐步调整；vendors 则更新各自的 scorecard，因此两者不会互相影响。
+
+### QA weighted voting
+
+- QA 不再要求 unanimous agreement。每个 level 的 vote 按其 trust weight 加权；weighted ratio 达到 `qa_vote_threshold`（默认 `0.6`）时 run 通过。无论 vote 结果如何，test-command 的非零 exit code 仍会直接使 run 失败。
+- 如果 weighted majority 覆盖少数 FAILED vote，该 dissent 会记录在 QA report 中，并作为第二次检查呈现给 Reviewer。如果 human 后续覆盖 QA failure，投了 FAILED 的 level(s) 会因 false positive 受到惩罚。
+
+### Manager performance review
+
+- 每次 run 结束时，Manager 根据该次 run 的 telemetry 提议小幅（±`weight_adjustment_max_delta`，默认 `0.3`）weight adjustments，限制在合法范围内并自动写回 config。Vendor scorecards 仅供参考，不会被此 review 修改。
+
+### Daily roster
+
+- 在为 task staffing 前，Manager 会读取 today's roster：哪些 internal staff roles online（Ollama 是否可访问）、哪些 vendors available，以及每个角色当前的 weight 或 rating。
+- 如果 assigned level offline，task 会自动 reassigned 到最近的 available level；在其他条件相同时，优先选择 weight/rating 较高者。
+
+### Vendor firefighting
+
+- 当 internal staff 持续难以完成 task（revisions 即将耗尽、trust weight 已降得过低，或 Ollama 不可访问）时，系统会从 `backend_escalation_path` 中自动将 task 交给 rating 最佳的 available vendor 进行 firefighting。这是 deterministic decision，不会进行额外的 model call。
+
+### Internal company memory (brain)
+
+- Internal staff（仅限 Ollama backend）可以访问 sandboxed SQLite + FTS5 “brain” database，其中记录 failure lessons 和 meeting summaries，并通过 RAG 注入相关的 future prompts。Vendor prompts 看不到这段 memory，因此 company knowledge 不会离开 sandbox。
+- 只有 fixed code hooks 会写入该 database；model output 不会直接写入，从而防止 prompt injection 污染 long-term memory。
+
+### New CLI commands
+
+| Command | Description |
+| --- | --- |
+| `weights` | 显示当前 internal staff trust weights |
+| `weights set <role> <level> <value>` | 手动覆盖一个 weight |
+| `roster` | 显示今天可用的 RD/QA roles（staff 和 vendors） |
+| `vendors` | 显示 paid-vendor scorecard |
+| `brain search <query>` | 搜索 internal company memory |
+| `brain prune [--keep N]` | 清理旧 memory，仅保留最近的 N 条 |
+
+### New configuration keys
+
+`worker_weights`、`qa_vote_threshold`、`weight_adjustment_max_delta`、`vendor_scores`、`vendor_hire_min_jobs`、`brain_db`（默认值请参阅 `orchestrator/core/config.py`）。
+
 ## Tests and verification
 
 从 repository root 安装测试依赖并运行可用检查：

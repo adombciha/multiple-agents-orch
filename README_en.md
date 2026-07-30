@@ -183,6 +183,58 @@ python3 orchestrator.py review revise --run
 python3 orchestrator.py review reject
 ```
 
+## 自動加權與角色扮演式 staffing
+
+系統將內部 staff（Ollama）和付費 vendor（Claude、Codex、Grok、Agy）視為一家小型公司，模擬各種角色，並根據實際表現自動調整信任權重與投票影響力，而不是手動固定誰算 senior 或 junior。
+
+### Staff 與 vendor
+
+- **Internal staff**：路由至 `ollama` backend 的 `developer_senior/middle/junior` 和 `qa_senior/middle/junior` role，會被視為免費、長期 staff，並累積信任權重（`worker_weights`）。
+- **Paid vendors**：`claude`、`codex`、`agy` 和 `grok` CLI backend 不計入 internal performance；每個 `backend/model` 配對會以獨立的 **vendor scorecard**（`vendor_scores`）追蹤 rating、job count 和 failure count。
+
+### 信任權重與評分事件
+
+- 每個 role（`rd`／`qa`）x level（`senior`／`middle`／`junior`）都有介於 `0.2` 和 `3.0` 之間的信任權重，預設值來自 `worker_weights`。
+- Task completion、QA pass/fail 和 Reviewer approve/reject 事件會觸發 EWMA（exponentially weighted moving average）更新，讓權重隨時間逐步調整；vendor 則更新自己的 scorecard，因此兩者不會互相干擾。
+
+### QA 加權投票
+
+- QA 不再要求一致同意。每個 level 的 vote 依其信任權重加權；加權比例達到 `qa_vote_threshold`（預設 `0.6`）時，該 run 即通過。非零的 test-command exit code 仍會直接使 run 失敗，不受投票結果影響。
+- 如果加權多數推翻少數的 FAILED vote，該異議會記錄在 QA report 中，並提供給 Reviewer 作為第二次檢查。如果 human 之後推翻 QA failure，投票為 FAILED 的 level 會因 false positive 受到懲罰。
+
+### Manager performance review
+
+- 每次 run 結束時，Manager 會根據該 run 的 telemetry 提出小幅（±`weight_adjustment_max_delta`，預設 `0.3`）權重調整，限制在合法範圍內並自動寫回 config。Vendor scorecard 僅供參考，不會被這項 review 修改。
+
+### Daily roster
+
+- 在為 task staffing 前，Manager 會讀取今日 roster：哪些 internal staff role 在線（Ollama 是否可連線）、哪些 vendor 可用，以及各自目前的 weight 或 rating。
+- 如果 assigned level 離線，task 會自動重新分配給最近的可用 level；在其他條件同樣適合時，優先選擇 weight/rating 較高者。
+
+### Vendor firefighting
+
+- 當 internal staff 持續難以處理 task（revision 快用完、信任權重降得太低，或 Ollama 無法連線）時，系統會自動從 `backend_escalation_path` 將 task 交給評分最高的可用 vendor 進行 firefighting。這是 deterministic decision，不是額外的 model call。
+
+### Internal company memory（brain）
+
+- Internal staff（僅 Ollama backend）可存取 sandboxed SQLite + FTS5「brain」database，記錄 failure 的 lessons 和 meeting summaries，並透過 RAG 注入相關的後續 prompt。Vendor prompt 看不到這份 memory，因此 company knowledge 不會離開 sandbox。
+- 只有固定的 code hooks 會寫入此 database；model output 不會直接寫入，避免 prompt injection 污染長期 memory。
+
+### New CLI commands
+
+| Command | Description |
+| --- | --- |
+| `weights` | 顯示目前 internal staff 的信任權重 |
+| `weights set <role> <level> <value>` | 手動覆寫權重 |
+| `roster` | 顯示今日可用的 RD/QA role（staff 與 vendor） |
+| `vendors` | 顯示 paid-vendor scorecard |
+| `brain search <query>` | 搜尋 internal company memory |
+| `brain prune [--keep N]` | 清理舊的 memory，只保留最近的 N 筆 |
+
+### New configuration keys
+
+`worker_weights`、`qa_vote_threshold`、`weight_adjustment_max_delta`、`vendor_scores`、`vendor_hire_min_jobs`、`brain_db`（請參閱 `orchestrator/core/config.py` 中的預設值）。
+
 ## 測試與驗證
 
 從 repository root 安裝測試相依套件並執行可用檢查：
