@@ -144,6 +144,58 @@ python3 orchestrator.py review revise --run
 python3 orchestrator.py review reject
 ```
 
+## Automatic weighting and role-play staffing
+
+The system manages internal staff (Ollama) and paid vendors (Claude, Codex, Grok, Agy) like a small company, playing out roles and automatically adjusting trust weights and voting influence based on real performance, instead of manually fixing who counts as senior or junior.
+
+### Staff vs. vendors
+
+- **Internal staff**: `developer_senior/middle/junior` and `qa_senior/middle/junior` roles routed to the `ollama` backend are treated as free, long-term staff with an accumulating trust weight (`worker_weights`).
+- **Paid vendors**: `claude`, `codex`, `agy`, and `grok` CLI backends do not count toward internal performance; instead each `backend/model` pairing is tracked on an independent **vendor scorecard** (`vendor_scores`) with a rating, job count, and failure count.
+
+### Trust weights and scoring events
+
+- Each role (`rd`/`qa`) x level (`senior`/`middle`/`junior`) has a trust weight between `0.2` and `3.0`, defaulting to the values in `worker_weights`.
+- Task completions, QA pass/fail, and Reviewer approve/reject events trigger an EWMA (exponentially weighted moving average) update that nudges the weight over time; vendors update their own scorecard instead, so the two never interfere with each other.
+
+### QA weighted voting
+
+- QA no longer requires unanimous agreement. Each level's vote is weighted by its trust weight; the run passes once the weighted ratio reaches `qa_vote_threshold` (default `0.6`). A non-zero test-command exit code still fails the run outright, regardless of the vote.
+- If a weighted majority overrides a minority FAILED vote, that dissent is recorded in the QA report and surfaced to the Reviewer as a second check. If a human later overrides a QA failure, the level(s) that voted FAILED get penalized as a false positive.
+
+### Manager performance review
+
+- At the end of each run, the Manager proposes small (±`weight_adjustment_max_delta`, default `0.3`) weight adjustments based on that run's telemetry, clamped to the legal range and written back to config automatically. Vendor scorecards are informational only and are not touched by this review.
+
+### Daily roster
+
+- Before staffing a task, the Manager reads today's roster: which internal staff roles are online (is Ollama reachable?), which vendors are available, and each one's current weight or rating.
+- If the assigned level is offline, the task is automatically reassigned to the nearest available level, preferring higher weight/rating when otherwise equally suited.
+
+### Vendor firefighting
+
+- When internal staff keeps struggling on a task (running low on revisions, trust weight has dropped too far, or Ollama is unreachable), the system automatically hands the task to the best-rated available vendor from `backend_escalation_path` to firefight it. This is a deterministic decision, not a separate model call.
+
+### Internal company memory (brain)
+
+- Internal staff (Ollama backend only) have access to a sandboxed SQLite + FTS5 "brain" database that records lessons from failures and meeting summaries, injected back into relevant future prompts using RAG. Vendor prompts never see this memory, so company knowledge never leaves the sandbox.
+- Only fixed code hooks write to this database; model output is never written directly, which prevents prompt injection from poisoning long-term memory.
+
+### New CLI commands
+
+| Command | Description |
+| --- | --- |
+| `weights` | Show current internal staff trust weights |
+| `weights set <role> <level> <value>` | Manually override a weight |
+| `roster` | Show today's available RD/QA roles (staff and vendors) |
+| `vendors` | Show the paid-vendor scorecard |
+| `brain search <query>` | Search the internal company memory |
+| `brain prune [--keep N]` | Prune old memories, keeping only the most recent N |
+
+### New configuration keys
+
+`worker_weights`, `qa_vote_threshold`, `weight_adjustment_max_delta`, `vendor_scores`, `vendor_hire_min_jobs`, `brain_db` (see the defaults in `orchestrator/core/config.py`).
+
 ## Tests and verification
 
 From the repository root, install test dependencies and run the available checks:
