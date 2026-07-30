@@ -2,10 +2,11 @@ import re
 import sys
 
 readmes = {
-    "en": "README_en.md",
-    "zh-TW": "README.md",
+    "en": "README.md",
+    "zh-TW": "README_en.md",
     "zh-CN": "README_zh-CN.md",
-    "ja": "README_ja.md"
+    "ja": "README_ja.md",
+    "ru": "README_ru.md"  # Added Russian README
 }
 
 def get_structural_signature(line):
@@ -36,7 +37,7 @@ for lang, filename in readmes.items():
 en_sigs = [get_structural_signature(l) for l in contents["en"]]
 mismatches = False
 
-for lang in ["zh-TW", "zh-CN", "ja"]:
+for lang in ["zh-TW", "zh-CN", "ja", "ru"]:  # Added Russian language to the loop
     lang_lines = contents[lang]
     if len(lang_lines) != len(en_sigs):
         print(f"❌ Line count mismatch for {lang}: {len(lang_lines)} vs {len(en_sigs)} (en)")

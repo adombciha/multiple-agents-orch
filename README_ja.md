@@ -1,6 +1,6 @@
 # Multi-Agent Orchestrator
 
-[繁體中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md)
+[English](README.md) | [繁體中文](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md) | [Русский](README_ru.md)
 
 計画、実装、QA、コードレビュー、最終報告を決定論的な状態機械で行う Python のマルチエージェント開発ワークフローです。
 

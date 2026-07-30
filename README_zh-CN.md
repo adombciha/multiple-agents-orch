@@ -1,6 +1,6 @@
 # Multi-Agent Orchestrator
 
-[繁體中文](README.md) | [English](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md)
+[English](README.md) | [繁體中文](README_en.md) | [日本語](README_ja.md) | [简体中文](README_zh-CN.md) | [Русский](README_ru.md)
 
 这是一个基于 Python 的多代理开发流程，使用确定性状态机完成规划、实现、QA、代码审查和最终报告。
 
