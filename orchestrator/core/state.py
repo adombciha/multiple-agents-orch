@@ -103,6 +103,7 @@ class AgentOrchestrator:
             "failed_model_routes": [],
             "task_failed_model_routes": {},
             "task_developer_promotions": {},
+            "task_backend_overrides": {},
             "tasks": [],
             "specialists": [],
             "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}}
@@ -179,6 +180,7 @@ class AgentOrchestrator:
             "model_tier_indices": {"developer": 0, "reviewer": 0, "manager": 0, "qa": 0},
             "quota_exhausted_backends": {}, "tasks": [], "specialists": [],
             "failed_model_routes": [], "task_failed_model_routes": {}, "task_developer_promotions": {},
+            "task_backend_overrides": {},
             "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}},
         }
 
@@ -222,6 +224,7 @@ class AgentOrchestrator:
         self.state.setdefault("failed_model_routes", [])
         self.state.setdefault("task_failed_model_routes", {})
         self.state.setdefault("task_developer_promotions", {})
+        self.state.setdefault("task_backend_overrides", {})
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -356,6 +359,10 @@ class AgentOrchestrator:
     def escalate_developer_backend(self):
         from orchestrator.core import backends
         return backends.escalate_developer_backend(self)
+
+    def maybe_hire_vendor(self, task: dict) -> str | None:
+        from orchestrator.core import backends
+        return backends.maybe_hire_vendor(self, task)
 
     def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None, response_schema: dict | None = None) -> str:
         return self.call_agent("manager", prompt, system_prompt, response_validator=response_validator, response_schema=response_schema)

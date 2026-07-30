@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 from orchestrator.roles.base_agent import BaseAgent
+from orchestrator.core import scoring
 
 REVIEW_SCHEMA = {
     "type": "object",
@@ -33,6 +34,7 @@ class ReviewerAgent(BaseAgent):
         plan = self.orchestrator.plan_path.read_text(encoding="utf-8")
         with open(self.orchestrator.test_results_path, "r", encoding="utf-8") as f:
             test_results = f.read()
+        qa_report = self.orchestrator.qa_report_path.read_text(encoding="utf-8") if self.orchestrator.qa_report_path.exists() else ""
 
         # Get git diff
         if self.orchestrator.has_git:
@@ -57,7 +59,7 @@ class ReviewerAgent(BaseAgent):
             roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
         )
 
-        prompt = f"""Review the code changes made.\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify that the implementation matches assigned tasks, tests pass, and no bugs, scope violations, or safety issues remain. Return the verdict and concise feedback using the supplied JSON schema."""
+        prompt = f"""Review the code changes made.\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nQA Reports (includes any dissenting per-level votes; a weighted majority may have overridden a minority QA FAILED vote — weigh it yourself):\n{qa_report or 'No QA report available.'}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify that the implementation matches assigned tasks, tests pass, and no bugs, scope violations, or safety issues remain. Return the verdict and concise feedback using the supplied JSON schema."""
 
         review_json = self.call_agent(
             "reviewer", prompt,
@@ -84,6 +86,11 @@ class ReviewerAgent(BaseAgent):
         else:
             log_warning("Code changes REJECTED by Reviewer.")
             self.orchestrator.escalate_developer_backend()
+            rd_role = self.orchestrator.state.get("last_developer_role", "developer_senior")
+            rd_level = rd_role.rsplit("_", 1)[-1]
+            rd_backend = self.orchestrator.get_backend(rd_role)
+            rd_model = self.orchestrator.get_active_model_for_role(rd_role, rd_backend)
+            scoring.record_event(self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5)
             max_rev = self.orchestrator.config.get("max_revisions", 2)
             if self.orchestrator.state["code_revisions"] < max_rev:
                 self.orchestrator.state["code_revisions"] += 1

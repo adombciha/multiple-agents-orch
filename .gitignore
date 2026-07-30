@@ -5,3 +5,6 @@ __pycache__/
 
 # Temporary prompt and agent state files
 .ai-company*/
+
+# Internal-staff-only company memory (never shared with vendors, never committed)
+brain.db*

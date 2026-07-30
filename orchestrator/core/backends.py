@@ -13,6 +13,10 @@ AGY_MODEL_ALIASES = {
 def get_backend(orchestrator, role: str) -> str:
     backends = orchestrator.config.get("backends", {})
     if role.startswith("developer_"):
+        task_id = orchestrator.state.get("active_task_id")
+        override = orchestrator.state.get("task_backend_overrides", {}).get(task_id) if task_id else None
+        if override:
+            return override
         if "developer" in orchestrator.explicit_backends and role not in orchestrator.explicit_backends:
             return backends.get("developer", "ollama")
         return backends.get(role, backends.get("developer", "ollama"))
@@ -227,15 +231,28 @@ def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
     orchestrator.save_state()
     log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
 
+def _effective_developer_role(orchestrator, role: str) -> str:
+    task_id = orchestrator.state.get("active_task_id")
+    if task_id:
+        promotions = orchestrator.state.get("task_developer_promotions", {}).get(task_id, {})
+    else:
+        promotions = orchestrator.state.get("developer_promotions", {})
+    return promotions.get(role, role)
+
 def escalate_developer_backend(orchestrator) -> None:
     from orchestrator.core.state import log_warning
+    from orchestrator.core import scoring
     role = orchestrator.state.get("last_developer_role", "developer_senior")
     task_id = orchestrator.state.get("active_task_id")
     if task_id:
         promotions = orchestrator.state.setdefault("task_developer_promotions", {}).setdefault(task_id, {})
     else:
         promotions = orchestrator.state.setdefault("developer_promotions", {})
-    effective_role = promotions.get(role, role)
+    effective_role = _effective_developer_role(orchestrator, role)
+    effective_level = effective_role.rsplit("_", 1)[-1]
+    effective_backend = get_backend(orchestrator, effective_role)
+    effective_model = get_active_model_for_role(orchestrator, effective_role, effective_backend)
+    scoring.record_event(orchestrator, "rd", effective_level, effective_backend, effective_model, -1.5)
     promoted_role = {
         "developer_junior": "developer_middle",
         "developer_middle": "developer_senior",
@@ -248,3 +265,46 @@ def escalate_developer_backend(orchestrator) -> None:
     orchestrator.save_state()
     scope = f"task {task_id}" if task_id else "this run"
     log_warning(f"[!] Promoted {role} to {promoted_role} for {scope}.")
+
+def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
+    """Deterministic firefighting: when internal staff is struggling on a task,
+    hand it to the best-rated available vendor from backend_escalation_path.
+
+    Trigger: one retry left before human review, staff trust weight has dropped
+    below 0.5, or Ollama itself is unreachable. Returns the hired backend name,
+    or None if nothing fired (staff keeps the task).
+    """
+    from orchestrator.core.state import log_warning
+    from orchestrator.core import scoring
+    role = orchestrator.state.get("last_developer_role", "developer_senior")
+    effective_role = _effective_developer_role(orchestrator, role)
+    if get_backend(orchestrator, effective_role) != "ollama":
+        return None
+
+    level = effective_role.rsplit("_", 1)[-1]
+    max_revisions = orchestrator.config.get("max_revisions", 2)
+    revisions = int(task.get("revisions", 0))
+    weight = scoring.get_weight(orchestrator.config, "rd", level)
+    ollama_down = not orchestrator.state.get("ollama_reachable", True)
+    if not (revisions >= max(0, max_revisions - 1) or weight < 0.5 or ollama_down):
+        return None
+
+    task_id = task.get("id")
+    failed_routes = orchestrator.state.get("task_failed_model_routes", {}).get(task_id, [])
+    candidates = []
+    for candidate_backend in orchestrator.config.get("backend_escalation_path", []):
+        if candidate_backend == "ollama" or not backend_available(orchestrator, candidate_backend):
+            continue
+        model = get_active_model_for_role(orchestrator, effective_role, candidate_backend)
+        if f"{candidate_backend}/{model}" in failed_routes:
+            continue
+        candidates.append((scoring.get_vendor_rating(orchestrator.config, candidate_backend, model), candidate_backend))
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    hired_rating, hired_backend = candidates[0]
+    orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = hired_backend
+    orchestrator.save_state()
+    log_warning(f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight.")
+    return hired_backend

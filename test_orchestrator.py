@@ -12,7 +12,7 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.core import backends, grok, gpt
+from orchestrator.core import backends, grok, gpt, scoring, roster, brain
 from orchestrator.core.telemetry import record_call, summary_markdown
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.core.grok import extract_schema_payload
@@ -215,6 +215,7 @@ def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_gi
     expected_state.setdefault("failed_model_routes", [])
     expected_state.setdefault("task_failed_model_routes", {})
     expected_state.setdefault("task_developer_promotions", {})
+    expected_state.setdefault("task_backend_overrides", {})
     assert app.state == expected_state
 
 
@@ -1952,3 +1953,260 @@ def test_manager_queues_rd_task_after_worktree_merge_failure(initialized_orchest
     assert task["status"] == "pending"
     assert task["target_files"] == ["docs/litellm-telemetry.md"]
     assert "merge conflict" in task["description"]
+
+
+# --- Auto-weighting: scoring.py ---
+
+def test_scoring_clamp_bounds():
+    assert scoring.clamp(10) == scoring.WEIGHT_MAX
+    assert scoring.clamp(-5) == scoring.WEIGHT_MIN
+    assert scoring.clamp(1.5) == 1.5
+
+
+def test_record_staff_event_moves_weight_and_persists(initialized_orchestrator):
+    initialized_orchestrator.config["worker_weights"] = {"rd": {"senior": 1.0, "middle": 1.0, "junior": 1.0}}
+
+    updated = scoring.record_staff_event(initialized_orchestrator, "rd", "junior", 1.0)
+
+    assert updated > 1.0
+    assert initialized_orchestrator.config["worker_weights"]["rd"]["junior"] == updated
+    persisted = json.loads(initialized_orchestrator.config_path.read_text(encoding="utf-8"))
+    assert persisted["worker_weights"]["rd"]["junior"] == updated
+
+
+def test_record_vendor_event_tracks_jobs_and_failures(initialized_orchestrator):
+    scoring.record_vendor_event(initialized_orchestrator, "codex", "gpt-5.6-luna", 1.0)
+    scoring.record_vendor_event(initialized_orchestrator, "codex", "gpt-5.6-luna", -1.0)
+
+    entry = initialized_orchestrator.config["vendor_scores"]["codex/gpt-5.6-luna"]
+    assert entry["jobs"] == 2
+    assert entry["failures"] == 1
+
+
+def test_record_event_routes_ollama_to_staff_and_others_to_vendor(initialized_orchestrator):
+    scoring.record_event(initialized_orchestrator, "rd", "senior", "ollama", "gemma4:latest", 1.0)
+    scoring.record_event(initialized_orchestrator, "rd", "senior", "codex", "gpt-5.6-luna", -1.0)
+
+    assert "senior" in initialized_orchestrator.config["worker_weights"]["rd"]
+    assert "codex/gpt-5.6-luna" in initialized_orchestrator.config["vendor_scores"]
+
+
+# --- Auto-weighting: QA weighted voting ---
+
+def test_qa_weighted_vote_overrides_single_junior_dissent(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "x", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
+    initialized_orchestrator.state["staffing"] = {"qa": {"senior": 1, "middle": 1, "junior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(0, "tests ok")))
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent",
+        Mock(side_effect=["QA_STATUS: PASSED\nok", "QA_STATUS: PASSED\nok", "QA_STATUS: FAILED\nnitpick"]),
+    )
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
+
+
+def test_qa_weighted_vote_senior_dissent_blocks_even_with_majority_pass(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "x", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
+    initialized_orchestrator.state["staffing"] = {"qa": {"senior": 1, "middle": 1, "junior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(0, "tests ok")))
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent",
+        Mock(side_effect=["QA_STATUS: FAILED\nrisk", "QA_STATUS: PASSED\nok", "QA_STATUS: PASSED\nok"]),
+    )
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+    assert initialized_orchestrator.state["qa_dissenting_levels"] == ["senior"]
+
+
+def test_qa_hard_fails_on_nonzero_exit_even_if_all_workers_pass(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "x", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
+    initialized_orchestrator.state["staffing"] = {"qa": {"senior": 1}}
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(1, "boom")))
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value="QA_STATUS: PASSED\nok"))
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
+
+
+# --- Auto-weighting: roster ---
+
+def test_roster_snapshot_marks_ollama_staff_offline_when_unreachable(initialized_orchestrator):
+    initialized_orchestrator.state["ollama_reachable"] = False
+
+    data = roster.snapshot(initialized_orchestrator)
+
+    assert data["available_roles"]["developer_junior"]["status"] == "offline"
+    assert data["available_roles"]["developer_junior"]["type"] == "staff"
+    assert "ollama" in data["unavailable_backends"]
+
+
+def test_roster_snapshot_marks_vendor_offline_when_quota_exhausted(initialized_orchestrator):
+    initialized_orchestrator.state["quota_exhausted_backends"] = {"codex": True}
+
+    data = roster.snapshot(initialized_orchestrator)
+
+    assert data["available_roles"]["developer_senior"]["status"] == "offline"
+    assert data["available_roles"]["developer_senior"]["type"] == "vendor"
+
+
+def test_reassign_unavailable_levels_falls_back_to_available_level():
+    tasks = [{"id": "T-1", "rd_level": "junior"}]
+    roster_data = {
+        "available_roles": {
+            "developer_junior": {"status": "offline"},
+            "developer_middle": {"status": "offline"},
+            "developer_senior": {"status": "available"},
+        }
+    }
+
+    roster.reassign_unavailable_levels(tasks, roster_data, "rd_level", "developer")
+
+    assert tasks[0]["rd_level"] == "senior"
+
+
+def test_developing_plan_reassigns_task_off_offline_rd_level(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.state["ollama_reachable"] = False
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(return_value=json.dumps({
+            "tasks": [{
+                "id": "T-1", "description": "implement", "target_files": ["app.py"],
+                "rd_level": "junior", "qa_level": "junior",
+            }],
+            "staffing": {"rd": {"junior": 1, "senior": 1}, "qa": {"junior": 1, "senior": 1}},
+            "specialists": [],
+        })),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert initialized_orchestrator.state["tasks"][0]["rd_level"] == "senior"
+
+
+# --- Auto-weighting: vendor firefighting ---
+
+def test_maybe_hire_vendor_fires_when_struggling_and_sets_override(initialized_orchestrator):
+    initialized_orchestrator.state["last_developer_role"] = "developer_junior"
+    initialized_orchestrator.state["active_task_id"] = "T-1"
+    task = {"id": "T-1", "revisions": initialized_orchestrator.config["max_revisions"] - 1}
+
+    hired = initialized_orchestrator.maybe_hire_vendor(task)
+
+    assert hired in {"agy", "codex"}
+    assert initialized_orchestrator.state["task_backend_overrides"]["T-1"] == hired
+
+
+def test_maybe_hire_vendor_noop_for_vendor_backed_role(initialized_orchestrator):
+    initialized_orchestrator.state["last_developer_role"] = "developer_senior"
+    task = {"id": "T-1", "revisions": 5}
+
+    assert initialized_orchestrator.maybe_hire_vendor(task) is None
+    assert "T-1" not in initialized_orchestrator.state.get("task_backend_overrides", {})
+
+
+def test_task_backend_override_wins_for_developer_role(initialized_orchestrator):
+    initialized_orchestrator.state["active_task_id"] = "T-1"
+    initialized_orchestrator.state["task_backend_overrides"] = {"T-1": "agy"}
+
+    assert initialized_orchestrator.get_backend("developer_junior") == "agy"
+
+
+# --- Auto-weighting: manager weight review ---
+
+def test_manager_review_worker_weights_applies_clamped_adjustment(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["worker_weights"] = {"rd": {"senior": 1.0, "middle": 1.0, "junior": 1.0}, "qa": {"senior": 1.5, "middle": 1.0, "junior": 0.6}}
+    monkeypatch.setattr(
+        initialized_orchestrator.manager, "call_manager",
+        Mock(return_value=json.dumps({"adjustments": [{"role": "rd", "level": "junior", "weight": 2.9, "reason": "great run"}]})),
+    )
+
+    initialized_orchestrator.manager._review_worker_weights("telemetry")
+
+    assert initialized_orchestrator.config["worker_weights"]["rd"]["junior"] == 1.3
+
+
+def test_manager_review_worker_weights_skips_on_invalid_response(initialized_orchestrator, monkeypatch):
+    original = copy.deepcopy(initialized_orchestrator.config["worker_weights"])
+    monkeypatch.setattr(initialized_orchestrator.manager, "call_manager", Mock(return_value="not json"))
+
+    initialized_orchestrator.manager._review_worker_weights("telemetry")
+
+    assert initialized_orchestrator.config["worker_weights"] == original
+
+
+# --- Auto-weighting: brain (SQLite+FTS5 company memory) ---
+
+def test_brain_remember_and_recall_roundtrip(initialized_orchestrator):
+    brain.remember(initialized_orchestrator, "lesson", "Task T-1 failed due to missing import handling")
+
+    results = brain.recall(initialized_orchestrator, "missing import handling")
+
+    assert any("missing import handling" in r for r in results)
+
+
+def test_brain_recall_returns_nothing_for_unrelated_query(initialized_orchestrator):
+    brain.remember(initialized_orchestrator, "lesson", "Task T-1 failed due to a timeout")
+
+    assert brain.recall(initialized_orchestrator, "unrelated banana pancake") == []
+
+
+def test_brain_prune_keeps_only_most_recent(initialized_orchestrator):
+    for i in range(5):
+        brain.remember(initialized_orchestrator, "lesson", f"lesson number {i}")
+
+    deleted = brain.prune(initialized_orchestrator, keep_last=2)
+
+    assert deleted == 3
+    assert len(brain.recall(initialized_orchestrator, "lesson", limit=10)) == 2
+
+
+def test_brain_injected_for_ollama_backend_prompt(initialized_orchestrator, monkeypatch):
+    brain.remember(initialized_orchestrator, "lesson", "Remember to check CSV encoding")
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.config["backends"]["developer_junior"] = "ollama"
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "check CSV encoding", "target_files": ["app.py"],
+        "status": "pending", "rd_level": "junior", "qa_level": "junior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"junior": 1}, "qa": {"junior": 1}}
+    call_agent = Mock(return_value="[FILE_START: app.py]\nok\n[FILE_END: app.py]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "[COMPANY_MEMORY]" in prompt
+    assert "CSV encoding" in prompt
+
+
+def test_brain_not_injected_for_vendor_backend_prompt(initialized_orchestrator, monkeypatch):
+    brain.remember(initialized_orchestrator, "lesson", "Remember to check CSV encoding")
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.config["backends"]["developer_senior"] = "codex"
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "check CSV encoding", "target_files": ["app.py"],
+        "status": "pending", "rd_level": "senior", "qa_level": "senior",
+    }]
+    initialized_orchestrator.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    call_agent = Mock(return_value="No edits needed")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "[COMPANY_MEMORY]" not in prompt

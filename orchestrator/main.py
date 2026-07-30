@@ -6,6 +6,7 @@ from urllib.error import URLError
 from urllib.request import urlopen
 from pathlib import Path
 from orchestrator.core.state import AgentOrchestrator, Colors, log_success, log_info, log_error, log_header
+from orchestrator.core import scoring
 
 
 def ollama_available(url: str) -> bool:
@@ -19,6 +20,8 @@ def configure_ollama(orchestrator: AgentOrchestrator):
     local_url = orchestrator.config["ollama_url"]
     if ollama_available(local_url):
         log_success(f"Ollama is available at {local_url}")
+        orchestrator.state["ollama_reachable"] = True
+        orchestrator.save_state()
         return
     windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
     if ollama_available(windows_url):
@@ -27,8 +30,12 @@ def configure_ollama(orchestrator: AgentOrchestrator):
             orchestrator.config["ollama_url"] = windows_url
             orchestrator.config_path.write_text(json.dumps(orchestrator.config, indent=2), encoding="utf-8")
             log_success(f"Ollama API URL set to {windows_url}")
+            orchestrator.state["ollama_reachable"] = True
+            orchestrator.save_state()
     else:
         log_error("No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task.")
+        orchestrator.state["ollama_reachable"] = False
+        orchestrator.save_state()
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-Agent Orchestrator CLI")
@@ -60,6 +67,23 @@ def main():
     ollama_url_parser = subparsers.add_parser("set-ollama-url", help="Set the Ollama API URL")
     ollama_url_parser.add_argument("url", help="Ollama API base URL, for example http://172.17.144.1:11434")
 
+    weights_parser = subparsers.add_parser("weights", help="Show or adjust internal staff trust weights")
+    weights_sub = weights_parser.add_subparsers(dest="weights_command")
+    weights_set_parser = weights_sub.add_parser("set", help="Manually override a staff weight")
+    weights_set_parser.add_argument("role", choices=["rd", "qa"])
+    weights_set_parser.add_argument("level", choices=["senior", "middle", "junior"])
+    weights_set_parser.add_argument("value", type=float)
+
+    subparsers.add_parser("roster", help="Show today's available RD/QA roles (staff and vendors)")
+    subparsers.add_parser("vendors", help="Show the paid-vendor scorecard")
+
+    brain_parser = subparsers.add_parser("brain", help="Inspect or prune the internal company memory")
+    brain_sub = brain_parser.add_subparsers(dest="brain_command")
+    brain_search_parser = brain_sub.add_parser("search", help="Search company memory")
+    brain_search_parser.add_argument("query")
+    brain_prune_parser = brain_sub.add_parser("prune", help="Prune old memories")
+    brain_prune_parser.add_argument("--keep", type=int, default=200, help="Number of most recent memories to keep (default: 200)")
+
     args = parser.parse_args()
 
     workspace = Path(os.getcwd())
@@ -74,6 +98,7 @@ def main():
         orchestrator.init_project()
         orchestrator.load_config_and_state()
         configure_ollama(orchestrator)
+        ollama_reachable = orchestrator.state.get("ollama_reachable", True)
         allowed_image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
         max_image_bytes = orchestrator.config.get("max_visual_image_bytes", 10 * 1024 * 1024)
         image_paths = []
@@ -107,12 +132,14 @@ def main():
             "last_qa_level": "senior",
             "developer_promotions": {},
             "task_developer_promotions": {},
+            "task_backend_overrides": {},
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
             "task_failed_model_routes": {},
             "visual_image_paths": image_paths,
             "workflow_mode": "research" if args.research else "delivery",
             "research_roles": ["sales", "ra"] if args.research else [],
+            "ollama_reachable": ollama_reachable,
         }
         orchestrator.save_state()
         log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")
@@ -189,8 +216,15 @@ def main():
                     })
             else:
                 next_state = "FAILED"
+            if decision == "pass" and orchestrator.state.get("human_review_source") == "QA":
+                for qa_level in orchestrator.state.get("qa_dissenting_levels", []):
+                    qa_role = f"qa_{qa_level}"
+                    qa_backend = orchestrator.get_backend(qa_role)
+                    qa_model = orchestrator.get_active_model_for_role(qa_role, qa_backend)
+                    scoring.record_event(orchestrator, "qa", qa_level, qa_backend, qa_model, -0.5)
+                    log_info(f"Recorded QA false-positive for qa_{qa_level} after owner override.")
             orchestrator.state["state"] = next_state
-            for key in ("human_review_source", "resume_state", "pass_state", "human_review_details"):
+            for key in ("human_review_source", "resume_state", "pass_state", "human_review_details", "qa_dissenting_levels"):
                 orchestrator.state.pop(key, None)
             orchestrator.save_state()
             log_success(f"Human review '{decision}' recorded; workflow moved to {next_state}.")
@@ -217,6 +251,7 @@ def main():
             orchestrator.state["last_qa_level"] = "senior"
             orchestrator.state["developer_promotions"] = {}
             orchestrator.state["task_developer_promotions"] = {}
+            orchestrator.state["task_backend_overrides"] = {}
             orchestrator.state["quota_exhausted_backends"] = {}
             orchestrator.state["failed_model_routes"] = []
             orchestrator.state["task_failed_model_routes"] = {}
@@ -249,6 +284,70 @@ def main():
         with open(orchestrator.config_path, "w", encoding="utf-8") as f:
             json.dump(orchestrator.config, f, indent=2)
         log_success(f"Ollama API URL set to {orchestrator.config['ollama_url']}")
+    elif args.command == "weights":
+        try:
+            orchestrator.load_config_and_state()
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            return
+        if args.weights_command == "set":
+            if not (scoring.WEIGHT_MIN <= args.value <= scoring.WEIGHT_MAX):
+                log_error(f"Weight must be between {scoring.WEIGHT_MIN} and {scoring.WEIGHT_MAX}.")
+                return
+            orchestrator.config.setdefault("worker_weights", {}).setdefault(args.role, {})[args.level] = args.value
+            with open(orchestrator.config_path, "w", encoding="utf-8") as f:
+                json.dump(orchestrator.config, f, indent=2)
+            log_success(f"Set {args.role}/{args.level} trust weight to {args.value}")
+        else:
+            log_header("INTERNAL STAFF TRUST WEIGHTS")
+            for role, levels in orchestrator.config.get("worker_weights", {}).items():
+                for level, weight in levels.items():
+                    print(f" - {role}/{level}: {weight}")
+    elif args.command == "roster":
+        try:
+            orchestrator.load_config_and_state()
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            return
+        from orchestrator.core import roster
+        data = roster.snapshot(orchestrator)
+        log_header("TODAY'S ROSTER")
+        for role, info in data["available_roles"].items():
+            status_color = Colors.GREEN if info["status"] == "available" else Colors.FAIL
+            score = info.get("weight", info.get("rating"))
+            print(f" - {role} ({info['type']}, backend={info['backend']}): {status_color}{info['status']}{Colors.ENDC} score={score}")
+        if data["unavailable_backends"]:
+            print(f"\nUnavailable backends: {', '.join(data['unavailable_backends'])}")
+    elif args.command == "vendors":
+        try:
+            orchestrator.load_config_and_state()
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            return
+        log_header("VENDOR SCORECARD")
+        vendor_scores = orchestrator.config.get("vendor_scores", {})
+        if not vendor_scores:
+            print("No vendor activity recorded yet.")
+        for key, info in vendor_scores.items():
+            print(f" - {key}: rating={info.get('rating')} jobs={info.get('jobs')} failures={info.get('failures')}")
+    elif args.command == "brain":
+        try:
+            orchestrator.load_config_and_state()
+        except FileNotFoundError:
+            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            return
+        from orchestrator.core import brain
+        if args.brain_command == "search":
+            results = brain.recall(orchestrator, args.query, limit=10)
+            if not results:
+                print("No matching memories.")
+            for item in results:
+                print(f"- {item}\n")
+        elif args.brain_command == "prune":
+            deleted = brain.prune(orchestrator, keep_last=args.keep)
+            log_success(f"Pruned {deleted} old memories; kept the most recent {args.keep}.")
+        else:
+            log_error("Specify a brain subcommand: search or prune.")
     else:
         parser.print_help()
 

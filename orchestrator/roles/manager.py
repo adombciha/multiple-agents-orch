@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 import json
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
+from orchestrator.core import scoring, brain
 
 JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
 REQUIREMENT_HEADINGS = (
@@ -47,6 +48,36 @@ RESEARCH_TRACKS_SCHEMA = {
     "required": ["tracks"],
     "additionalProperties": False,
 }
+
+WEIGHT_ADJUSTMENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "adjustments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "enum": ["rd", "qa"]},
+                    "level": {"type": "string", "enum": ["senior", "middle", "junior"]},
+                    "weight": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["role", "level", "weight"],
+                "additionalProperties": False,
+            },
+            "maxItems": 6,
+        }
+    },
+    "required": ["adjustments"],
+    "additionalProperties": False,
+}
+
+def is_weight_adjustment_response(response: str) -> bool:
+    try:
+        data = json.loads(response.strip())
+        return isinstance(data.get("adjustments"), list)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 def is_requirements_json_response(response: str) -> bool:
     try:
@@ -188,6 +219,7 @@ class ManagerAgent(BaseAgent):
         )
         self.orchestrator.meeting_memory_path.write_text(meeting_memory, encoding="utf-8")
         log_success(f"Meeting memory saved at {self.orchestrator.meeting_memory_path}")
+        brain.remember(self.orchestrator, "meeting", f"Request: {request[:500]}\n\n{meeting_memory}")
 
         # Assistant generates CHANGELOG
         log_info("Asking Assistant to generate CHANGELOG.md...")
@@ -198,6 +230,8 @@ class ManagerAgent(BaseAgent):
 
         log_success("CHANGELOG.md updated successfully!")
 
+        self._review_worker_weights(usage)
+
         # Merge and clean up isolated worktree
         if self.orchestrator.cleanup_worktree(merge=True) is False:
             task = self.orchestrator.queue_worktree_repair_task()
@@ -205,3 +239,55 @@ class ManagerAgent(BaseAgent):
             return
 
         log_success("Multi-agent workflow process has finished successfully!")
+
+    def _review_worker_weights(self, telemetry: str) -> None:
+        """Manager performance review: propose small, clamped nudges to internal staff
+        trust weights based on how this run went. Vendor scorecards are informational
+        and out of scope here — vendors are billed per job, not managed by trust."""
+        from orchestrator.core.state import log_info, log_warning
+
+        worker_weights = self.orchestrator.config.get("worker_weights", {})
+        vendor_scores = self.orchestrator.config.get("vendor_scores", {})
+        prompt = (
+            "You are closing the books on this run as the team's manager.\n\n"
+            f"Current internal staff trust weights (0.2-3.0, higher = more trusted):\n{json.dumps(worker_weights)}\n\n"
+            f"Current vendor scorecard (paid backends, informational only, do not touch):\n{json.dumps(vendor_scores)}\n\n"
+            f"Run telemetry:\n{telemetry or 'No telemetry recorded.'}\n\n"
+            "Propose small performance-review nudges to internal staff weights only "
+            "(role 'rd' or 'qa', level 'senior', 'middle', or 'junior'). Keep changes conservative. "
+            "Respond only with JSON matching the schema; use an empty 'adjustments' array if no change is warranted."
+        )
+        try:
+            response = self.call_manager(
+                prompt,
+                f"You are a Project Manager doing a staff performance review. {JSON_RULES}",
+                is_weight_adjustment_response,
+                WEIGHT_ADJUSTMENT_SCHEMA,
+            )
+            data = json.loads(extract_json_response(response))
+        except Exception as e:
+            log_warning(f"Skipping weight review; Manager response was unusable: {e}")
+            return
+
+        max_delta = self.orchestrator.config.get("weight_adjustment_max_delta", 0.3)
+        changed = False
+        for item in data.get("adjustments", []):
+            if not isinstance(item, dict):
+                continue
+            role, level = item.get("role"), item.get("level")
+            if role not in {"rd", "qa"} or level not in {"senior", "middle", "junior"}:
+                continue
+            try:
+                proposed = float(item.get("weight"))
+            except (TypeError, ValueError):
+                continue
+            current = scoring.get_weight(self.orchestrator.config, role, level)
+            bounded = scoring.clamp(scoring.clamp(proposed, current - max_delta, current + max_delta))
+            self.orchestrator.config.setdefault("worker_weights", {}).setdefault(role, {})[level] = round(bounded, 3)
+            changed = True
+            log_info(f"Manager weight review: {role}/{level} -> {bounded} ({item.get('reason', 'no reason given')})")
+
+        if changed:
+            self.orchestrator.config_path.write_text(
+                json.dumps(self.orchestrator.config, indent=2, ensure_ascii=False), encoding="utf-8"
+            )

@@ -130,6 +130,17 @@ DEFAULT_CONFIG = {
         "qa": {"senior": 1, "middle": 2, "junior": 3}
     },
     "qa_ollama_fallback_model": "qwen2.5-coder:7b",
+    # Internal staff trust weights (ollama-backed roles only). Vendors (claude/codex/agy/grok)
+    # are billed per token and use vendor_scores below instead of a headcount weight.
+    "worker_weights": {
+        "rd": {"senior": 1.0, "middle": 1.0, "junior": 1.0},
+        "qa": {"senior": 1.5, "middle": 1.0, "junior": 0.6},
+    },
+    "qa_vote_threshold": 0.6,
+    "weight_adjustment_max_delta": 0.3,
+    "vendor_scores": {},
+    "vendor_hire_min_jobs": 5,
+    "brain_db": "brain.db",
 }
 
 

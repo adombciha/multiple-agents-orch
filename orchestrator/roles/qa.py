@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import re
 from orchestrator.roles.base_agent import BaseAgent
+from orchestrator.core import scoring, brain
 
 class QAAgent(BaseAgent):
     def step_testing(self):
@@ -65,15 +66,37 @@ class QAAgent(BaseAgent):
             lines = [line.strip() for line in report.splitlines() if line.strip()]
             status = next((line for line in lines[:3] + lines[-3:] if re.fullmatch(r"QA_STATUS:\s*(PASSED|FAILED)", line, re.IGNORECASE)), "")
             return status.upper() == "QA_STATUS: PASSED"
-        is_passed = code == 0 and bool(qa_reports) and all(passed(report) for _, _, report in qa_reports)
+
+        qa_weights = self.orchestrator.config.get("worker_weights", {}).get("qa", {})
+        weighted_votes = sum(
+            float(qa_weights.get(level, 1.0)) * (1 if passed(report) else -1)
+            for _, level, report in qa_reports
+        )
+        total_weight = sum(float(qa_weights.get(level, 1.0)) for _, level, _ in qa_reports)
+        vote_ratio = weighted_votes / total_weight if total_weight else 0.0
+        vote_threshold = self.orchestrator.config.get("qa_vote_threshold", 0.6)
+        is_passed = code == 0 and bool(qa_reports) and vote_ratio >= vote_threshold
 
         if is_passed:
             log_success("QA verification PASSED!")
             self.orchestrator.state["state"] = "REVIEWING_CODE"
+            self.orchestrator.state.pop("qa_dissenting_levels", None)
             self.orchestrator.save_state()
         else:
             log_warning("QA verification FAILED!")
+            self.orchestrator.state["qa_dissenting_levels"] = sorted({
+                level for _, level, report in qa_reports if not passed(report)
+            })
+            brain.remember(
+                self.orchestrator, "lesson",
+                f"QA verification failed (exit code {code}). Test output:\n{output[:500]}",
+            )
             self.orchestrator.escalate_developer_backend()
+            for rd_level in {t.get("rd_level") for t in tasks if t.get("status") == "completed"} - {None}:
+                rd_role = f"developer_{rd_level}"
+                rd_backend = self.orchestrator.get_backend(rd_role)
+                rd_model = self.orchestrator.get_active_model_for_role(rd_role, rd_backend)
+                scoring.record_event(self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5)
             max_rev = self.orchestrator.config.get("max_revisions", 2)
             if self.orchestrator.state["code_revisions"] < max_rev:
                 self.orchestrator.state["code_revisions"] += 1

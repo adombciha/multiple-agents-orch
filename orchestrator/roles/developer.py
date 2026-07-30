@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
+from orchestrator.core import scoring, roster, brain
 
 TASK_PLAN_SCHEMA = {
     "type": "object",
@@ -95,10 +96,12 @@ class DeveloperAgent(BaseAgent):
             "model_tiers": self.orchestrator.config.get("model_tiers", {}),
             "role_models": self.orchestrator.config.get("role_models", {}),
         }
+        roster_data = roster.snapshot(self.orchestrator)
         workload = {
             "requirements_characters": len(planning_input),
             "plan_revisions": self.orchestrator.state.get("plan_revisions", 0),
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
+            "roster": roster_data,
         }
         request_text = self.orchestrator.request_path.read_text(encoding="utf-8") if self.orchestrator.request_path.exists() else planning_input
         requested_files = []
@@ -142,7 +145,7 @@ class DeveloperAgent(BaseAgent):
             if docs_only or whole_file_docs else
             ""
         )
-        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} {file_coverage_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
+        parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} {file_coverage_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk. The Workload below includes today's 'roster': only assign rd_level/qa_level values whose role has status 'available'; if the intended level is 'offline', pick the nearest available level instead. Prefer a level with a higher 'weight' (staff) or 'rating' (vendor) when otherwise equally suited to the task.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
         parsed_items_raw = self.call_manager(
             parse_prompt,
@@ -244,6 +247,8 @@ class DeveloperAgent(BaseAgent):
                     level_key = f"{role}_level"
                     if task.get(level_key) not in {"junior", "middle", "senior"}:
                         task[level_key] = legacy_level if legacy_level in {"junior", "middle", "senior"} else "senior"
+            roster.reassign_unavailable_levels(tasks, roster_data, "rd_level", "developer")
+            roster.reassign_unavailable_levels(tasks, roster_data, "qa_level", "qa")
             target_files = list(dict.fromkeys(path for task in tasks for path in task["target_files"]))
             plan = "# Implementation Plan\n\n## Target Files\n" + "".join(f"- `{path}`\n" for path in target_files)
             plan += "\n## Implementation Steps\n" + "".join(f"- {task['description']}\n" for task in tasks)
@@ -458,6 +463,11 @@ class DeveloperAgent(BaseAgent):
         from orchestrator.core.state import log_info
 
         self.orchestrator.escalate_developer_backend()
+        self.orchestrator.maybe_hire_vendor(task)
+        brain.remember(
+            self.orchestrator, "lesson",
+            f"Task {task['id']} ({task.get('description', '')[:200]}) failed and needed a retry: {error[:500]}",
+        )
         max_revisions = self.orchestrator.config.get("max_revisions", 2)
         revisions = int(task.get("revisions", 0))
         if revisions < max_revisions:
@@ -715,6 +725,11 @@ class DeveloperAgent(BaseAgent):
             if current_files:
                 prompt += "\nCurrent target file contents:\n" + "\n\n".join(current_files) + "\n"
 
+            if backend == "ollama":
+                memory_block = brain.inject_prompt(self.orchestrator, task["description"])
+                if memory_block:
+                    prompt += f"\n{memory_block}\n"
+
             if backend in ["ollama", "agy", "grok"]:
                 if use_section_blocks:
                     filepath = target_files[0]
@@ -824,6 +839,10 @@ class DeveloperAgent(BaseAgent):
 
             developer_logs.append(f"--- Task {task['id']} implementation output ---\n{dev_output}\n")
             task["status"] = "completed"
+            if int(task.get("revisions", 0)) == 0:
+                effective_level = effective_role.rsplit("_", 1)[-1]
+                effective_model = self.orchestrator.get_active_model_for_role(effective_role, backend)
+                scoring.record_event(self.orchestrator, "rd", effective_level, backend, effective_model, 1.0)
             self.orchestrator.state.pop("active_task_id", None)
             self.orchestrator.save_state()
 
