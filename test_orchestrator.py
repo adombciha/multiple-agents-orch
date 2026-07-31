@@ -2117,6 +2117,94 @@ def test_maybe_hire_vendor_noop_for_vendor_backed_role(initialized_orchestrator)
     assert "T-1" not in initialized_orchestrator.state.get("task_backend_overrides", {})
 
 
+# --- Auto-weighting: proactive vendor quota probe ---
+
+CLAUDE_USAGE_SAMPLE = """
+   Current session
+   █████                                              10% used
+   Resets 4:39am (Asia/Taipei)
+
+   Current week (all models)
+   ██████▌                                            13% used
+   Resets Aug 6, 1:59am (Asia/Taipei)
+"""
+
+GROK_USAGE_SAMPLE = """
+     Session usage is unavailable until the session starts.
+
+     Weekly limit: 2%
+     Next reset: August 1, 19:28
+"""
+
+AGY_CREDITS_DISABLED_SAMPLE = """
+Model AI Credits
+
+Remaining AI Credits: AI Credits not enabled (enable in /settings)
+"""
+
+AGY_CREDITS_EXHAUSTED_SAMPLE = """
+Model AI Credits
+
+Remaining AI Credits: 0
+"""
+
+
+def test_parse_vendor_quota_pct_reads_claude_weekly_usage():
+    assert backends.parse_vendor_quota_pct("claude", CLAUDE_USAGE_SAMPLE) == 13
+
+
+def test_parse_vendor_quota_pct_reads_grok_weekly_limit():
+    assert backends.parse_vendor_quota_pct("grok", GROK_USAGE_SAMPLE) == 2
+
+
+def test_parse_vendor_quota_pct_agy_credits_not_enabled_is_unknown():
+    assert backends.parse_vendor_quota_pct("agy", AGY_CREDITS_DISABLED_SAMPLE) is None
+
+
+def test_parse_vendor_quota_pct_agy_zero_credits_is_exhausted():
+    assert backends.parse_vendor_quota_pct("agy", AGY_CREDITS_EXHAUSTED_SAMPLE) == 100
+
+
+def test_parse_vendor_quota_pct_unrecognized_text_is_unknown():
+    assert backends.parse_vendor_quota_pct("codex", "no idea what this is") is None
+
+
+def test_check_vendor_quota_is_a_noop_when_disabled(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["vendor_quota_check_enabled"] = False
+    probe = Mock()
+    monkeypatch.setattr(backends, "_probe_vendor_quota_pane", probe)
+
+    assert backends.check_vendor_quota(initialized_orchestrator, "codex") is None
+    probe.assert_not_called()
+
+
+def test_check_vendor_quota_flags_exhausted_vendor(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.config["vendor_quota_check_enabled"] = True
+    monkeypatch.setattr(backends.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        backends, "_probe_vendor_quota_pane", Mock(return_value=GROK_USAGE_SAMPLE.replace("2%", "99%"))
+    )
+
+    assert backends.check_vendor_quota(initialized_orchestrator, "grok") is False
+
+
+def test_maybe_hire_vendor_skips_exhausted_vendor_and_hires_next(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.state["last_developer_role"] = "developer_junior"
+    initialized_orchestrator.state["active_task_id"] = "T-1"
+    task = {"id": "T-1", "revisions": initialized_orchestrator.config["max_revisions"] - 1}
+    monkeypatch.setattr(
+        scoring, "get_vendor_rating",
+        lambda config, backend, model: {"codex": 2.0, "agy": 1.0}.get(backend, 0.0),
+    )
+    monkeypatch.setattr(backends, "check_vendor_quota", lambda orch, backend: backend != "codex")
+
+    hired = initialized_orchestrator.maybe_hire_vendor(task)
+
+    assert hired == "agy"
+    assert initialized_orchestrator.state["quota_exhausted_backends"]["codex"] is True
+    assert initialized_orchestrator.state["task_backend_overrides"]["T-1"] == "agy"
+
+
 def test_task_backend_override_wins_for_developer_role(initialized_orchestrator):
     initialized_orchestrator.state["active_task_id"] = "T-1"
     initialized_orchestrator.state["task_backend_overrides"] = {"T-1": "agy"}

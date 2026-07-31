@@ -1,6 +1,10 @@
 from __future__ import annotations
 import base64
+import re
+import shutil
 import subprocess
+import time
+import uuid
 import requests
 from pathlib import Path
 
@@ -231,6 +235,154 @@ def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
     orchestrator.save_state()
     log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
 
+QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
+
+# Interactive-mode-only quota/usage commands, discovered per-CLI since none of
+# these expose a headless flag for it. `trust_prompt`/`dismiss` handle one-time
+# TUI modals (e.g. Grok's "trust this directory?" prompt on first launch).
+VENDOR_QUOTA_PROBES = {
+    "codex": {"command": "/status"},
+    "claude": {"command": "/usage"},
+    "grok": {"command": "/usage", "trust_prompt": r"Yes, proceed", "dismiss": (r"New worktree|Resume session", "Escape")},
+    "agy": {"command": "/credits"},
+}
+
+
+def _tmux_pane(session: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", session, "-p"],
+            check=True, timeout=5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        return result.stdout
+    except Exception:
+        return None
+
+
+def _tmux_wait_stable(session: str, timeout: float = 15.0, interval: float = 0.6) -> str | None:
+    """Poll the pane until its content stops changing for two consecutive polls
+    (the CLI finished rendering/loading), or `timeout` elapses. Generic across
+    vendors, so we don't need a hand-tuned fixed sleep per CLI."""
+    last, stable = None, 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pane = _tmux_pane(session)
+        if pane is None:
+            return None
+        if pane == last:
+            stable += 1
+            if stable >= 2:
+                return pane
+        else:
+            stable = 0
+        last = pane
+        time.sleep(interval)
+    return last
+
+
+def _probe_vendor_quota_pane(binary: str, command: str, trust_prompt: str | None = None,
+                              dismiss: tuple[str, str] | None = None) -> str | None:
+    """Launch `binary` in a scratch tmux session, drive it to the quota/usage
+    screen via `command`, and return the captured pane text (or None if the
+    session/tmux itself failed at any step). Best-effort only: a launch that
+    times out, a CLI that isn't installed, or missing tmux all fail safe."""
+    if shutil.which("tmux") is None:
+        return None
+    session = f"quota_check_{uuid.uuid4().hex[:8]}"
+    try:
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", binary],
+            check=True, timeout=10,
+        )
+        pane = _tmux_wait_stable(session)
+        if pane is None:
+            return None
+        if trust_prompt and re.search(trust_prompt, pane):
+            subprocess.run(["tmux", "send-keys", "-t", session, "y"], check=True, timeout=5)
+            pane = _tmux_wait_stable(session)
+            if pane is None:
+                return None
+        if dismiss and re.search(dismiss[0], pane):
+            subprocess.run(["tmux", "send-keys", "-t", session, dismiss[1]], check=True, timeout=5)
+            pane = _tmux_wait_stable(session)
+            if pane is None:
+                return None
+        subprocess.run(["tmux", "send-keys", "-t", session, command], check=True, timeout=5)
+        time.sleep(0.5)  # let the CLI register the slash-command before Enter, or it can land as a no-op
+        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True, timeout=5)
+        time.sleep(1.5)  # skip past the blank screen-clear frame some CLIs render before the usage screen
+        return _tmux_wait_stable(session, timeout=8.0)
+    except Exception:
+        return None
+    finally:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+        )
+
+
+def parse_vendor_quota_pct(backend: str, pane: str) -> int | None:
+    """Extract a 0-100 'how exhausted is this vendor' number from a captured
+    quota-screen pane. Returns None when the format isn't recognized (unknown,
+    not exhausted) rather than guessing."""
+    if backend == "grok":
+        m = re.search(r"Weekly limit:\s*(\d{1,3})%", pane)
+        return int(m.group(1)) if m else None
+    if backend in ("claude", "codex"):
+        m = re.search(r"Current week[^\n]*[\s\S]{0,80}?(\d{1,3})%\s*used", pane)
+        if m:
+            return int(m.group(1))
+        m = re.search(r"weekly[^\n]{0,40}?(\d{1,3})%", pane, re.IGNORECASE)
+        return int(m.group(1)) if m else None
+    if backend == "agy":
+        if re.search(r"not enabled", pane, re.IGNORECASE):
+            return None
+        if re.search(r"insufficient|no credits|exhausted", pane, re.IGNORECASE):
+            return 100
+        m = re.search(r"Remaining AI Credits:\s*([\d,]+)", pane)
+        if m:
+            return 100 if int(m.group(1).replace(",", "")) == 0 else 0
+        return None
+    return None
+
+
+def check_vendor_quota(orchestrator, backend: str) -> bool | None:
+    """Proactively probe `backend`'s CLI for remaining quota via its
+    interactive-only /usage-style command, run inside a scratch tmux session.
+
+    Returns False if the vendor looks exhausted (skip hiring it), True if it
+    looks fine, or None if unknown (probe failed, format not recognized, or
+    the check is disabled) -- unknown is treated as available, since the
+    reactive quota_exhausted() detection during the real call is the actual
+    safety net; this is only a best-effort head start."""
+    from orchestrator.core.state import log_info, log_warning
+    if not orchestrator.config.get("vendor_quota_check_enabled", False):
+        return None
+    probe = VENDOR_QUOTA_PROBES.get(backend)
+    if probe is None:
+        return None
+    binary = shutil.which(backend)
+    if binary is None:
+        return None
+
+    pane = _probe_vendor_quota_pane(
+        binary, probe["command"], trust_prompt=probe.get("trust_prompt"), dismiss=probe.get("dismiss"),
+    )
+    if pane is None:
+        log_info(f"Could not check {backend}'s live quota (probe failed); assuming available.")
+        return None
+    pct = parse_vendor_quota_pct(backend, pane)
+    if pct is None:
+        log_info(f"Could not parse {backend}'s quota screen; assuming available.")
+        return None
+
+    threshold = orchestrator.config.get("vendor_quota_check_threshold_pct", QUOTA_EXHAUSTED_THRESHOLD_PCT)
+    available = pct < threshold
+    if not available:
+        log_warning(f"[!] {backend} is at {pct}% of its usage limit; treating as exhausted for hiring.")
+    return available
+
+
 def _effective_developer_role(orchestrator, role: str) -> str:
     task_id = orchestrator.state.get("active_task_id")
     if task_id:
@@ -303,8 +455,12 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
         return None
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    hired_rating, hired_backend = candidates[0]
-    orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = hired_backend
-    orchestrator.save_state()
-    log_warning(f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight.")
-    return hired_backend
+    for hired_rating, hired_backend in candidates:
+        if check_vendor_quota(orchestrator, hired_backend) is False:
+            mark_backend_quota_exhausted(orchestrator, hired_backend)
+            continue
+        orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = hired_backend
+        orchestrator.save_state()
+        log_warning(f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight.")
+        return hired_backend
+    return None

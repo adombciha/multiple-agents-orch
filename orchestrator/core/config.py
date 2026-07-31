@@ -38,6 +38,8 @@ DEFAULT_CONFIG = {
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,   # Enforces isolated git worktrees for agent roles
     "backend_escalation_path": ["ollama", "agy", "codex"],
+    "vendor_quota_check_enabled": False,  # Probe vendor CLIs' interactive /usage screen (via tmux) before hiring; off by default (slow, needs tmux)
+    "vendor_quota_check_threshold_pct": 95,
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
         "agy": ["Gemini 3.5 Flash (Medium)", "Gemini 3.1 Pro (Low)"],
