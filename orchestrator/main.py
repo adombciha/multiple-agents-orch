@@ -68,6 +68,136 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
     return masked_prompt + appended
 
 
+def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
+    """Shared by `reset` and `reject`: wipe revision counters, staffing, and
+    the worktree so a run can start over from `target_state`. Does not touch
+    the saved request prompt -- callers decide separately whether to keep it
+    (`reject`, so the same ask gets re-planned) or clear it too (`reset`,
+    so a fresh `start` is required)."""
+    orchestrator.state["state"] = target_state
+    orchestrator.state["plan_revisions"] = 0
+    orchestrator.state["code_revisions"] = 0
+    orchestrator.state["model_tier_indices"] = {
+        "developer": 0,
+        "reviewer": 0,
+        "manager": 0,
+        "qa": 0,
+    }
+    orchestrator.state["specialists"] = []
+    orchestrator.state["staffing"] = {}
+    orchestrator.state["worker_assignments"] = {}
+    orchestrator.state["last_developer_role"] = "developer_senior"
+    orchestrator.state["last_qa_level"] = "senior"
+    orchestrator.state["developer_promotions"] = {}
+    orchestrator.state["task_developer_promotions"] = {}
+    orchestrator.state["task_backend_overrides"] = {}
+    orchestrator.state["quota_exhausted_backends"] = {}
+    orchestrator.state["failed_model_routes"] = []
+    orchestrator.state["task_failed_model_routes"] = {}
+    orchestrator.state["tasks"] = []
+    orchestrator.state["active_task_id"] = None
+    orchestrator.cleanup_worktree(merge=False)
+
+
+def apply_approve(orchestrator: AgentOrchestrator) -> None:
+    """Resume a WAITING_FOR_OWNER pause at its recorded pass_state (falling
+    back to resume_state), clearing any cached route failures for the task
+    that was active when it paused."""
+    resume_state = orchestrator.state.get(
+        "pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE")
+    )
+    active_task_id = orchestrator.state.get("active_task_id")
+    if active_task_id:
+        old_failures = orchestrator.state.setdefault(
+            "task_failed_model_routes", {}
+        ).pop(active_task_id, [])
+        if old_failures:
+            log_info(
+                f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry."
+            )
+    orchestrator.state["state"] = resume_state
+    orchestrator.state.pop("human_review_source", None)
+    orchestrator.state.pop("resume_state", None)
+    orchestrator.save_state()
+    log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
+
+
+def apply_review_decision(
+    orchestrator: AgentOrchestrator, decision: str, reset_revisions: bool = False
+) -> None:
+    """Apply a pass/revise/reject decision to a WAITING_FOR_OWNER pause.
+    `reset_revisions` (revise only, non-Architect/Manager source): clear
+    code_revisions first so the auto-revise loop gets a fresh budget instead
+    of immediately re-pausing if it was already at max_revisions."""
+    if decision == "pass":
+        next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
+    elif decision == "revise":
+        if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
+            next_state = "DEVELOPING_PLAN"
+            orchestrator.state["plan_revisions"] = 0
+        else:
+            next_state = "IMPLEMENTING"
+            if reset_revisions:
+                orchestrator.state["code_revisions"] = 0
+            n = orchestrator.state.get("code_revisions", 0) + 1
+            orchestrator.state["code_revisions"] = n
+            orchestrator.state.setdefault("tasks", []).append(
+                {
+                    "id": f"HUMAN-REVIEW-{n}",
+                    "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
+                    "target_files": list(
+                        dict.fromkeys(
+                            path
+                            for existing_task in orchestrator.state.get("tasks", [])
+                            for path in existing_task.get("target_files", [])
+                        )
+                    ),
+                    "status": "pending",
+                    **orchestrator.fix_task_levels(),
+                }
+            )
+    else:
+        next_state = "FAILED"
+    if decision == "pass" and orchestrator.state.get("human_review_source") == "QA":
+        for qa_level in orchestrator.state.get("qa_dissenting_levels", []):
+            qa_role = f"qa_{qa_level}"
+            qa_backend = orchestrator.get_backend(qa_role)
+            qa_model = orchestrator.get_active_model_for_role(qa_role, qa_backend)
+            scoring.record_event(
+                orchestrator, "qa", qa_level, qa_backend, qa_model, -0.5
+            )
+            log_info(
+                f"Recorded QA false-positive for qa_{qa_level} after owner override."
+            )
+    orchestrator.state["state"] = next_state
+    for key in (
+        "human_review_source",
+        "resume_state",
+        "pass_state",
+        "human_review_details",
+        "qa_dissenting_levels",
+    ):
+        orchestrator.state.pop(key, None)
+    orchestrator.save_state()
+    log_success(f"Human review '{decision}' recorded; workflow moved to {next_state}.")
+
+
+def pick_continue_decision(orchestrator: AgentOrchestrator) -> tuple[str, bool]:
+    """Decide what `continue` should do with a WAITING_FOR_OWNER pause: an AI
+    verdict that rejected something (Architect/Manager/Reviewer/QA) should be
+    sent back for another attempt (revise); a Developer (or unrecognized)
+    pause just means retries ran out on the current task, so resume it
+    (approve). For revise, auto-clear the revision counter if it's already
+    at the ceiling so the auto-loop gets a genuine attempt instead of
+    immediately re-pausing."""
+    source = orchestrator.state.get("human_review_source")
+    if source not in {"Architect", "Manager", "Reviewer", "QA"}:
+        return "approve", False
+    max_rev = orchestrator.config.get("max_revisions", 2)
+    at_ceiling = orchestrator.state.get("code_revisions", 0) >= max_rev
+    return "revise", at_ceiling
+
+
 def ollama_available(url: str) -> bool:
     try:
         with urlopen(f"{url.rstrip('/')}/api/tags", timeout=2):
@@ -131,6 +261,13 @@ def main():
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
     subparsers.add_parser(
+        "continue",
+        help="Auto-resume from wherever the project is: picks approve or revise "
+        "for a paused review (auto-clearing the revision counter if needed) and "
+        "keeps running. Use when you don't want to think about which command "
+        "applies to the current pause.",
+    )
+    subparsers.add_parser(
         "status", help="Get current orchestrator status and logs info"
     )
     approve_parser = subparsers.add_parser(
@@ -153,7 +290,22 @@ def main():
         "tasks -- unlike 'reset', nothing already implemented is discarded.",
     )
 
-    reset_parser = subparsers.add_parser("reset", help="Reset the orchestrator state")
+    reject_parser = subparsers.add_parser(
+        "reject",
+        help="Send the whole project back to PLANNING, keeping the original "
+        "request prompt so it gets re-planned from the same ask. Unlike "
+        "'reset', nothing has to be re-typed.",
+    )
+    reject_parser.add_argument(
+        "--run", action="store_true", help="Continue the workflow after rejecting"
+    )
+
+    reset_parser = subparsers.add_parser(
+        "reset",
+        help="Full restart: clears the saved request prompt too, so 'start' "
+        "must be run again before 'run'. Use 'reject' instead to keep the "
+        "same prompt and just re-plan.",
+    )
     reset_parser.add_argument(
         "--state",
         type=str,
@@ -351,23 +503,7 @@ def main():
                     f"Cannot approve from state: {orchestrator.state.get('state')}"
                 )
                 return
-            resume_state = orchestrator.state.get(
-                "pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE")
-            )
-            active_task_id = orchestrator.state.get("active_task_id")
-            if active_task_id:
-                old_failures = orchestrator.state.setdefault(
-                    "task_failed_model_routes", {}
-                ).pop(active_task_id, [])
-                if old_failures:
-                    log_info(
-                        f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry."
-                    )
-            orchestrator.state["state"] = resume_state
-            orchestrator.state.pop("human_review_source", None)
-            orchestrator.state.pop("resume_state", None)
-            orchestrator.save_state()
-            log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
+            apply_approve(orchestrator)
             if args.run:
                 orchestrator.run_to_end()
         except FileNotFoundError:
@@ -382,71 +518,46 @@ def main():
                     f"Cannot review from state: {orchestrator.state.get('state')}"
                 )
                 return
-            decision = args.decision
-            if decision == "pass":
-                next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
-            elif decision == "revise":
-                if orchestrator.state.get("human_review_source") in {
-                    "Architect",
-                    "Manager",
-                }:
-                    next_state = "DEVELOPING_PLAN"
-                    orchestrator.state["plan_revisions"] = 0
+            apply_review_decision(orchestrator, args.decision, args.reset_revisions)
+            if args.run and args.decision != "reject":
+                orchestrator.run_to_end()
+        except FileNotFoundError:
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
+    elif args.command == "continue":
+        try:
+            orchestrator.load_config_and_state()
+            state = orchestrator.state.get("state")
+            if state == "COMPLETED":
+                log_success("Project already completed; nothing to continue.")
+                return
+            if state == "FAILED":
+                log_error(
+                    "Project failed; nothing to continue. Use 'reject' (keep the "
+                    "prompt, re-plan) or 'reset' (start over) instead."
+                )
+                return
+            if state == "WAITING_FOR_OWNER":
+                decision, reset_revisions = pick_continue_decision(orchestrator)
+                if decision == "approve":
+                    apply_approve(orchestrator)
                 else:
-                    next_state = "IMPLEMENTING"
-                    if args.reset_revisions:
-                        orchestrator.state["code_revisions"] = 0
-                    n = orchestrator.state.get("code_revisions", 0) + 1
-                    orchestrator.state["code_revisions"] = n
-                    orchestrator.state.setdefault("tasks", []).append(
-                        {
-                            "id": f"HUMAN-REVIEW-{n}",
-                            "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
-                            "target_files": list(
-                                dict.fromkeys(
-                                    path
-                                    for existing_task in orchestrator.state.get(
-                                        "tasks", []
-                                    )
-                                    for path in existing_task.get("target_files", [])
-                                )
-                            ),
-                            "status": "pending",
-                            **orchestrator.fix_task_levels(),
-                        }
-                    )
-            else:
-                next_state = "FAILED"
-            if (
-                decision == "pass"
-                and orchestrator.state.get("human_review_source") == "QA"
-            ):
-                for qa_level in orchestrator.state.get("qa_dissenting_levels", []):
-                    qa_role = f"qa_{qa_level}"
-                    qa_backend = orchestrator.get_backend(qa_role)
-                    qa_model = orchestrator.get_active_model_for_role(
-                        qa_role, qa_backend
-                    )
-                    scoring.record_event(
-                        orchestrator, "qa", qa_level, qa_backend, qa_model, -0.5
-                    )
-                    log_info(
-                        f"Recorded QA false-positive for qa_{qa_level} after owner override."
-                    )
-            orchestrator.state["state"] = next_state
-            for key in (
-                "human_review_source",
-                "resume_state",
-                "pass_state",
-                "human_review_details",
-                "qa_dissenting_levels",
-            ):
-                orchestrator.state.pop(key, None)
+                    apply_review_decision(orchestrator, "revise", reset_revisions)
+            orchestrator.run_to_end()
+        except FileNotFoundError:
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
+    elif args.command == "reject":
+        try:
+            orchestrator.load_config_and_state()
+            clear_run_state(orchestrator, "PLANNING")
             orchestrator.save_state()
             log_success(
-                f"Human review '{decision}' recorded; workflow moved to {next_state}."
+                "Project sent back to PLANNING; the original request prompt was kept."
             )
-            if args.run and decision != "reject":
+            if args.run:
                 orchestrator.run_to_end()
         except FileNotFoundError:
             log_error(
@@ -455,31 +566,14 @@ def main():
     elif args.command == "reset":
         try:
             orchestrator.load_config_and_state()
-            orchestrator.state["state"] = args.state
-            orchestrator.state["plan_revisions"] = 0
-            orchestrator.state["code_revisions"] = 0
-            orchestrator.state["model_tier_indices"] = {
-                "developer": 0,
-                "reviewer": 0,
-                "manager": 0,
-                "qa": 0,
-            }
-            orchestrator.state["specialists"] = []
-            orchestrator.state["staffing"] = {}
-            orchestrator.state["worker_assignments"] = {}
-            orchestrator.state["last_developer_role"] = "developer_senior"
-            orchestrator.state["last_qa_level"] = "senior"
-            orchestrator.state["developer_promotions"] = {}
-            orchestrator.state["task_developer_promotions"] = {}
-            orchestrator.state["task_backend_overrides"] = {}
-            orchestrator.state["quota_exhausted_backends"] = {}
-            orchestrator.state["failed_model_routes"] = []
-            orchestrator.state["task_failed_model_routes"] = {}
-            orchestrator.state["tasks"] = []
-            orchestrator.state["active_task_id"] = None
-            orchestrator.cleanup_worktree(merge=False)
+            clear_run_state(orchestrator, args.state)
+            if orchestrator.request_path.exists():
+                orchestrator.request_path.unlink()
             orchestrator.save_state()
-            log_success(f"State reset to {args.state}")
+            log_success(
+                f"State reset to {args.state}; the request prompt was cleared -- "
+                "run 'start' again before 'run'."
+            )
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."

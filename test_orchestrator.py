@@ -729,6 +729,158 @@ def test_review_revise_without_reset_revisions_keeps_incrementing(
     assert state["code_revisions"] == 3
 
 
+def test_reset_clears_saved_request_prompt(tmp_path, no_git, monkeypatch):
+    write_ai_company(tmp_path)
+    (tmp_path / ".ai-company" / "request.md").write_text(
+        "Build the thing.", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "reset"])
+
+    orchestrator_main.main()
+
+    assert not (tmp_path / ".ai-company" / "request.md").exists()
+
+
+def test_reject_keeps_request_prompt_and_resets_to_planning(
+    tmp_path, no_git, monkeypatch
+):
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "IMPLEMENTING",
+            "code_revisions": 2,
+            "tasks": [{"id": "T-1", "status": "completed"}],
+        },
+    )
+    (tmp_path / ".ai-company" / "request.md").write_text(
+        "Build the thing.", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "reject"])
+
+    orchestrator_main.main()
+
+    assert (tmp_path / ".ai-company" / "request.md").read_text(
+        encoding="utf-8"
+    ) == "Build the thing."
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["state"] == "PLANNING"
+    assert state["code_revisions"] == 0
+    assert state["tasks"] == []
+
+
+def test_continue_approves_when_paused_by_developer(tmp_path, no_git, monkeypatch):
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "WAITING_FOR_OWNER",
+            "human_review_source": "Developer",
+            "pass_state": "IMPLEMENTING",
+            "resume_state": "IMPLEMENTING",
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    run_to_end = Mock()
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
+
+    orchestrator_main.main()
+
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["state"] == "IMPLEMENTING"
+    assert "human_review_source" not in state
+    run_to_end.assert_called_once()
+
+
+def test_continue_revises_and_resets_ceiling_when_paused_by_reviewer(
+    tmp_path, no_git, monkeypatch
+):
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "WAITING_FOR_OWNER",
+            "human_review_source": "Reviewer",
+            "human_review_details": "Fix the bugs.",
+            "code_revisions": 2,
+            "pass_state": "COMPLETED",
+            "resume_state": "IMPLEMENTING",
+            "tasks": [{"id": "T-1", "target_files": ["app.py"], "status": "completed"}],
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    run_to_end = Mock()
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
+
+    orchestrator_main.main()
+
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["state"] == "IMPLEMENTING"
+    assert state["code_revisions"] == 1
+    run_to_end.assert_called_once()
+
+
+def test_continue_revises_without_reset_when_budget_remains(
+    tmp_path, no_git, monkeypatch
+):
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "WAITING_FOR_OWNER",
+            "human_review_source": "QA",
+            "human_review_details": "Fix the bugs.",
+            "code_revisions": 0,
+            "pass_state": "COMPLETED",
+            "resume_state": "IMPLEMENTING",
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", Mock())
+
+    orchestrator_main.main()
+
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["code_revisions"] == 1
+
+
+def test_continue_runs_directly_when_not_paused(tmp_path, no_git, monkeypatch):
+    write_ai_company(tmp_path, state_overrides={"state": "IMPLEMENTING"})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    run_to_end = Mock()
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
+
+    orchestrator_main.main()
+
+    run_to_end.assert_called_once()
+
+
+def test_continue_noop_when_already_completed(tmp_path, no_git, monkeypatch):
+    write_ai_company(tmp_path, state_overrides={"state": "COMPLETED"})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    run_to_end = Mock()
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
+
+    orchestrator_main.main()
+
+    run_to_end.assert_not_called()
+
+
+def test_continue_reports_and_does_not_run_when_failed(tmp_path, no_git, monkeypatch):
+    write_ai_company(tmp_path, state_overrides={"state": "FAILED"})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
+    run_to_end = Mock()
+    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
+
+    orchestrator_main.main()
+
+    run_to_end.assert_not_called()
+
+
 def test_inline_referenced_markdown_appends_existing_file_content(tmp_path):
     workspace = tmp_path
     (workspace / "docs").mkdir()
