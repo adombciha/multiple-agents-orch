@@ -14,32 +14,40 @@ from orchestrator.core.config import DEFAULT_CONFIG
 
 from orchestrator.roles.base_agent import PONYTAIL_PROMPT, inject_ponytail_prompt
 
+
 class ResponseContractError(RuntimeError):
     """The provider responded, but not in the format required by this call."""
 
+
 class Colors:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    GREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
+    HEADER = "\033[95m"
+    BLUE = "\033[94m"
+    GREEN = "\033[92m"
+    WARNING = "\033[93m"
+    FAIL = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+
 
 def log_info(msg: str):
     print(f"{Colors.BLUE}[*] {msg}{Colors.ENDC}")
 
+
 def log_success(msg: str):
     print(f"{Colors.GREEN}[+] {msg}{Colors.ENDC}")
+
 
 def log_warning(msg: str):
     print(f"{Colors.WARNING}[!] {msg}{Colors.ENDC}")
 
+
 def log_error(msg: str):
     print(f"{Colors.FAIL}[-] {msg}{Colors.ENDC}")
 
+
 def log_header(msg: str):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {msg} ==={Colors.ENDC}")
+
 
 class AgentOrchestrator:
     def __init__(self, workspace: Path):
@@ -47,15 +55,25 @@ class AgentOrchestrator:
 
         # Check if we are in a git repository
         try:
-            result = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=self.workspace, capture_output=True, text=True)
-            self.has_git = (result.returncode == 0 and result.stdout.strip() == "true")
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+            )
+            self.has_git = result.returncode == 0 and result.stdout.strip() == "true"
         except Exception:
             self.has_git = False
 
         self.base_branch = "master"
         if self.has_git:
             try:
-                result = subprocess.run(["git", "branch", "--show-current"], cwd=self.workspace, capture_output=True, text=True)
+                result = subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    cwd=self.workspace,
+                    capture_output=True,
+                    text=True,
+                )
                 if result.returncode == 0 and result.stdout.strip():
                     self.base_branch = result.stdout.strip()
                 else:
@@ -63,7 +81,9 @@ class AgentOrchestrator:
             except Exception:
                 self.base_branch = "HEAD"
         if self.has_git:
-            run_name = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{workspace.name}-{self.base_branch}").strip("-")
+            run_name = re.sub(
+                r"[^A-Za-z0-9._-]+", "-", f"{workspace.name}-{self.base_branch}"
+            ).strip("-")
             self.ai_dir = workspace / f".ai-company-{run_name}"
         else:
             self.ai_dir = workspace / ".ai-company"
@@ -97,7 +117,7 @@ class AgentOrchestrator:
                 "developer": 0,
                 "reviewer": 0,
                 "manager": 0,
-                "qa": 0
+                "qa": 0,
             },
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
@@ -106,7 +126,10 @@ class AgentOrchestrator:
             "task_backend_overrides": {},
             "tasks": [],
             "specialists": [],
-            "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}}
+            "staffing": {
+                "rd": {"senior": 1, "middle": 0, "junior": 0},
+                "qa": {"senior": 1, "middle": 0, "junior": 0},
+            },
         }
 
         # Roles
@@ -164,10 +187,16 @@ class AgentOrchestrator:
         # Suggest Windows Host IP for Ollama setup
         host_ip = self.get_windows_host_ip()
         log_info(f"Suggested Windows Host IP: {host_ip}")
-        log_info(f"If Ollama is running on Windows, set 'ollama_url' in config.json to 'http://{host_ip}:11434'")
+        log_info(
+            f"If Ollama is running on Windows, set 'ollama_url' in config.json to 'http://{host_ip}:11434'"
+        )
 
     def clear_run_artifacts(self):
-        config_text = self.config_path.read_text(encoding="utf-8") if self.config_path.exists() else None
+        config_text = (
+            self.config_path.read_text(encoding="utf-8")
+            if self.config_path.exists()
+            else None
+        )
         self.cleanup_worktree(merge=False)
         shutil.rmtree(self.ai_dir, ignore_errors=True)
         if self.has_git:
@@ -176,31 +205,88 @@ class AgentOrchestrator:
         if config_text is not None:
             self.config_path.write_text(config_text, encoding="utf-8")
         self.state = {
-            "state": "PLANNING", "plan_revisions": 0, "code_revisions": 0,
-            "model_tier_indices": {"developer": 0, "reviewer": 0, "manager": 0, "qa": 0},
-            "quota_exhausted_backends": {}, "tasks": [], "specialists": [],
-            "failed_model_routes": [], "task_failed_model_routes": {}, "task_developer_promotions": {},
+            "state": "PLANNING",
+            "plan_revisions": 0,
+            "code_revisions": 0,
+            "model_tier_indices": {
+                "developer": 0,
+                "reviewer": 0,
+                "manager": 0,
+                "qa": 0,
+            },
+            "quota_exhausted_backends": {},
+            "tasks": [],
+            "specialists": [],
+            "failed_model_routes": [],
+            "task_failed_model_routes": {},
+            "task_developer_promotions": {},
             "task_backend_overrides": {},
-            "staffing": {"rd": {"senior": 1, "middle": 0, "junior": 0}, "qa": {"senior": 1, "middle": 0, "junior": 0}},
+            "staffing": {
+                "rd": {"senior": 1, "middle": 0, "junior": 0},
+                "qa": {"senior": 1, "middle": 0, "junior": 0},
+            },
         }
 
     def write_agent_context(self):
-        request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
+        request = (
+            self.request_path.read_text(encoding="utf-8")
+            if self.request_path.exists()
+            else ""
+        )
         stage = self.state.get("state", "PLANNING")
-        contract = {"stage": stage, "allowed_actions": ["modify_files"], "output_contract": {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False}} if stage == "IMPLEMENTING" else {"stage": stage, "allowed_actions": ["plan_or_review"], "output_contract": {"format": "stage_prompt", "allow_file_blocks": False}}
-        task_keys = ("id", "description", "complexity", "rd_level", "qa_level", "status", "target_files", "output_contract")
+        contract = (
+            {
+                "stage": stage,
+                "allowed_actions": ["modify_files"],
+                "output_contract": {
+                    "format": "file_blocks",
+                    "response_must_start_with": "[FILE_START:",
+                    "allow_prose": False,
+                },
+            }
+            if stage == "IMPLEMENTING"
+            else {
+                "stage": stage,
+                "allowed_actions": ["plan_or_review"],
+                "output_contract": {
+                    "format": "stage_prompt",
+                    "allow_file_blocks": False,
+                },
+            }
+        )
+        task_keys = (
+            "id",
+            "description",
+            "complexity",
+            "rd_level",
+            "qa_level",
+            "status",
+            "target_files",
+            "output_contract",
+        )
         context = {
             "request": request,
             "contract": contract,
-            "tasks": [{key: task.get(key) for key in task_keys if key in task} for task in self.state.get("tasks", [])],
+            "tasks": [
+                {key: task.get(key) for key in task_keys if key in task}
+                for task in self.state.get("tasks", [])
+            ],
             "specialists": self.state.get("specialists", []),
         }
-        self.agent_context_path.write_text(json.dumps(context, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        self.agent_context_path.write_text(
+            json.dumps(context, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
 
     def read_agent_context(self) -> dict:
         if self.agent_context_path.exists():
             return json.loads(self.agent_context_path.read_text(encoding="utf-8"))
-        return {"request": self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else "", "tasks": self.state.get("tasks", [])}
+        return {
+            "request": self.request_path.read_text(encoding="utf-8")
+            if self.request_path.exists()
+            else "",
+            "tasks": self.state.get("tasks", []),
+        }
 
     def load_config_and_state(self):
         """Loads configuration and state files from disk."""
@@ -212,6 +298,7 @@ class AgentOrchestrator:
         self.explicit_backends = set(loaded_config.get("backends", {}))
 
         from orchestrator.core.config import merge_defaults
+
         self.config = merge_defaults(DEFAULT_CONFIG, loaded_config)
 
         with open(self.state_path, "r", encoding="utf-8") as f:
@@ -229,6 +316,7 @@ class AgentOrchestrator:
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
         from orchestrator.core.config import merge_defaults
+
         return merge_defaults(defaults, values)
 
     def save_state(self):
@@ -236,21 +324,38 @@ class AgentOrchestrator:
         with open(self.state_path, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=2)
 
-    def pause_for_human_review(self, source: str, details: str, resume_state: str, pass_state: str):
+    def pause_for_human_review(
+        self, source: str, details: str, resume_state: str, pass_state: str
+    ):
         from orchestrator.core.telemetry import summary_markdown
-        requirements = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
+
+        requirements = (
+            self.request_path.read_text(encoding="utf-8")
+            if self.request_path.exists()
+            else ""
+        )
         chinese = any("\u4e00" <= char <= "\u9fff" for char in requirements)
         title = "人工審核報告" if chinese else "Human Review Report"
-        conclusion = f"{source} 驗證未通過，需要人工確認。" if chinese else f"{source} verification requires human review."
+        conclusion = (
+            f"{source} 驗證未通過，需要人工確認。"
+            if chinese
+            else f"{source} verification requires human review."
+        )
         next_step = "確認後執行" if chinese else "After review, run"
         usage = summary_markdown(self)
         report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}:\n\n```bash\npython3 orchestrator.py approve --run\n```\n"
         if usage:
             report += f"\n\n{usage}\n"
         self.human_report_path.write_text(report, encoding="utf-8")
-        self.state.update({"state": "WAITING_FOR_OWNER", "human_review_source": source,
-                           "resume_state": resume_state, "pass_state": pass_state,
-                           "human_review_details": details})
+        self.state.update(
+            {
+                "state": "WAITING_FOR_OWNER",
+                "human_review_source": source,
+                "resume_state": resume_state,
+                "pass_state": pass_state,
+                "human_review_details": details,
+            }
+        )
         self.save_state()
 
     def get_windows_host_ip(self) -> str:
@@ -261,7 +366,7 @@ class AgentOrchestrator:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                check=True
+                check=True,
             )
             for line in result.stdout.splitlines():
                 if "default via" in line:
@@ -279,7 +384,13 @@ class AgentOrchestrator:
             return worktree
         return self.workspace
 
-    def run_command(self, cmd: list[str], timeout: int = 1800, capture: bool = True, cwd: Path | None = None) -> tuple[int, str]:
+    def run_command(
+        self,
+        cmd: list[str],
+        timeout: int = 1800,
+        capture: bool = True,
+        cwd: Path | None = None,
+    ) -> tuple[int, str]:
         """Runs a subprocess command safety and returns (returncode, output)."""
         exec_cwd = cwd or self.agent_workspace()
 
@@ -291,7 +402,7 @@ class AgentOrchestrator:
                 stderr=subprocess.PIPE if capture else None,
                 text=True,
                 timeout=timeout,
-                check=False
+                check=False,
             )
             output = ""
             if capture:
@@ -305,70 +416,147 @@ class AgentOrchestrator:
     # LLM Wrapper Delegation
     def get_backend(self, role: str) -> str:
         from orchestrator.core import backends
+
         return backends.get_backend(self, role)
 
     def get_active_model_for_role(self, role: str, backend: str) -> str | None:
         from orchestrator.core import backends
+
         return backends.get_active_model_for_role(self, role, backend)
 
-    def call_ollama(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, image_paths: list[str] | None = None) -> str:
+    def call_ollama(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        role: str = "developer",
+        model: str | None = None,
+        image_paths: list[str] | None = None,
+    ) -> str:
         from orchestrator.core import backends
+
         selected_model = model or self.get_active_model_for_role(role, "ollama")
         return self._call_with_usage(
-            role, "ollama", selected_model, prompt, system_prompt,
-            lambda: backends.call_ollama(self, prompt, system_prompt, role, model, image_paths),
+            role,
+            "ollama",
+            selected_model,
+            prompt,
+            system_prompt,
+            lambda: backends.call_ollama(
+                self, prompt, system_prompt, role, model, image_paths
+            ),
             image_paths=image_paths,
         )
 
-    def call_codex(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+    def call_codex(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        role: str = "developer",
+        model: str | None = None,
+    ) -> str:
         from orchestrator.core import backends
+
         selected_model = model or self.get_active_model_for_role(role, "codex")
         return self._call_with_usage(
-            role, "codex", selected_model, prompt, system_prompt,
+            role,
+            "codex",
+            selected_model,
+            prompt,
+            system_prompt,
             lambda: backends.call_codex(self, prompt, system_prompt, role, model),
         )
 
-    def call_claude(self, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+    def call_claude(
+        self, prompt: str, system_prompt: str | None = None, role: str = "developer"
+    ) -> str:
         from orchestrator.core import backends
+
         selected_model = self.get_active_model_for_role(role, "claude")
         return self._call_with_usage(
-            role, "claude", selected_model, prompt, system_prompt,
+            role,
+            "claude",
+            selected_model,
+            prompt,
+            system_prompt,
             lambda: backends.call_claude(self, prompt, system_prompt, role),
         )
 
-    def call_agy(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+    def call_agy(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        role: str = "developer",
+        model: str | None = None,
+    ) -> str:
         from orchestrator.core import backends
+
         selected_model = model or self.get_active_model_for_role(role, "agy")
         return self._call_with_usage(
-            role, "agy", selected_model, prompt, system_prompt,
+            role,
+            "agy",
+            selected_model,
+            prompt,
+            system_prompt,
             lambda: backends.call_agy(self, prompt, system_prompt, role, model),
         )
 
-    def call_grok(self, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
+    def call_grok(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        role: str = "developer",
+        model: str | None = None,
+        response_schema: dict | None = None,
+    ) -> str:
         from orchestrator.core import backends
+
         selected_model = model or self.get_active_model_for_role(role, "grok")
         return self._call_with_usage(
-            role, "grok", selected_model, prompt, system_prompt,
-            lambda: backends.call_grok(self, prompt, system_prompt, role, model, response_schema),
+            role,
+            "grok",
+            selected_model,
+            prompt,
+            system_prompt,
+            lambda: backends.call_grok(
+                self, prompt, system_prompt, role, model, response_schema
+            ),
         )
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
         from orchestrator.core import backends
+
         return backends.token_fallback_model(self, role, error)
 
     def escalate_developer_backend(self):
         from orchestrator.core import backends
+
         return backends.escalate_developer_backend(self)
 
     def maybe_hire_vendor(self, task: dict) -> str | None:
         from orchestrator.core import backends
+
         return backends.maybe_hire_vendor(self, task)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None, response_schema: dict | None = None) -> str:
-        return self.call_agent("manager", prompt, system_prompt, response_validator=response_validator, response_schema=response_schema)
+    def call_manager(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        response_validator=None,
+        response_schema: dict | None = None,
+    ) -> str:
+        return self.call_agent(
+            "manager",
+            prompt,
+            system_prompt,
+            response_validator=response_validator,
+            response_schema=response_schema,
+        )
 
-    def call_agy_quota_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+    def call_agy_quota_fallback(
+        self, role: str, prompt: str, system_prompt: str | None = None
+    ) -> str:
         from orchestrator.core import backends
+
         if not backends.backend_available(self, "agy"):
             log_warning("AGY quota exhausted; falling back to Ollama backend.")
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
@@ -379,7 +567,14 @@ class AgentOrchestrator:
                 backends.mark_backend_quota_exhausted(self, "agy")
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None, model: str | None = None, image_paths: list[str] | None = None) -> str:
+    def call_agent_ollama_fallback(
+        self,
+        role: str,
+        prompt: str,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        image_paths: list[str] | None = None,
+    ) -> str:
         if role.startswith("developer") and "[FILE_START:" not in prompt:
             prompt += (
                 "\n\nCRITICAL: You do not have access to terminal tools. "
@@ -391,18 +586,33 @@ class AgentOrchestrator:
             )
         try:
             if model is None:
-                return self.call_ollama(prompt, system_prompt, role=role, **({"image_paths": image_paths} if image_paths else {}))
-            return self.call_ollama(prompt, system_prompt, role=role, model=model, **({"image_paths": image_paths} if image_paths else {}))
+                return self.call_ollama(
+                    prompt,
+                    system_prompt,
+                    role=role,
+                    **({"image_paths": image_paths} if image_paths else {}),
+                )
+            return self.call_ollama(
+                prompt,
+                system_prompt,
+                role=role,
+                model=model,
+                **({"image_paths": image_paths} if image_paths else {}),
+            )
         except Exception:
             if role.startswith("qa") and model is None:
                 return self.call_ollama(
-                    prompt, system_prompt, role=role,
+                    prompt,
+                    system_prompt,
+                    role=role,
                     model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:7b"),
                     **({"image_paths": image_paths} if image_paths else {}),
                 )
             raise
 
-    def _call_with_usage(self, role, backend, model, prompt, system_prompt, callback, image_paths=None):
+    def _call_with_usage(
+        self, role, backend, model, prompt, system_prompt, callback, image_paths=None
+    ):
         from orchestrator.core.telemetry import record_call
 
         started = time.monotonic()
@@ -410,29 +620,55 @@ class AgentOrchestrator:
             response = callback()
         except Exception as error:
             record_call(
-                self, role=role, backend=backend, model=model, prompt=prompt,
-                system_prompt=system_prompt, output=None,
+                self,
+                role=role,
+                backend=backend,
+                model=model,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                output=None,
                 elapsed_seconds=time.monotonic() - started,
-                image_count=len(image_paths or []), error=error,
+                image_count=len(image_paths or []),
+                error=error,
             )
             raise
         record_call(
-            self, role=role, backend=backend, model=model, prompt=prompt,
-            system_prompt=system_prompt, output=response,
+            self,
+            role=role,
+            backend=backend,
+            model=model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            output=response,
             elapsed_seconds=time.monotonic() - started,
             image_count=len(image_paths or []),
         )
         return response
 
-    def call_role_model_routes(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str | None:
+    def call_role_model_routes(
+        self,
+        role: str,
+        prompt: str,
+        system_prompt: str | None = None,
+        image_paths: list[str] | None = None,
+        response_validator=None,
+        response_schema: dict | None = None,
+    ) -> str | None:
         from orchestrator.core import backends
+
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
             return None
         errors = []
-        task_id = self.state.get("active_task_id") if self.state.get("state") == "IMPLEMENTING" else None
+        task_id = (
+            self.state.get("active_task_id")
+            if self.state.get("state") == "IMPLEMENTING"
+            else None
+        )
         if task_id:
-            failed_routes = self.state.setdefault("task_failed_model_routes", {}).setdefault(task_id, [])
+            failed_routes = self.state.setdefault(
+                "task_failed_model_routes", {}
+            ).setdefault(task_id, [])
         else:
             failed_routes = self.state.setdefault("failed_model_routes", [])
         for backend, model in routes:
@@ -443,96 +679,214 @@ class AgentOrchestrator:
             if not backends.backend_available(self, backend):
                 continue
             try:
-                log_info(f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})...")
+                log_info(
+                    f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})..."
+                )
                 if backend == "ollama":
                     response = self.call_agent_ollama_fallback(
-                        role, prompt, system_prompt, model=model,
+                        role,
+                        prompt,
+                        system_prompt,
+                        model=model,
                         **({"image_paths": image_paths} if image_paths else {}),
                     )
-                    implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith("developer")
-                    has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
-                    contract_ok = response_validator is None or response_validator(response)
+                    implementing = self.state.get(
+                        "state"
+                    ) == "IMPLEMENTING" and role.startswith("developer")
+                    has_blocks = any(
+                        marker in response
+                        for marker in (
+                            "[FILE_START:",
+                            "[FILE_EDIT_START:",
+                            "[SECTION_EDIT_START:",
+                        )
+                    )
+                    contract_ok = response_validator is None or response_validator(
+                        response
+                    )
                     if implementing and (not has_blocks or not contract_ok):
-                        log_warning(f"ollama/{model} returned an invalid Developer contract; retrying the same local model once.")
-                        retry_prompt = prompt + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
+                        log_warning(
+                            f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
+                        )
+                        retry_prompt = (
+                            prompt
+                            + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
+                        )
                         response = self.call_agent_ollama_fallback(
-                            role, retry_prompt, system_prompt, model=model,
+                            role,
+                            retry_prompt,
+                            system_prompt,
+                            model=model,
                             **({"image_paths": image_paths} if image_paths else {}),
                         )
-                        has_blocks = any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:"))
-                        contract_ok = response_validator is None or response_validator(response)
+                        has_blocks = any(
+                            marker in response
+                            for marker in (
+                                "[FILE_START:",
+                                "[FILE_EDIT_START:",
+                                "[SECTION_EDIT_START:",
+                            )
+                        )
+                        contract_ok = response_validator is None or response_validator(
+                            response
+                        )
                     if implementing and not has_blocks and response_validator is None:
-                        raise ResponseContractError("Developer response omitted required file blocks")
+                        raise ResponseContractError(
+                            "Developer response omitted required file blocks"
+                        )
                     self.validate_routed_response(role, response, response_schema)
                     if not contract_ok:
-                        raise ResponseContractError("Agent response failed the task output contract")
+                        raise ResponseContractError(
+                            "Agent response failed the task output contract"
+                        )
                     return response
                 if backend == "codex":
-                    response = self.call_codex(prompt, system_prompt, role=role, model=model)
+                    response = self.call_codex(
+                        prompt, system_prompt, role=role, model=model
+                    )
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(response):
-                        raise ResponseContractError("Agent response failed the task output contract")
+                    if response_validator is not None and not response_validator(
+                        response
+                    ):
+                        raise ResponseContractError(
+                            "Agent response failed the task output contract"
+                        )
                     return response
                 if backend == "agy":
-                    response = self.call_agy(prompt, system_prompt, role=role, model=model)
+                    response = self.call_agy(
+                        prompt, system_prompt, role=role, model=model
+                    )
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(response):
-                        raise ResponseContractError("Agent response failed the task output contract")
+                    if response_validator is not None and not response_validator(
+                        response
+                    ):
+                        raise ResponseContractError(
+                            "Agent response failed the task output contract"
+                        )
                     return response
                 if backend == "grok":
                     grok_kwargs = {"role": role, "model": model}
                     if response_schema is not None:
                         grok_kwargs["response_schema"] = response_schema
                     response = self.call_grok(prompt, system_prompt, **grok_kwargs)
-                    if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer") and not any(marker in response for marker in ("[FILE_START:", "[FILE_EDIT_START:", "[SECTION_EDIT_START:")):
-                        raise ResponseContractError("Developer response omitted required file blocks")
+                    if (
+                        self.state.get("state") == "IMPLEMENTING"
+                        and role.startswith("developer")
+                        and not any(
+                            marker in response
+                            for marker in (
+                                "[FILE_START:",
+                                "[FILE_EDIT_START:",
+                                "[SECTION_EDIT_START:",
+                            )
+                        )
+                    ):
+                        raise ResponseContractError(
+                            "Developer response omitted required file blocks"
+                        )
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(response):
-                        raise ResponseContractError("Agent response failed the task output contract")
+                    if response_validator is not None and not response_validator(
+                        response
+                    ):
+                        raise ResponseContractError(
+                            "Agent response failed the task output contract"
+                        )
                     return response
                 if backend == "claude":
                     response = self.call_claude(prompt, system_prompt, role=role)
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(response):
-                        raise ResponseContractError("Agent response failed the task output contract")
+                    if response_validator is not None and not response_validator(
+                        response
+                    ):
+                        raise ResponseContractError(
+                            "Agent response failed the task output contract"
+                        )
                     return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
-                if isinstance(error, ResponseContractError) and response_schema is not None:
-                    log_warning(f"{backend}/{model} violated the strict JSON contract; stopping without a token-consuming fallback.")
-                    raise RuntimeError(f"Strict JSON contract failed for {role}: {error}") from error
-                if not isinstance(error, ResponseContractError) and route not in failed_routes:
+                if (
+                    isinstance(error, ResponseContractError)
+                    and response_schema is not None
+                ):
+                    log_warning(
+                        f"{backend}/{model} violated the strict JSON contract; stopping without a token-consuming fallback."
+                    )
+                    raise RuntimeError(
+                        f"Strict JSON contract failed for {role}: {error}"
+                    ) from error
+                if (
+                    not isinstance(error, ResponseContractError)
+                    and route not in failed_routes
+                ):
                     failed_routes.append(route)
                     self.save_state()
                 if backends.quota_exhausted(error):
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
-        raise RuntimeError(f"All configured routes failed for {role}: {'; '.join(errors)}")
+        raise RuntimeError(
+            f"All configured routes failed for {role}: {'; '.join(errors)}"
+        )
 
-    def validate_routed_response(self, role: str, response: str, response_schema: dict | None = None):
+    def validate_routed_response(
+        self, role: str, response: str, response_schema: dict | None = None
+    ):
         if response_schema is not None:
             return
         if role not in {"architect", "reviewer"}:
             return
         if self.state.get("state") not in {"REVIEWING_PLAN", "REVIEWING_CODE"}:
             return
-        first_line = next((line.strip().upper().strip("[]*") for line in response.splitlines() if line.strip()), "")
+        first_line = next(
+            (
+                line.strip().upper().strip("[]*")
+                for line in response.splitlines()
+                if line.strip()
+            ),
+            "",
+        )
         if role == "architect":
-            valid = first_line in {"PLAN_STATUS: APPROVED", "PLAN_STATUS: REJECTED", "APPROVED", "REJECTED"}
+            valid = first_line in {
+                "PLAN_STATUS: APPROVED",
+                "PLAN_STATUS: REJECTED",
+                "APPROVED",
+                "REJECTED",
+            }
         else:
-            valid = first_line.startswith("APPROVED") or first_line.startswith("REJECTED")
+            valid = first_line.startswith("APPROVED") or first_line.startswith(
+                "REJECTED"
+            )
         if not valid:
-            raise ResponseContractError(f"{role} response omitted required status field")
+            raise ResponseContractError(
+                f"{role} response omitted required status field"
+            )
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str:
+    def call_agent(
+        self,
+        role: str,
+        prompt: str,
+        system_prompt: str | None = None,
+        image_paths: list[str] | None = None,
+        response_validator=None,
+        response_schema: dict | None = None,
+    ) -> str:
         from orchestrator.core import backends
+
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
-        system_prompt = inject_ponytail_prompt(system_prompt, self.config.get("use_ponytail", False), role)
+        system_prompt = inject_ponytail_prompt(
+            system_prompt, self.config.get("use_ponytail", False), role
+        )
 
-        routed = self.call_role_model_routes(role, prompt, system_prompt, image_paths, response_validator, response_schema)
+        routed = self.call_role_model_routes(
+            role,
+            prompt,
+            system_prompt,
+            image_paths,
+            response_validator,
+            response_schema,
+        )
         if routed is not None:
             return routed
 
@@ -570,7 +924,9 @@ class AgentOrchestrator:
                 fallback_model = self.token_fallback_model(role, e)
                 if fallback_model:
                     try:
-                        return self.call_codex(prompt, system_prompt, role=role, model=fallback_model)
+                        return self.call_codex(
+                            prompt, system_prompt, role=role, model=fallback_model
+                        )
                     except Exception as retry_error:
                         e = retry_error
                 log_warning(f"Codex backend failed: {e}")
@@ -585,7 +941,9 @@ class AgentOrchestrator:
                 fallback_model = self.token_fallback_model(role, e)
                 if fallback_model:
                     try:
-                        return self.call_agy(prompt, system_prompt, role=role, model=fallback_model)
+                        return self.call_agy(
+                            prompt, system_prompt, role=role, model=fallback_model
+                        )
                     except Exception as retry_error:
                         e = retry_error
                 if backends.quota_exhausted(e):
@@ -605,10 +963,15 @@ class AgentOrchestrator:
         wt_path = self.ai_dir / "worktree"
         self.cleanup_worktree()
 
-        log_info(f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'...")
+        log_info(
+            f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'..."
+        )
         wt_path.parent.mkdir(exist_ok=True, parents=True)
 
-        code, output = self.run_command(["git", "worktree", "add", "-b", "ai-feature-branch", str(wt_path)], cwd=self.workspace)
+        code, output = self.run_command(
+            ["git", "worktree", "add", "-b", "ai-feature-branch", str(wt_path)],
+            cwd=self.workspace,
+        )
         if code != 0:
             log_error(f"Failed to create git worktree: {output}")
             raise RuntimeError("Git worktree setup failed.")
@@ -622,22 +985,40 @@ class AgentOrchestrator:
         wt_path = self.ai_dir / "worktree"
 
         if merge:
-            code, _ = self.run_command(["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"], cwd=self.workspace)
-            branch_exists = (code == 0)
+            code, _ = self.run_command(
+                [
+                    "git",
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/ai-feature-branch",
+                ],
+                cwd=self.workspace,
+            )
+            branch_exists = code == 0
             if branch_exists:
                 log_info(f"Merging 'ai-feature-branch' back into {self.base_branch}...")
                 self.run_command(["git", "add", "."], cwd=wt_path)
-                self.run_command(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path)
+                self.run_command(
+                    ["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path
+                )
 
-                code, output = self.run_command(["git", "merge", "ai-feature-branch"], cwd=self.workspace)
+                code, output = self.run_command(
+                    ["git", "merge", "ai-feature-branch"], cwd=self.workspace
+                )
                 if code != 0:
-                    log_error(f"Failed to merge feature branch due to conflict: {output}")
+                    log_error(
+                        f"Failed to merge feature branch due to conflict: {output}"
+                    )
                     _, conflict_output = self.run_command(
-                        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=self.workspace
+                        ["git", "diff", "--name-only", "--diff-filter=U"],
+                        cwd=self.workspace,
                     )
                     conflict_files = [
                         line.strip()
-                        for line in conflict_output.partition("stdout:\n")[2].partition("\nstderr:")[0].splitlines()
+                        for line in conflict_output.partition("stdout:\n")[2]
+                        .partition("\nstderr:")[0]
+                        .splitlines()
                         if line.strip()
                     ]
                     if not conflict_files:
@@ -646,8 +1027,12 @@ class AgentOrchestrator:
                     self.state["worktree_merge_error"] = output
                     self.run_command(["git", "merge", "--abort"], cwd=self.workspace)
                     self.save_state()
-                    log_warning("Merge was aborted; the preserved feature worktree will be repaired by RD.")
-                    log_warning("The 'ai-feature-branch' and your worktree are preserved.")
+                    log_warning(
+                        "Merge was aborted; the preserved feature worktree will be repaired by RD."
+                    )
+                    log_warning(
+                        "The 'ai-feature-branch' and your worktree are preserved."
+                    )
                     return False
                 else:
                     log_success(f"Successfully merged changes to {self.base_branch}!")
@@ -655,9 +1040,14 @@ class AgentOrchestrator:
         wt_list = self.run_command(["git", "worktree", "list"], capture=True)[1]
         if "worktree" in wt_list:
             log_info("Removing Git worktree...")
-            self.run_command(["git", "worktree", "remove", "--force", str(wt_path)], cwd=self.workspace)
+            self.run_command(
+                ["git", "worktree", "remove", "--force", str(wt_path)],
+                cwd=self.workspace,
+            )
 
-        self.run_command(["git", "branch", "-D", "ai-feature-branch"], cwd=self.workspace)
+        self.run_command(
+            ["git", "branch", "-D", "ai-feature-branch"], cwd=self.workspace
+        )
         return True
 
     def queue_worktree_repair_task(self):
@@ -692,17 +1082,25 @@ class AgentOrchestrator:
     def staffing(self, role: str) -> dict[str, int]:
         limits = self.config.get("staffing_limits", {}).get(role, {})
         selected = self.state.get("staffing", {}).get(role, {})
+
         def bounded(level: str) -> int:
             try:
-                return max(0, min(int(selected.get(level, 0)), int(limits.get(level, 0))))
+                return max(
+                    0, min(int(selected.get(level, 0)), int(limits.get(level, 0)))
+                )
             except (TypeError, ValueError):
                 return 0
+
         return {level: bounded(level) for level in ("senior", "middle", "junior")}
 
-    def allocate_workers(self, role: str, tasks: list[dict]) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    def allocate_workers(
+        self, role: str, tasks: list[dict]
+    ) -> tuple[list[tuple[str, str]], dict[str, str]]:
         levels = ("senior", "middle", "junior")
         level_key = f"{role}_level"
-        required = {task.get(level_key, task.get("assignee_level", "senior")) for task in tasks}
+        required = {
+            task.get(level_key, task.get("assignee_level", "senior")) for task in tasks
+        }
         for level in required:
             if level not in levels or not self.staffing(role)[level]:
                 raise ValueError(f"Manager staffing has no {role} {level} capacity")
@@ -712,7 +1110,10 @@ class AgentOrchestrator:
             for level in levels
             for number in range(1, self.staffing(role)[level] + 1)
         ]
-        by_level = {level: [worker for worker in workers if worker[1] == level] for level in levels}
+        by_level = {
+            level: [worker for worker in workers if worker[1] == level]
+            for level in levels
+        }
         next_worker = {level: 0 for level in levels}
         assignments = {}
         for task in tasks:
@@ -720,7 +1121,9 @@ class AgentOrchestrator:
             available = by_level.get(level)
             if not available:
                 raise ValueError(f"No {role} {level} worker capacity is available")
-            assignments[task["id"]] = available[next_worker.get(level, 0) % len(available)][0]
+            assignments[task["id"]] = available[
+                next_worker.get(level, 0) % len(available)
+            ][0]
             next_worker[level] = next_worker.get(level, 0) + 1
 
         self.state.setdefault("worker_assignments", {})[role] = assignments
@@ -737,34 +1140,89 @@ class AgentOrchestrator:
         else:
             level = base_role.rsplit("_", 1)[-1]
         qa_level = self.state.get("last_qa_level", level)
-        return {"rd_level": level, "qa_level": qa_level if qa_level in {"junior", "middle", "senior"} else level}
+        return {
+            "rd_level": level,
+            "qa_level": qa_level
+            if qa_level in {"junior", "middle", "senior"}
+            else level,
+        }
 
-    def consult_specialists(self, requirements: str, plan: str, context: str = "", roles: set[str] | None = None) -> str:
-        request = self.request_path.read_text(encoding="utf-8") if self.request_path.exists() else ""
+    def consult_specialists(
+        self,
+        requirements: str,
+        plan: str,
+        context: str = "",
+        roles: set[str] | None = None,
+    ) -> str:
+        request = (
+            self.request_path.read_text(encoding="utf-8")
+            if self.request_path.exists()
+            else ""
+        )
         scope = f"{request}\n{requirements}\n{plan}".lower()
-        if "readme" in scope and any(marker in scope for marker in ("only modify", "only allowed", "must not modify", "僅允許", "不得修改")):
+        if "readme" in scope and any(
+            marker in scope
+            for marker in (
+                "only modify",
+                "only allowed",
+                "must not modify",
+                "僅允許",
+                "不得修改",
+            )
+        ):
             log_info("README-only task; skipping specialist consultation.")
             return ""
         reports = []
-        visual_context = "\n".join(f"[IMAGE: {path}]" for path in self.state.get("visual_image_paths", []))
+        visual_context = "\n".join(
+            f"[IMAGE: {path}]" for path in self.state.get("visual_image_paths", [])
+        )
         for specialist in self.state.get("specialists", []):
             role = specialist.get("role")
-            if role not in {"sales", "security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"} or roles is not None and role not in roles:
+            if (
+                role
+                not in {
+                    "sales",
+                    "security",
+                    "ra",
+                    "sre",
+                    "devops",
+                    "uiux",
+                    "uiux_visual_review",
+                    "fae",
+                    "integration",
+                }
+                or roles is not None
+                and role not in roles
+            ):
                 continue
             specialist_agent = getattr(self, role, None)
             if specialist_agent:
                 try:
                     focus = specialist.get("reason", "")
-                    specialist_context = "\n".join(part for part in (context, visual_context, f"Research focus: {focus}" if focus else "") if part)
-                    report = specialist_agent.review(requirements, plan, specialist_context)
-                    reports.append(f"## {role.title()}{f' — {focus}' if focus else ''}\n{report}")
+                    specialist_context = "\n".join(
+                        part
+                        for part in (
+                            context,
+                            visual_context,
+                            f"Research focus: {focus}" if focus else "",
+                        )
+                        if part
+                    )
+                    report = specialist_agent.review(
+                        requirements, plan, specialist_context
+                    )
+                    reports.append(
+                        f"## {role.title()}{f' — {focus}' if focus else ''}\n{report}"
+                    )
                     continue
                 except Exception as e:
                     log_warning(f"Optional {role} specialist failed: {e}")
                     continue
             prompt = f"Review this project only for your specialty.\n\nRequirements:\n{requirements}\n\nPlan:\n{plan}\n\nAdditional Context:\n{context or 'None'}\n\nReturn concise risks, missing requirements, and concrete acceptance criteria."
             try:
-                report = self.call_agent(role, prompt, f"You are the project's {role.title()} specialist.")
+                report = self.call_agent(
+                    role, prompt, f"You are the project's {role.title()} specialist."
+                )
                 reports.append(f"## {role.title()}\n{report}")
             except Exception as e:
                 log_warning(f"Optional {role} specialist failed: {e}")
@@ -775,9 +1233,12 @@ class AgentOrchestrator:
 
     def ensure_visual_review_specialist(self) -> None:
         if self.state.get("visual_image_paths") and not any(
-            item.get("role") == "uiux_visual_review" for item in self.state.get("specialists", [])
+            item.get("role") == "uiux_visual_review"
+            for item in self.state.get("specialists", [])
         ):
-            self.state.setdefault("specialists", []).append({"role": "uiux_visual_review", "reason": "Visual inputs provided"})
+            self.state.setdefault("specialists", []).append(
+                {"role": "uiux_visual_review", "reason": "Visual inputs provided"}
+            )
 
     # State Machine Delegation to Role Agents
     def step_planning(self):
@@ -807,7 +1268,11 @@ class AgentOrchestrator:
         request = self.request_path.read_text(encoding="utf-8")
         reports = self.consult_specialists(requirements, "Research-only workflow")
         prompt = f"""Write a human-readable research report in the same language as the request.\n\nRequest:\n{request}\n\nResearch reports:\n{reports}\n\nUse sections: Outcome, Findings, Risks and Caveats, Recommended Next Steps. State that legal conclusions require human legal review."""
-        report = self.assistant.call_agent("assistant", prompt, "You synthesize factual Sales and RA research for a human decision maker.")
+        report = self.assistant.call_agent(
+            "assistant",
+            prompt,
+            "You synthesize factual Sales and RA research for a human decision maker.",
+        )
         self.human_report_path.write_text(report, encoding="utf-8")
         self.meeting_memory_path.write_text(report, encoding="utf-8")
         self.state["state"] = "COMPLETED"
@@ -851,7 +1316,9 @@ class AgentOrchestrator:
         elif current_state == "RESEARCHING":
             self.step_researching()
         elif current_state == "WAITING_FOR_OWNER":
-            log_warning("Currently waiting for owner approval. Edit state.json to resume.")
+            log_warning(
+                "Currently waiting for owner approval. Edit state.json to resume."
+            )
         elif current_state == "FAILED":
             log_error("Workflow failed. Please reset or start a new task.")
         else:
@@ -864,7 +1331,9 @@ class AgentOrchestrator:
                 self.step()
             except Exception as error:
                 failed_state = self.state.get("state", "PLANNING")
-                self.pause_for_human_review("Orchestrator", str(error), failed_state, failed_state)
+                self.pause_for_human_review(
+                    "Orchestrator", str(error), failed_state, failed_state
+                )
                 return
             self.load_config_and_state()
         if self.state["state"] == "COMPLETED":

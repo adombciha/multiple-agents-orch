@@ -13,40 +13,72 @@ REVIEW_SCHEMA = {
     "additionalProperties": False,
 }
 
+
 def is_code_review(response: str) -> bool:
     try:
         data = json.loads(response.strip())
-        return data.get("status") in {"APPROVED", "REJECTED"} and isinstance(data.get("feedback"), list)
+        return data.get("status") in {"APPROVED", "REJECTED"} and isinstance(
+            data.get("feedback"), list
+        )
     except (AttributeError, json.JSONDecodeError):
         return False
 
+
 def render_code_review(data: dict) -> str:
-    feedback = "\n".join(f"- {item}" for item in data["feedback"]) or "- No issues found."
+    feedback = (
+        "\n".join(f"- {item}" for item in data["feedback"]) or "- No issues found."
+    )
     return f"{data['status']}\n\n{feedback}\n"
+
 
 class ReviewerAgent(BaseAgent):
     def step_reviewing_code(self):
-        from orchestrator.core.state import log_header, log_success, log_warning, log_info
+        from orchestrator.core.state import (
+            log_header,
+            log_success,
+            log_warning,
+            log_info,
+        )
 
         log_header("6. REVIEWING CODE (Architect / Reviewer)")
-        agent_context = json.dumps(self.orchestrator.read_agent_context(), ensure_ascii=False)
+        agent_context = json.dumps(
+            self.orchestrator.read_agent_context(), ensure_ascii=False
+        )
         requirements = self.orchestrator.requirements_path.read_text(encoding="utf-8")
         plan = self.orchestrator.plan_path.read_text(encoding="utf-8")
         with open(self.orchestrator.test_results_path, "r", encoding="utf-8") as f:
             test_results = f.read()
-        qa_report = self.orchestrator.qa_report_path.read_text(encoding="utf-8") if self.orchestrator.qa_report_path.exists() else ""
+        qa_report = (
+            self.orchestrator.qa_report_path.read_text(encoding="utf-8")
+            if self.orchestrator.qa_report_path.exists()
+            else ""
+        )
 
         # Get git diff
         if self.orchestrator.has_git:
-            _, git_diff = self.orchestrator.run_command(["git", "diff", self.orchestrator.base_branch], capture=True)
+            _, git_diff = self.orchestrator.run_command(
+                ["git", "diff", self.orchestrator.base_branch], capture=True
+            )
             if not git_diff.strip():
-                _, git_diff = self.orchestrator.run_command(["git", "diff"], capture=True)
-            _, git_status = self.orchestrator.run_command(["git", "status", "--short"], capture=True)
-            status_lines = git_status.partition("stdout:\n")[2].partition("\nstderr:")[0].splitlines()
-            untracked_files = [line[3:] for line in status_lines if line.startswith("?? ")]
+                _, git_diff = self.orchestrator.run_command(
+                    ["git", "diff"], capture=True
+                )
+            _, git_status = self.orchestrator.run_command(
+                ["git", "status", "--short"], capture=True
+            )
+            status_lines = (
+                git_status.partition("stdout:\n")[2]
+                .partition("\nstderr:")[0]
+                .splitlines()
+            )
+            untracked_files = [
+                line[3:] for line in status_lines if line.startswith("?? ")
+            ]
             untracked_diffs = []
             for path in untracked_files:
-                _, diff = self.orchestrator.run_command(["git", "diff", "--no-index", "--", "/dev/null", path], capture=True)
+                _, diff = self.orchestrator.run_command(
+                    ["git", "diff", "--no-index", "--", "/dev/null", path], capture=True
+                )
                 untracked_diffs.append(diff)
             git_evidence = f"Git Diff:\n{git_diff}\n\nGit Status (includes untracked files):\n{git_status}\n\nUntracked File Diffs:\n{'\n'.join(untracked_diffs) or 'None'}"
         else:
@@ -56,15 +88,26 @@ class ReviewerAgent(BaseAgent):
             requirements,
             plan,
             context=git_evidence,
-            roles={"security", "ra", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"},
+            roles={
+                "security",
+                "ra",
+                "sre",
+                "devops",
+                "uiux",
+                "uiux_visual_review",
+                "fae",
+                "integration",
+            },
         )
 
-        prompt = f"""Review the code changes made.\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nQA Reports (includes any dissenting per-level votes; a weighted majority may have overridden a minority QA FAILED vote — weigh it yourself):\n{qa_report or 'No QA report available.'}\n\nSpecialist Reviews:\n{specialist_notes or 'None selected for this project.'}\n\n{git_evidence}\n\nVerify that the implementation matches assigned tasks, tests pass, and no bugs, scope violations, or safety issues remain. Return the verdict and concise feedback using the supplied JSON schema."""
+        prompt = f"""Review the code changes made.\n\nMachine Context:\n{agent_context}\n\nTest Results:\n{test_results}\n\nQA Reports (includes any dissenting per-level votes; a weighted majority may have overridden a minority QA FAILED vote — weigh it yourself):\n{qa_report or "No QA report available."}\n\nSpecialist Reviews:\n{specialist_notes or "None selected for this project."}\n\n{git_evidence}\n\nVerify that the implementation matches assigned tasks, tests pass, and no bugs, scope violations, or safety issues remain. Return the verdict and concise feedback using the supplied JSON schema."""
 
         review_json = self.call_agent(
-            "reviewer", prompt,
+            "reviewer",
+            prompt,
             "You are a Senior Code Reviewer. Return only JSON with status (APPROVED or REJECTED) and a feedback string array.",
-            response_validator=is_code_review, response_schema=REVIEW_SCHEMA,
+            response_validator=is_code_review,
+            response_schema=REVIEW_SCHEMA,
         )
         review_data = json.loads(review_json)
         review = render_code_review(review_data)
@@ -86,28 +129,48 @@ class ReviewerAgent(BaseAgent):
         else:
             log_warning("Code changes REJECTED by Reviewer.")
             self.orchestrator.escalate_developer_backend()
-            rd_role = self.orchestrator.state.get("last_developer_role", "developer_senior")
+            rd_role = self.orchestrator.state.get(
+                "last_developer_role", "developer_senior"
+            )
             rd_level = rd_role.rsplit("_", 1)[-1]
             rd_backend = self.orchestrator.get_backend(rd_role)
             rd_model = self.orchestrator.get_active_model_for_role(rd_role, rd_backend)
-            scoring.record_event(self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5)
+            scoring.record_event(
+                self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5
+            )
             max_rev = self.orchestrator.config.get("max_revisions", 2)
             if self.orchestrator.state["code_revisions"] < max_rev:
                 self.orchestrator.state["code_revisions"] += 1
                 self.orchestrator.state["state"] = "IMPLEMENTING"
                 fix_task_id = f"FIX-REV-{self.orchestrator.state['code_revisions']}"
-                self.orchestrator.state["tasks"].append({
-                    "id": fix_task_id,
-                    "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
-                    "target_files": list(dict.fromkeys(
-                        path for task in self.orchestrator.state["tasks"] for path in task.get("target_files", [])
-                    )),
-                    "output_contract": {"format": "file_blocks", "response_must_start_with": "[FILE_START:", "allow_prose": False},
-                    "status": "pending",
-                    **self.orchestrator.fix_task_levels(),
-                })
+                self.orchestrator.state["tasks"].append(
+                    {
+                        "id": fix_task_id,
+                        "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
+                        "target_files": list(
+                            dict.fromkeys(
+                                path
+                                for task in self.orchestrator.state["tasks"]
+                                for path in task.get("target_files", [])
+                            )
+                        ),
+                        "output_contract": {
+                            "format": "file_blocks",
+                            "response_must_start_with": "[FILE_START:",
+                            "allow_prose": False,
+                        },
+                        "status": "pending",
+                        **self.orchestrator.fix_task_levels(),
+                    }
+                )
                 self.orchestrator.save_state()
-                log_info(f"Revising implementation (Revision {self.orchestrator.state['code_revisions']}/{max_rev})...")
+                log_info(
+                    f"Revising implementation (Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
+                )
             else:
-                log_warning("Reached max code review revisions. Pausing for human review.")
-                self.orchestrator.pause_for_human_review("Reviewer", review, "IMPLEMENTING", "COMPLETED")
+                log_warning(
+                    "Reached max code review revisions. Pausing for human review."
+                )
+                self.orchestrator.pause_for_human_review(
+                    "Reviewer", review, "IMPLEMENTING", "COMPLETED"
+                )

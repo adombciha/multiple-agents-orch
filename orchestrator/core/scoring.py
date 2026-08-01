@@ -41,7 +41,9 @@ def get_vendor_rating(config: dict, backend: str, model: str | None) -> float:
     return float(config.get("vendor_scores", {}).get(key, {}).get("rating", 1.0))
 
 
-def record_vendor_event(orchestrator, backend: str, model: str | None, score: float) -> float:
+def record_vendor_event(
+    orchestrator, backend: str, model: str | None, score: float
+) -> float:
     """Update a paid vendor's scorecard rating; internal staff (ollama) never lands here."""
     key = f"{backend}/{model or 'unknown'}"
     vendors = orchestrator.config.setdefault("vendor_scores", {})
@@ -54,7 +56,9 @@ def record_vendor_event(orchestrator, backend: str, model: str | None, score: fl
     return entry["rating"]
 
 
-def record_event(orchestrator, role: str, level: str, backend: str, model: str | None, score: float) -> float:
+def record_event(
+    orchestrator, role: str, level: str, backend: str, model: str | None, score: float
+) -> float:
     """Route a performance event to the internal staff weight or the vendor scorecard.
 
     Whether a (role, level) counts as staff or vendor for this event depends on which

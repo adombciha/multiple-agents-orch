@@ -1,7 +1,11 @@
 from __future__ import annotations
 import sys
 import json
-from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
+from orchestrator.roles.base_agent import (
+    BaseAgent,
+    extract_json_response,
+    is_strict_json_response,
+)
 from orchestrator.core import scoring, brain
 
 JSON_RULES = "Output only one valid JSON object. Do not use Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }."
@@ -19,7 +23,12 @@ REQUIREMENTS_SCHEMA = {
         "technical_specifications": {"type": "array", "items": {"type": "string"}},
         "scope_boundaries": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["project_overview", "functional_requirements", "technical_specifications", "scope_boundaries"],
+    "required": [
+        "project_overview",
+        "functional_requirements",
+        "technical_specifications",
+        "scope_boundaries",
+    ],
     "additionalProperties": False,
 }
 SALES_SELECTION_SCHEMA = {
@@ -72,6 +81,7 @@ WEIGHT_ADJUSTMENT_SCHEMA = {
     "additionalProperties": False,
 }
 
+
 def is_weight_adjustment_response(response: str) -> bool:
     try:
         data = json.loads(response.strip())
@@ -79,12 +89,14 @@ def is_weight_adjustment_response(response: str) -> bool:
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
 
+
 def is_requirements_json_response(response: str) -> bool:
     try:
         data = json.loads(response.strip())
         return all(key in data for key in REQUIREMENTS_SCHEMA["required"])
     except (TypeError, ValueError, json.JSONDecodeError):
         return False
+
 
 def render_requirements(data: dict) -> str:
     def render(value):
@@ -100,6 +112,7 @@ def render_requirements(data: dict) -> str:
         f"## {REQUIREMENT_HEADINGS[3]}\n{render(data['scope_boundaries'])}\n"
     )
 
+
 class ManagerAgent(BaseAgent):
     def step_planning(self):
         from orchestrator.core.state import log_header, log_error, log_success, log_info
@@ -110,7 +123,9 @@ class ManagerAgent(BaseAgent):
             self.orchestrator.setup_worktree()
 
         if not self.orchestrator.request_path.exists():
-            log_error(f"No request file found at {self.orchestrator.request_path}. Please run 'start' command first.")
+            log_error(
+                f"No request file found at {self.orchestrator.request_path}. Please run 'start' command first."
+            )
             sys.exit(1)
 
         with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
@@ -123,7 +138,9 @@ class ManagerAgent(BaseAgent):
             SALES_SELECTION_SCHEMA,
         )
         try:
-            use_sales = bool(json.loads(extract_json_response(sales_selection)).get("use_sales"))
+            use_sales = bool(
+                json.loads(extract_json_response(sales_selection)).get("use_sales")
+            )
         except (json.JSONDecodeError, AttributeError):
             use_sales = False
         sales_notes = ""
@@ -144,7 +161,8 @@ class ManagerAgent(BaseAgent):
         )
         requirements_data = json.loads(requirements_json.strip())
         self.orchestrator.requirements_json_path.write_text(
-            json.dumps(requirements_data, indent=2, ensure_ascii=False), encoding="utf-8"
+            json.dumps(requirements_data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
         )
         requirements = render_requirements(requirements_data)
 
@@ -152,7 +170,9 @@ class ManagerAgent(BaseAgent):
         with open(self.orchestrator.requirements_path, "w", encoding="utf-8") as f:
             f.write(requirements)
 
-        log_success(f"Requirements generated and saved to {self.orchestrator.requirements_path}")
+        log_success(
+            f"Requirements generated and saved to {self.orchestrator.requirements_path}"
+        )
         if self.orchestrator.state.get("workflow_mode") == "research":
             tracks = self.call_manager(
                 f"""Split this research request into 1-3 independent Sales or RA research tracks.\n\n{request}\n\nRespond only with JSON: {{\"tracks\":[{{\"role\":\"sales\" or \"ra\",\"focus\":\"specific research question\"}}]}}.""",
@@ -162,18 +182,30 @@ class ManagerAgent(BaseAgent):
             )
             try:
                 selected = json.loads(extract_json_response(tracks)).get("tracks", [])
-                self.orchestrator.state["specialists"] = [{"role": item["role"], "reason": item["focus"]} for item in selected if item.get("role") in {"sales", "ra"}][:3]
+                self.orchestrator.state["specialists"] = [
+                    {"role": item["role"], "reason": item["focus"]}
+                    for item in selected
+                    if item.get("role") in {"sales", "ra"}
+                ][:3]
             except (json.JSONDecodeError, KeyError, TypeError):
                 self.orchestrator.state["specialists"] = []
             if not self.orchestrator.state["specialists"]:
-                self.orchestrator.state["specialists"] = [{"role": role, "reason": "Research-only workflow"} for role in self.orchestrator.state["research_roles"]]
+                self.orchestrator.state["specialists"] = [
+                    {"role": role, "reason": "Research-only workflow"}
+                    for role in self.orchestrator.state["research_roles"]
+                ]
             self.orchestrator.state["state"] = "RESEARCHING"
         else:
             self.orchestrator.state["state"] = "DEVELOPING_PLAN"
         self.orchestrator.save_state()
 
     def step_completed(self):
-        from orchestrator.core.state import log_header, log_success, log_info, log_warning
+        from orchestrator.core.state import (
+            log_header,
+            log_success,
+            log_info,
+            log_warning,
+        )
 
         log_header("7. GENERATING SUMMARY (Ollama Manager)")
 
@@ -188,21 +220,36 @@ class ManagerAgent(BaseAgent):
 
         # Get final git diff stat
         wt_path = self.orchestrator.ai_dir / "worktree"
-        if self.orchestrator.config.get("use_worktree", True) and wt_path.exists() and self.orchestrator.has_git:
-            _, diff_stat = self.orchestrator.run_command(["git", "diff", "--stat", self.orchestrator.base_branch], cwd=wt_path)
-            _, diff_patch = self.orchestrator.run_command(["git", "diff", self.orchestrator.base_branch], cwd=wt_path)
+        if (
+            self.orchestrator.config.get("use_worktree", True)
+            and wt_path.exists()
+            and self.orchestrator.has_git
+        ):
+            _, diff_stat = self.orchestrator.run_command(
+                ["git", "diff", "--stat", self.orchestrator.base_branch], cwd=wt_path
+            )
+            _, diff_patch = self.orchestrator.run_command(
+                ["git", "diff", self.orchestrator.base_branch], cwd=wt_path
+            )
         elif self.orchestrator.has_git:
-            _, diff_stat = self.orchestrator.run_command(["git", "diff", "--stat", self.orchestrator.base_branch])
-            _, diff_patch = self.orchestrator.run_command(["git", "diff", self.orchestrator.base_branch])
+            _, diff_stat = self.orchestrator.run_command(
+                ["git", "diff", "--stat", self.orchestrator.base_branch]
+            )
+            _, diff_patch = self.orchestrator.run_command(
+                ["git", "diff", self.orchestrator.base_branch]
+            )
         else:
             diff_stat = "No git repository."
             diff_patch = "No git repository."
 
         prompt = f"""We have successfully completed the tasks.\nOriginal Request:\n{request}\n\nRequirements:\n{requirements}\n\nGit Diff Stat:\n{diff_stat}\n\nWrite in the same language as the original request. Use exactly these Markdown sections:\n## Outcome\n## Changes Delivered\n## Verification\n## Scope and Follow-ups\nBe specific: name changed files, cite available test evidence, and distinguish completed work from follow-ups."""
 
-        system_prompt = "You are a Project Manager. Write a beautiful project final report."
+        system_prompt = (
+            "You are a Project Manager. Write a beautiful project final report."
+        )
         summary = self.call_manager(prompt, system_prompt)
         from orchestrator.core.telemetry import summary_markdown
+
         usage = summary_markdown(self.orchestrator)
         if usage:
             summary = f"{summary.rstrip()}\n\n{usage}\n"
@@ -210,22 +257,45 @@ class ManagerAgent(BaseAgent):
         with open(self.orchestrator.final_report_path, "w", encoding="utf-8") as f:
             f.write(summary)
 
-        log_success(f"Final project report generated at {self.orchestrator.final_report_path}")
-
-        qa_report = self.orchestrator.qa_report_path.read_text(encoding="utf-8") if self.orchestrator.qa_report_path.exists() else "No QA report available."
-        review = self.orchestrator.reviewer_output_path.read_text(encoding="utf-8") if self.orchestrator.reviewer_output_path.exists() else "No code review available."
-        meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
-            request, summary, self.orchestrator.state.get("tasks", []), qa_report, review, diff_stat,
+        log_success(
+            f"Final project report generated at {self.orchestrator.final_report_path}"
         )
-        self.orchestrator.meeting_memory_path.write_text(meeting_memory, encoding="utf-8")
+
+        qa_report = (
+            self.orchestrator.qa_report_path.read_text(encoding="utf-8")
+            if self.orchestrator.qa_report_path.exists()
+            else "No QA report available."
+        )
+        review = (
+            self.orchestrator.reviewer_output_path.read_text(encoding="utf-8")
+            if self.orchestrator.reviewer_output_path.exists()
+            else "No code review available."
+        )
+        meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
+            request,
+            summary,
+            self.orchestrator.state.get("tasks", []),
+            qa_report,
+            review,
+            diff_stat,
+        )
+        self.orchestrator.meeting_memory_path.write_text(
+            meeting_memory, encoding="utf-8"
+        )
         log_success(f"Meeting memory saved at {self.orchestrator.meeting_memory_path}")
-        brain.remember(self.orchestrator, "meeting", f"Request: {request[:500]}\n\n{meeting_memory}")
+        brain.remember(
+            self.orchestrator,
+            "meeting",
+            f"Request: {request[:500]}\n\n{meeting_memory}",
+        )
 
         # Assistant generates CHANGELOG
         log_info("Asking Assistant to generate CHANGELOG.md...")
         changelog = self.orchestrator.assistant.generate_changelog(summary, diff_patch)
 
-        with open(self.orchestrator.workspace / "CHANGELOG.md", "a", encoding="utf-8") as f:
+        with open(
+            self.orchestrator.workspace / "CHANGELOG.md", "a", encoding="utf-8"
+        ) as f:
             f.write("\n\n" + changelog)
 
         log_success("CHANGELOG.md updated successfully!")
@@ -235,7 +305,9 @@ class ManagerAgent(BaseAgent):
         # Merge and clean up isolated worktree
         if self.orchestrator.cleanup_worktree(merge=True) is False:
             task = self.orchestrator.queue_worktree_repair_task()
-            log_warning(f"PM queued RD repair task {task['id']} for the worktree merge failure.")
+            log_warning(
+                f"PM queued RD repair task {task['id']} for the worktree merge failure."
+            )
             return
 
         log_success("Multi-agent workflow process has finished successfully!")
@@ -282,12 +354,19 @@ class ManagerAgent(BaseAgent):
             except (TypeError, ValueError):
                 continue
             current = scoring.get_weight(self.orchestrator.config, role, level)
-            bounded = scoring.clamp(scoring.clamp(proposed, current - max_delta, current + max_delta))
-            self.orchestrator.config.setdefault("worker_weights", {}).setdefault(role, {})[level] = round(bounded, 3)
+            bounded = scoring.clamp(
+                scoring.clamp(proposed, current - max_delta, current + max_delta)
+            )
+            self.orchestrator.config.setdefault("worker_weights", {}).setdefault(
+                role, {}
+            )[level] = round(bounded, 3)
             changed = True
-            log_info(f"Manager weight review: {role}/{level} -> {bounded} ({item.get('reason', 'no reason given')})")
+            log_info(
+                f"Manager weight review: {role}/{level} -> {bounded} ({item.get('reason', 'no reason given')})"
+            )
 
         if changed:
             self.orchestrator.config_path.write_text(
-                json.dumps(self.orchestrator.config, indent=2, ensure_ascii=False), encoding="utf-8"
+                json.dumps(self.orchestrator.config, indent=2, ensure_ascii=False),
+                encoding="utf-8",
             )

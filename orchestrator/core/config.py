@@ -33,10 +33,10 @@ DEFAULT_CONFIG = {
         "fae": "ollama",
         "integration": "ollama",
         "sales": "grok",
-        "sre": "agy"
+        "sre": "agy",
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
-    "use_worktree": True,   # Enforces isolated git worktrees for agent roles
+    "use_worktree": True,  # Enforces isolated git worktrees for agent roles
     "backend_escalation_path": ["ollama", "agy", "codex"],
     "vendor_quota_check_enabled": False,  # Probe vendor CLIs' interactive /usage screen (via tmux) before hiring; off by default (slow, needs tmux)
     "vendor_quota_check_threshold_pct": 95,
@@ -66,7 +66,7 @@ DEFAULT_CONFIG = {
         "fae": "qwen3:8b",
         "integration": "deepseek-coder:6.7b",
         "sales": "grok-4.5",
-        "sre": "Gemini 3.1 Pro (Low)"
+        "sre": "Gemini 3.1 Pro (Low)",
     },
     "role_model_backends": {
         "manager": "grok",
@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
         "fae": "ollama",
         "integration": "ollama",
         "sales": "grok",
-        "sre": "agy"
+        "sre": "agy",
     },
     "role_model_tiers": {
         "manager": ["grok-4.5", "gpt-5.6-luna"],
@@ -99,27 +99,82 @@ DEFAULT_CONFIG = {
         "developer_middle": ["granite4.1:8b", "codegemma:7b", "qwen2.5-coder:7b"],
         "developer_junior": ["gemma4:latest", "qwen2.5-coder:7b", "codegemma:7b"],
         "ra": ["grok-4.5"],
-        "sales": ["grok-4.5"]
+        "sales": ["grok-4.5"],
     },
     "role_model_routes": {
-        "manager": [["grok", "grok-4.5"], ["codex", "gpt-5.6-luna"], ["ollama", "qwen3:8b"]],
-        "architect": [["grok", "grok-4.5"], ["codex", "gpt-5.6-luna"], ["ollama", "gemma4:latest"]],
-        "developer_senior": [["codex", "gpt-5.6-luna"], ["ollama", "gpt-oss:20b"], ["ollama", "granite4.1:8b"]],
-        "developer_middle": [["ollama", "granite4.1:8b"], ["ollama", "codegemma:7b"], ["ollama", "qwen2.5-coder:7b"]],
-        "developer_junior": [["ollama", "gemma4:latest"], ["ollama", "qwen2.5-coder:7b"], ["ollama", "codegemma:7b"]],
+        "manager": [
+            ["grok", "grok-4.5"],
+            ["codex", "gpt-5.6-luna"],
+            ["ollama", "qwen3:8b"],
+        ],
+        "architect": [
+            ["grok", "grok-4.5"],
+            ["codex", "gpt-5.6-luna"],
+            ["ollama", "gemma4:latest"],
+        ],
+        "developer_senior": [
+            ["codex", "gpt-5.6-luna"],
+            ["ollama", "gpt-oss:20b"],
+            ["ollama", "granite4.1:8b"],
+        ],
+        "developer_middle": [
+            ["ollama", "granite4.1:8b"],
+            ["ollama", "codegemma:7b"],
+            ["ollama", "qwen2.5-coder:7b"],
+        ],
+        "developer_junior": [
+            ["ollama", "gemma4:latest"],
+            ["ollama", "qwen2.5-coder:7b"],
+            ["ollama", "codegemma:7b"],
+        ],
         "qa_senior": [["ollama", "gemma4:latest"], ["ollama", "qwen2.5-coder:7b"]],
         "qa_middle": [["ollama", "gemma4:latest"], ["ollama", "qwen2.5-coder:7b"]],
-        "qa_junior": [["ollama", "gemma4:latest"], ["ollama", "codegemma:7b"], ["ollama", "qwen2.5-coder:7b"]],
-        "reviewer": [["grok", "grok-4.5"], ["codex", "gpt-5.6-luna"], ["ollama", "gemma4:latest"]],
-        "security": [["ollama", "deepseek-coder:6.7b"], ["ollama", "gemma4:latest"], ["ollama", "qwen2.5-coder:7b"]],
-        "devops": [["ollama", "qwen2.5-coder:14b"], ["ollama", "deepseek-coder-v2:latest"], ["ollama", "qwen2.5-coder:7b"]],
+        "qa_junior": [
+            ["ollama", "gemma4:latest"],
+            ["ollama", "codegemma:7b"],
+            ["ollama", "qwen2.5-coder:7b"],
+        ],
+        "reviewer": [
+            ["grok", "grok-4.5"],
+            ["codex", "gpt-5.6-luna"],
+            ["ollama", "gemma4:latest"],
+        ],
+        "security": [
+            ["ollama", "deepseek-coder:6.7b"],
+            ["ollama", "gemma4:latest"],
+            ["ollama", "qwen2.5-coder:7b"],
+        ],
+        "devops": [
+            ["ollama", "qwen2.5-coder:14b"],
+            ["ollama", "deepseek-coder-v2:latest"],
+            ["ollama", "qwen2.5-coder:7b"],
+        ],
         "uiux": [["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
-        "uiux_visual_review": [["ollama", "llama3.2-vision:latest"], ["ollama", "gemma4:latest"]],
+        "uiux_visual_review": [
+            ["ollama", "llama3.2-vision:latest"],
+            ["ollama", "gemma4:latest"],
+        ],
         "fae": [["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
-        "integration": [["ollama", "deepseek-coder:6.7b"], ["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
-        "ra": [["grok", "grok-4.5"], ["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
-        "sales": [["grok", "grok-4.5"], ["ollama", "qwen3:8b"], ["ollama", "gemma4:latest"]],
-        "assistant": [["ollama", "gemma4:latest"], ["ollama", "qwen3:8b"], ["ollama", "qwen2.5-coder:7b"]],
+        "integration": [
+            ["ollama", "deepseek-coder:6.7b"],
+            ["ollama", "qwen3:8b"],
+            ["ollama", "gemma4:latest"],
+        ],
+        "ra": [
+            ["grok", "grok-4.5"],
+            ["ollama", "qwen3:8b"],
+            ["ollama", "gemma4:latest"],
+        ],
+        "sales": [
+            ["grok", "grok-4.5"],
+            ["ollama", "qwen3:8b"],
+            ["ollama", "gemma4:latest"],
+        ],
+        "assistant": [
+            ["ollama", "gemma4:latest"],
+            ["ollama", "qwen3:8b"],
+            ["ollama", "qwen2.5-coder:7b"],
+        ],
     },
     "reasoning_effort": {
         "manager": "medium",
@@ -129,7 +184,7 @@ DEFAULT_CONFIG = {
     },
     "staffing_limits": {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
-        "qa": {"senior": 1, "middle": 2, "junior": 3}
+        "qa": {"senior": 1, "middle": 2, "junior": 3},
     },
     "qa_ollama_fallback_model": "qwen2.5-coder:7b",
     # Internal staff trust weights (ollama-backed roles only). Vendors (claude/codex/agy/grok)

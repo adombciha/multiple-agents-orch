@@ -6,11 +6,20 @@ import json
 from urllib.error import URLError
 from urllib.request import urlopen
 from pathlib import Path
-from orchestrator.core.state import AgentOrchestrator, Colors, log_success, log_info, log_error, log_header
+from orchestrator.core.state import (
+    AgentOrchestrator,
+    Colors,
+    log_success,
+    log_info,
+    log_error,
+    log_header,
+)
 from orchestrator.core import scoring
 
 
-REFERENCE_BLOCK_START = "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
+REFERENCE_BLOCK_START = (
+    "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
+)
 REFERENCE_BLOCK_END = "<!-- REFERENCE-ONLY:END -->"
 
 
@@ -52,6 +61,7 @@ def ollama_available(url: str) -> bool:
     except (OSError, URLError):
         return False
 
+
 def configure_ollama(orchestrator: AgentOrchestrator):
     local_url = orchestrator.config["ollama_url"]
     if ollama_available(local_url):
@@ -62,63 +72,139 @@ def configure_ollama(orchestrator: AgentOrchestrator):
     windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
     if ollama_available(windows_url):
         log_info(f"Windows Ollama detected at {windows_url}")
-        if not sys.stdin.isatty() or input("Use this Windows Ollama endpoint? [Y/n] ").strip().lower() not in {"n", "no"}:
+        if not sys.stdin.isatty() or input(
+            "Use this Windows Ollama endpoint? [Y/n] "
+        ).strip().lower() not in {"n", "no"}:
             orchestrator.config["ollama_url"] = windows_url
-            orchestrator.config_path.write_text(json.dumps(orchestrator.config, indent=2), encoding="utf-8")
+            orchestrator.config_path.write_text(
+                json.dumps(orchestrator.config, indent=2), encoding="utf-8"
+            )
             log_success(f"Ollama API URL set to {windows_url}")
             orchestrator.state["ollama_reachable"] = True
             orchestrator.save_state()
     else:
-        log_error("No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task.")
+        log_error(
+            "No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task."
+        )
         orchestrator.state["ollama_reachable"] = False
         orchestrator.save_state()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-Agent Orchestrator CLI")
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
-    subparsers.add_parser("init", help="Initialize the .ai-company folder and configuration")
+    subparsers.add_parser(
+        "init", help="Initialize the .ai-company folder and configuration"
+    )
 
     start_parser = subparsers.add_parser("start", help="Start a new multi-agent task")
-    start_parser.add_argument("prompt", type=str, help="The development task prompt or request")
-    start_parser.add_argument("--image", action="append", default=[], help="Screenshot or mockup path for UI/UX visual review; repeat for multiple images")
-    start_parser.add_argument("--research", action="store_true", help="Run Sales and RA research only; skip code delivery roles")
+    start_parser.add_argument(
+        "prompt", type=str, help="The development task prompt or request"
+    )
+    start_parser.add_argument(
+        "--image",
+        action="append",
+        default=[],
+        help="Screenshot or mockup path for UI/UX visual review; repeat for multiple images",
+    )
+    start_parser.add_argument(
+        "--research",
+        action="store_true",
+        help="Run Sales and RA research only; skip code delivery roles",
+    )
 
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
-    subparsers.add_parser("status", help="Get current orchestrator status and logs info")
-    approve_parser = subparsers.add_parser("approve", help="Approve a workflow paused for owner review")
-    approve_parser.add_argument("--run", action="store_true", help="Continue the workflow after approval")
+    subparsers.add_parser(
+        "status", help="Get current orchestrator status and logs info"
+    )
+    approve_parser = subparsers.add_parser(
+        "approve", help="Approve a workflow paused for owner review"
+    )
+    approve_parser.add_argument(
+        "--run", action="store_true", help="Continue the workflow after approval"
+    )
     review_parser = subparsers.add_parser("review", help="Decide a paused human review")
     review_parser.add_argument("decision", choices=["pass", "revise", "reject"])
-    review_parser.add_argument("--run", action="store_true", help="Continue the workflow after the decision")
+    review_parser.add_argument(
+        "--run", action="store_true", help="Continue the workflow after the decision"
+    )
 
     reset_parser = subparsers.add_parser("reset", help="Reset the orchestrator state")
-    reset_parser.add_argument("--state", type=str, default="PLANNING", help="Reset state to specific value (default: PLANNING)")
+    reset_parser.add_argument(
+        "--state",
+        type=str,
+        default="PLANNING",
+        help="Reset state to specific value (default: PLANNING)",
+    )
 
-    backend_parser = subparsers.add_parser("set-backend", help="Set the agent backend for a role")
-    backend_parser.add_argument("role", choices=["manager", "architect", "developer", "reviewer", "qa", "assistant", "ra", "security", "sales", "sre", "devops", "uiux", "uiux_visual_review", "fae", "integration"], help="The agent role")
-    backend_parser.add_argument("backend", choices=["ollama", "codex", "claude", "agy", "grok"], help="The backend to use")
+    backend_parser = subparsers.add_parser(
+        "set-backend", help="Set the agent backend for a role"
+    )
+    backend_parser.add_argument(
+        "role",
+        choices=[
+            "manager",
+            "architect",
+            "developer",
+            "reviewer",
+            "qa",
+            "assistant",
+            "ra",
+            "security",
+            "sales",
+            "sre",
+            "devops",
+            "uiux",
+            "uiux_visual_review",
+            "fae",
+            "integration",
+        ],
+        help="The agent role",
+    )
+    backend_parser.add_argument(
+        "backend",
+        choices=["ollama", "codex", "claude", "agy", "grok"],
+        help="The backend to use",
+    )
 
-    ollama_url_parser = subparsers.add_parser("set-ollama-url", help="Set the Ollama API URL")
-    ollama_url_parser.add_argument("url", help="Ollama API base URL, for example http://172.17.144.1:11434")
+    ollama_url_parser = subparsers.add_parser(
+        "set-ollama-url", help="Set the Ollama API URL"
+    )
+    ollama_url_parser.add_argument(
+        "url", help="Ollama API base URL, for example http://172.17.144.1:11434"
+    )
 
-    weights_parser = subparsers.add_parser("weights", help="Show or adjust internal staff trust weights")
+    weights_parser = subparsers.add_parser(
+        "weights", help="Show or adjust internal staff trust weights"
+    )
     weights_sub = weights_parser.add_subparsers(dest="weights_command")
-    weights_set_parser = weights_sub.add_parser("set", help="Manually override a staff weight")
+    weights_set_parser = weights_sub.add_parser(
+        "set", help="Manually override a staff weight"
+    )
     weights_set_parser.add_argument("role", choices=["rd", "qa"])
     weights_set_parser.add_argument("level", choices=["senior", "middle", "junior"])
     weights_set_parser.add_argument("value", type=float)
 
-    subparsers.add_parser("roster", help="Show today's available RD/QA roles (staff and vendors)")
+    subparsers.add_parser(
+        "roster", help="Show today's available RD/QA roles (staff and vendors)"
+    )
     subparsers.add_parser("vendors", help="Show the paid-vendor scorecard")
 
-    brain_parser = subparsers.add_parser("brain", help="Inspect or prune the internal company memory")
+    brain_parser = subparsers.add_parser(
+        "brain", help="Inspect or prune the internal company memory"
+    )
     brain_sub = brain_parser.add_subparsers(dest="brain_command")
     brain_search_parser = brain_sub.add_parser("search", help="Search company memory")
     brain_search_parser.add_argument("query")
     brain_prune_parser = brain_sub.add_parser("prune", help="Prune old memories")
-    brain_prune_parser.add_argument("--keep", type=int, default=200, help="Number of most recent memories to keep (default: 200)")
+    brain_prune_parser.add_argument(
+        "--keep",
+        type=int,
+        default=200,
+        help="Number of most recent memories to keep (default: 200)",
+    )
 
     args = parser.parse_args()
 
@@ -136,11 +222,19 @@ def main():
         configure_ollama(orchestrator)
         ollama_reachable = orchestrator.state.get("ollama_reachable", True)
         allowed_image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
-        max_image_bytes = orchestrator.config.get("max_visual_image_bytes", 10 * 1024 * 1024)
+        max_image_bytes = orchestrator.config.get(
+            "max_visual_image_bytes", 10 * 1024 * 1024
+        )
         image_paths = []
         for path in map(Path, args.image):
-            if not path.is_file() or path.suffix.lower() not in allowed_image_suffixes or path.stat().st_size > max_image_bytes:
-                log_error(f"Each --image must be a PNG, JPEG, or WebP file no larger than {max_image_bytes // 1024 // 1024}MB.")
+            if (
+                not path.is_file()
+                or path.suffix.lower() not in allowed_image_suffixes
+                or path.stat().st_size > max_image_bytes
+            ):
+                log_error(
+                    f"Each --image must be a PNG, JPEG, or WebP file no larger than {max_image_bytes // 1024 // 1024}MB."
+                )
                 return
             image_paths.append(str(path.resolve()))
 
@@ -179,7 +273,9 @@ def main():
             "ollama_reachable": ollama_reachable,
         }
         orchestrator.save_state()
-        log_success("Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute.")
+        log_success(
+            "Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute."
+        )
     elif args.command == "step":
         orchestrator.step()
     elif args.command == "run":
@@ -188,37 +284,63 @@ def main():
         try:
             orchestrator.load_config_and_state()
             log_header("ORCHESTRATOR STATUS")
-            print(f"{'Current State:':<20}{Colors.BOLD}{orchestrator.state['state']}{Colors.ENDC}")
-            print(f"{'Plan Revisions:':<20}{orchestrator.state['plan_revisions']}/{orchestrator.config['max_revisions']}")
-            print(f"{'Code Revisions:':<20}{orchestrator.state['code_revisions']}/{orchestrator.config['max_revisions']}")
+            print(
+                f"{'Current State:':<20}{Colors.BOLD}{orchestrator.state['state']}{Colors.ENDC}"
+            )
+            print(
+                f"{'Plan Revisions:':<20}{orchestrator.state['plan_revisions']}/{orchestrator.config['max_revisions']}"
+            )
+            print(
+                f"{'Code Revisions:':<20}{orchestrator.state['code_revisions']}/{orchestrator.config['max_revisions']}"
+            )
             print(f"Ollama Model:       {orchestrator.config['ollama_model']}")
-            print(f"{'Developer Backend:':<20}{orchestrator.config['backends']['developer']}")
-            print(f"{'Reviewer Backend:':<20}{orchestrator.config['backends']['reviewer']}")
-            print(f"{'QA Backend:':<20}{orchestrator.config['backends'].get('qa', 'ollama')}")
+            print(
+                f"{'Developer Backend:':<20}{orchestrator.config['backends']['developer']}"
+            )
+            print(
+                f"{'Reviewer Backend:':<20}{orchestrator.config['backends']['reviewer']}"
+            )
+            print(
+                f"{'QA Backend:':<20}{orchestrator.config['backends'].get('qa', 'ollama')}"
+            )
             print(f"{'Test Command:':<20}{orchestrator.config['test_command']}")
 
             tasks = orchestrator.state.get("tasks", [])
             if tasks:
                 print(f"\n{'Action Items'} ({len(tasks)} total):")
                 for t in tasks:
-                    status_color = Colors.GREEN if t['status'] == 'completed' else Colors.WARNING
-                    print(f" - [{status_color}{t['status']}{Colors.ENDC}] {t['id']}: {t['description']}")
+                    status_color = (
+                        Colors.GREEN if t["status"] == "completed" else Colors.WARNING
+                    )
+                    print(
+                        f" - [{status_color}{t['status']}{Colors.ENDC}] {t['id']}: {t['description']}"
+                    )
             else:
                 print(f"\n{'No tasks parsed yet.'}")
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
     elif args.command == "approve":
         try:
             orchestrator.load_config_and_state()
             if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
-                log_error(f"Cannot approve from state: {orchestrator.state.get('state')}")
+                log_error(
+                    f"Cannot approve from state: {orchestrator.state.get('state')}"
+                )
                 return
-            resume_state = orchestrator.state.get("pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE"))
+            resume_state = orchestrator.state.get(
+                "pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE")
+            )
             active_task_id = orchestrator.state.get("active_task_id")
             if active_task_id:
-                old_failures = orchestrator.state.setdefault("task_failed_model_routes", {}).pop(active_task_id, [])
+                old_failures = orchestrator.state.setdefault(
+                    "task_failed_model_routes", {}
+                ).pop(active_task_id, [])
                 if old_failures:
-                    log_info(f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry.")
+                    log_info(
+                        f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry."
+                    )
             orchestrator.state["state"] = resume_state
             orchestrator.state.pop("human_review_source", None)
             orchestrator.state.pop("resume_state", None)
@@ -227,48 +349,76 @@ def main():
             if args.run:
                 orchestrator.run_to_end()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
     elif args.command == "review":
         try:
             orchestrator.load_config_and_state()
             if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
-                log_error(f"Cannot review from state: {orchestrator.state.get('state')}")
+                log_error(
+                    f"Cannot review from state: {orchestrator.state.get('state')}"
+                )
                 return
             decision = args.decision
             if decision == "pass":
                 next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
             elif decision == "revise":
-                if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
+                if orchestrator.state.get("human_review_source") in {
+                    "Architect",
+                    "Manager",
+                }:
                     next_state = "DEVELOPING_PLAN"
                     orchestrator.state["plan_revisions"] = 0
                 else:
                     next_state = "IMPLEMENTING"
                     n = orchestrator.state.get("code_revisions", 0) + 1
                     orchestrator.state["code_revisions"] = n
-                    orchestrator.state.setdefault("tasks", []).append({
-                        "id": f"HUMAN-REVIEW-{n}",
-                        "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
-                        "status": "pending",
-                        **orchestrator.fix_task_levels(),
-                    })
+                    orchestrator.state.setdefault("tasks", []).append(
+                        {
+                            "id": f"HUMAN-REVIEW-{n}",
+                            "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
+                            "status": "pending",
+                            **orchestrator.fix_task_levels(),
+                        }
+                    )
             else:
                 next_state = "FAILED"
-            if decision == "pass" and orchestrator.state.get("human_review_source") == "QA":
+            if (
+                decision == "pass"
+                and orchestrator.state.get("human_review_source") == "QA"
+            ):
                 for qa_level in orchestrator.state.get("qa_dissenting_levels", []):
                     qa_role = f"qa_{qa_level}"
                     qa_backend = orchestrator.get_backend(qa_role)
-                    qa_model = orchestrator.get_active_model_for_role(qa_role, qa_backend)
-                    scoring.record_event(orchestrator, "qa", qa_level, qa_backend, qa_model, -0.5)
-                    log_info(f"Recorded QA false-positive for qa_{qa_level} after owner override.")
+                    qa_model = orchestrator.get_active_model_for_role(
+                        qa_role, qa_backend
+                    )
+                    scoring.record_event(
+                        orchestrator, "qa", qa_level, qa_backend, qa_model, -0.5
+                    )
+                    log_info(
+                        f"Recorded QA false-positive for qa_{qa_level} after owner override."
+                    )
             orchestrator.state["state"] = next_state
-            for key in ("human_review_source", "resume_state", "pass_state", "human_review_details", "qa_dissenting_levels"):
+            for key in (
+                "human_review_source",
+                "resume_state",
+                "pass_state",
+                "human_review_details",
+                "qa_dissenting_levels",
+            ):
                 orchestrator.state.pop(key, None)
             orchestrator.save_state()
-            log_success(f"Human review '{decision}' recorded; workflow moved to {next_state}.")
+            log_success(
+                f"Human review '{decision}' recorded; workflow moved to {next_state}."
+            )
             if args.run and decision != "reject":
                 orchestrator.run_to_end()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
     elif args.command == "reset":
         try:
             orchestrator.load_config_and_state()
@@ -279,7 +429,7 @@ def main():
                 "developer": 0,
                 "reviewer": 0,
                 "manager": 0,
-                "qa": 0
+                "qa": 0,
             }
             orchestrator.state["specialists"] = []
             orchestrator.state["staffing"] = {}
@@ -298,7 +448,9 @@ def main():
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
     elif args.command == "set-backend":
         try:
             orchestrator.load_config_and_state()
@@ -313,9 +465,13 @@ def main():
                 orchestrator.config["backends"][role] = args.backend
             with open(orchestrator.config_path, "w", encoding="utf-8") as f:
                 json.dump(orchestrator.config, f, indent=2)
-            log_success(f"Successfully configured '{args.role}' backend to '{args.backend}'")
+            log_success(
+                f"Successfully configured '{args.role}' backend to '{args.backend}'"
+            )
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
     elif args.command == "set-ollama-url":
         orchestrator.init_project()
         orchestrator.load_config_and_state()
@@ -327,13 +483,19 @@ def main():
         try:
             orchestrator.load_config_and_state()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
             return
         if args.weights_command == "set":
             if not (scoring.WEIGHT_MIN <= args.value <= scoring.WEIGHT_MAX):
-                log_error(f"Weight must be between {scoring.WEIGHT_MIN} and {scoring.WEIGHT_MAX}.")
+                log_error(
+                    f"Weight must be between {scoring.WEIGHT_MIN} and {scoring.WEIGHT_MAX}."
+                )
                 return
-            orchestrator.config.setdefault("worker_weights", {}).setdefault(args.role, {})[args.level] = args.value
+            orchestrator.config.setdefault("worker_weights", {}).setdefault(
+                args.role, {}
+            )[args.level] = args.value
             with open(orchestrator.config_path, "w", encoding="utf-8") as f:
                 json.dump(orchestrator.config, f, indent=2)
             log_success(f"Set {args.role}/{args.level} trust weight to {args.value}")
@@ -346,36 +508,50 @@ def main():
         try:
             orchestrator.load_config_and_state()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
             return
         from orchestrator.core import roster
+
         data = roster.snapshot(orchestrator)
         log_header("TODAY'S ROSTER")
         for role, info in data["available_roles"].items():
-            status_color = Colors.GREEN if info["status"] == "available" else Colors.FAIL
+            status_color = (
+                Colors.GREEN if info["status"] == "available" else Colors.FAIL
+            )
             score = info.get("weight", info.get("rating"))
-            print(f" - {role} ({info['type']}, backend={info['backend']}): {status_color}{info['status']}{Colors.ENDC} score={score}")
+            print(
+                f" - {role} ({info['type']}, backend={info['backend']}): {status_color}{info['status']}{Colors.ENDC} score={score}"
+            )
         if data["unavailable_backends"]:
             print(f"\nUnavailable backends: {', '.join(data['unavailable_backends'])}")
     elif args.command == "vendors":
         try:
             orchestrator.load_config_and_state()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
             return
         log_header("VENDOR SCORECARD")
         vendor_scores = orchestrator.config.get("vendor_scores", {})
         if not vendor_scores:
             print("No vendor activity recorded yet.")
         for key, info in vendor_scores.items():
-            print(f" - {key}: rating={info.get('rating')} jobs={info.get('jobs')} failures={info.get('failures')}")
+            print(
+                f" - {key}: rating={info.get('rating')} jobs={info.get('jobs')} failures={info.get('failures')}"
+            )
     elif args.command == "brain":
         try:
             orchestrator.load_config_and_state()
         except FileNotFoundError:
-            log_error("Project not initialized. Please run 'python3 orchestrator.py init' first.")
+            log_error(
+                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+            )
             return
         from orchestrator.core import brain
+
         if args.brain_command == "search":
             results = brain.recall(orchestrator, args.query, limit=10)
             if not results:
@@ -384,11 +560,14 @@ def main():
                 print(f"- {item}\n")
         elif args.brain_command == "prune":
             deleted = brain.prune(orchestrator, keep_last=args.keep)
-            log_success(f"Pruned {deleted} old memories; kept the most recent {args.keep}.")
+            log_success(
+                f"Pruned {deleted} old memories; kept the most recent {args.keep}."
+            )
         else:
             log_error("Specify a brain subcommand: search or prune.")
     else:
         parser.print_help()
+
 
 if __name__ == "__main__":
     main()

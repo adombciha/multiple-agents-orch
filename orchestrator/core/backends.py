@@ -14,21 +14,33 @@ AGY_MODEL_ALIASES = {
     "gpt-oss-120b": "Gemini 3.5 Flash (Medium)",
 }
 
+
 def get_backend(orchestrator, role: str) -> str:
     backends = orchestrator.config.get("backends", {})
     if role.startswith("developer_"):
         task_id = orchestrator.state.get("active_task_id")
-        override = orchestrator.state.get("task_backend_overrides", {}).get(task_id) if task_id else None
+        override = (
+            orchestrator.state.get("task_backend_overrides", {}).get(task_id)
+            if task_id
+            else None
+        )
         if override:
             return override
-        if "developer" in orchestrator.explicit_backends and role not in orchestrator.explicit_backends:
+        if (
+            "developer" in orchestrator.explicit_backends
+            and role not in orchestrator.explicit_backends
+        ):
             return backends.get("developer", "ollama")
         return backends.get(role, backends.get("developer", "ollama"))
     if role.startswith("qa_"):
-        if "qa" in orchestrator.explicit_backends and role not in orchestrator.explicit_backends:
+        if (
+            "qa" in orchestrator.explicit_backends
+            and role not in orchestrator.explicit_backends
+        ):
             return backends.get("qa", "ollama")
         return backends.get(role, backends.get("qa", "ollama"))
     return backends.get(role, "ollama")
+
 
 def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | None:
     expected_backend = orchestrator.config.get("role_model_backends", {}).get(role)
@@ -54,16 +66,30 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
         return tiers[idx]
     return tiers[-1]
 
-def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, image_paths: list[str] | None = None) -> str:
+
+def call_ollama(
+    orchestrator,
+    prompt: str,
+    system_prompt: str | None = None,
+    role: str = "developer",
+    model: str | None = None,
+    image_paths: list[str] | None = None,
+) -> str:
     from orchestrator.core.state import log_info, log_error
+
     url = f"{orchestrator.config['ollama_url']}/api/chat"
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    model = model or orchestrator.get_active_model_for_role(role, "ollama") or orchestrator.config.get("ollama_model", "gemma2:2b")
+    model = (
+        model
+        or orchestrator.get_active_model_for_role(role, "ollama")
+        or orchestrator.config.get("ollama_model", "gemma2:2b")
+    )
     from orchestrator.core import gpt
+
     if role.startswith("developer") and gpt.is_gpt_oss(model):
         return gpt.call(orchestrator, prompt, system_prompt, role, model, image_paths)
     log_info(f"Ollama calling model: {model}")
@@ -78,13 +104,17 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
     if think and model not in no_think_models:
         payload["think"] = think
     if image_paths:
-        payload["messages"][-1]["images"] = [base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths]
+        payload["messages"][-1]["images"] = [
+            base64.b64encode(Path(path).read_bytes()).decode() for path in image_paths
+        ]
 
     try:
         timeout = orchestrator.config.get("ollama_timeout", 1800)
         response = requests.post(url, json=payload, timeout=timeout)
         if payload.get("think") and response.status_code == 400:
-            log_info(f"Ollama model {model} does not accept think={think}; retrying without thinking.")
+            log_info(
+                f"Ollama model {model} does not accept think={think}; retrying without thinking."
+            )
             no_think_models.add(model)
             orchestrator._ollama_no_think_models = no_think_models
             retry_payload = dict(payload)
@@ -97,8 +127,16 @@ def call_ollama(orchestrator, prompt: str, system_prompt: str | None = None, rol
         log_error(f"Error detail: {e}")
         raise RuntimeError(f"Ollama connection failed: {e}")
 
-def call_codex(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+
+def call_codex(
+    orchestrator,
+    prompt: str,
+    system_prompt: str | None = None,
+    role: str = "developer",
+    model: str | None = None,
+) -> str:
     from orchestrator.core.state import log_info
+
     full_prompt = ""
     if system_prompt:
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
@@ -109,9 +147,10 @@ def call_codex(orchestrator, prompt: str, system_prompt: str | None = None, role
         f.write(full_prompt)
 
     cmd = [
-        "codex", "exec",
+        "codex",
+        "exec",
         "--dangerously-bypass-approvals-and-sandbox",
-        "--skip-git-repo-check"
+        "--skip-git-repo-check",
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
@@ -133,22 +172,28 @@ def call_codex(orchestrator, prompt: str, system_prompt: str | None = None, role
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=1800,
-                check=False
+                check=False,
             )
 
         if temp_prompt_file.exists():
             temp_prompt_file.unlink()
 
         if result.returncode != 0:
-            raise RuntimeError(f"Codex failed with code {result.returncode}:\n{result.stderr}")
+            raise RuntimeError(
+                f"Codex failed with code {result.returncode}:\n{result.stderr}"
+            )
         return result.stdout
     except Exception as e:
         if temp_prompt_file.exists():
             temp_prompt_file.unlink()
         raise e
 
-def call_claude(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer") -> str:
+
+def call_claude(
+    orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer"
+) -> str:
     from orchestrator.core.state import log_info
+
     full_prompt = ""
     if system_prompt:
         full_prompt += f"{system_prompt}\n\n"
@@ -168,14 +213,24 @@ def call_claude(orchestrator, prompt: str, system_prompt: str | None = None, rol
         stderr=subprocess.PIPE,
         text=True,
         timeout=1800,
-        check=False
+        check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"Claude CLI failed with code {result.returncode}:\n{result.stderr}")
+        raise RuntimeError(
+            f"Claude CLI failed with code {result.returncode}:\n{result.stderr}"
+        )
     return result.stdout
 
-def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None) -> str:
+
+def call_agy(
+    orchestrator,
+    prompt: str,
+    system_prompt: str | None = None,
+    role: str = "developer",
+    model: str | None = None,
+) -> str:
     from orchestrator.core.state import log_info
+
     full_prompt = ""
     if system_prompt:
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
@@ -196,20 +251,41 @@ def call_agy(orchestrator, prompt: str, system_prompt: str | None = None, role: 
         stderr=subprocess.PIPE,
         text=True,
         timeout=1800,
-        check=False
+        check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"agy CLI failed with code {result.returncode}:\n{result.stderr}")
+        raise RuntimeError(
+            f"agy CLI failed with code {result.returncode}:\n{result.stderr}"
+        )
     return result.stdout
 
-def call_grok(orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer", model: str | None = None, response_schema: dict | None = None) -> str:
+
+def call_grok(
+    orchestrator,
+    prompt: str,
+    system_prompt: str | None = None,
+    role: str = "developer",
+    model: str | None = None,
+    response_schema: dict | None = None,
+) -> str:
     from orchestrator.core import grok
+
     return grok.call(orchestrator, prompt, system_prompt, role, model, response_schema)
+
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
+
     message = str(error).lower()
-    if not quota_exhausted(error) and not any(marker in message for marker in ("token limit", "context length", "maximum context", "too many tokens")):
+    if not quota_exhausted(error) and not any(
+        marker in message
+        for marker in (
+            "token limit",
+            "context length",
+            "maximum context",
+            "too many tokens",
+        )
+    ):
         return None
     tiers = orchestrator.config.get("role_model_tiers", {}).get(role, [])
     if len(tiers) < 2:
@@ -217,23 +293,39 @@ def token_fallback_model(orchestrator, role: str, error: Exception) -> str | Non
     log_warning(f"[!] Retrying {role} with {tiers[1]} after capacity failure.")
     return tiers[1]
 
+
 def quota_exhausted(error: Exception) -> bool:
     message = str(error).lower()
-    return any(marker in message for marker in (
-        "quota", "rate limit", "rate_limit", "too many requests", "429",
-        "insufficient credit", "insufficient funds", "usage limit", "token budget",
-        "spending-limit", "personal-team-blocked",
-    ))
+    return any(
+        marker in message
+        for marker in (
+            "quota",
+            "rate limit",
+            "rate_limit",
+            "too many requests",
+            "429",
+            "insufficient credit",
+            "insufficient funds",
+            "usage limit",
+            "token budget",
+            "spending-limit",
+            "personal-team-blocked",
+        )
+    )
+
 
 def backend_available(orchestrator, backend: str) -> bool:
     exhausted = orchestrator.state.setdefault("quota_exhausted_backends", {})
     return backend not in exhausted
 
+
 def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
     from orchestrator.core.state import log_warning
+
     orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = True
     orchestrator.save_state()
     log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
+
 
 QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
 
@@ -243,7 +335,11 @@ QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
 VENDOR_QUOTA_PROBES = {
     "codex": {"command": "/status"},
     "claude": {"command": "/usage"},
-    "grok": {"command": "/usage", "trust_prompt": r"Yes, proceed", "dismiss": (r"New worktree|Resume session", "Escape")},
+    "grok": {
+        "command": "/usage",
+        "trust_prompt": r"Yes, proceed",
+        "dismiss": (r"New worktree|Resume session", "Escape"),
+    },
     "agy": {"command": "/credits"},
 }
 
@@ -252,14 +348,20 @@ def _tmux_pane(session: str) -> str | None:
     try:
         result = subprocess.run(
             ["tmux", "capture-pane", "-t", session, "-p"],
-            check=True, timeout=5, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            check=True,
+            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
         )
         return result.stdout
     except Exception:
         return None
 
 
-def _tmux_wait_stable(session: str, timeout: float = 15.0, interval: float = 0.6) -> str | None:
+def _tmux_wait_stable(
+    session: str, timeout: float = 15.0, interval: float = 0.6
+) -> str | None:
     """Poll the pane until its content stops changing for two consecutive polls
     (the CLI finished rendering/loading), or `timeout` elapses. Generic across
     vendors, so we don't need a hand-tuned fixed sleep per CLI."""
@@ -280,8 +382,12 @@ def _tmux_wait_stable(session: str, timeout: float = 15.0, interval: float = 0.6
     return last
 
 
-def _probe_vendor_quota_pane(binary: str, command: str, trust_prompt: str | None = None,
-                              dismiss: tuple[str, str] | None = None) -> str | None:
+def _probe_vendor_quota_pane(
+    binary: str,
+    command: str,
+    trust_prompt: str | None = None,
+    dismiss: tuple[str, str] | None = None,
+) -> str | None:
     """Launch `binary` in a scratch tmux session, drive it to the quota/usage
     screen via `command`, and return the captured pane text (or None if the
     session/tmux itself failed at any step). Best-effort only: a launch that
@@ -291,33 +397,59 @@ def _probe_vendor_quota_pane(binary: str, command: str, trust_prompt: str | None
     session = f"quota_check_{uuid.uuid4().hex[:8]}"
     try:
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session, "-x", "200", "-y", "50", binary],
-            check=True, timeout=10,
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-x",
+                "200",
+                "-y",
+                "50",
+                binary,
+            ],
+            check=True,
+            timeout=10,
         )
         pane = _tmux_wait_stable(session)
         if pane is None:
             return None
         if trust_prompt and re.search(trust_prompt, pane):
-            subprocess.run(["tmux", "send-keys", "-t", session, "y"], check=True, timeout=5)
+            subprocess.run(
+                ["tmux", "send-keys", "-t", session, "y"], check=True, timeout=5
+            )
             pane = _tmux_wait_stable(session)
             if pane is None:
                 return None
         if dismiss and re.search(dismiss[0], pane):
-            subprocess.run(["tmux", "send-keys", "-t", session, dismiss[1]], check=True, timeout=5)
+            subprocess.run(
+                ["tmux", "send-keys", "-t", session, dismiss[1]], check=True, timeout=5
+            )
             pane = _tmux_wait_stable(session)
             if pane is None:
                 return None
-        subprocess.run(["tmux", "send-keys", "-t", session, command], check=True, timeout=5)
-        time.sleep(0.5)  # let the CLI register the slash-command before Enter, or it can land as a no-op
-        subprocess.run(["tmux", "send-keys", "-t", session, "Enter"], check=True, timeout=5)
-        time.sleep(1.5)  # skip past the blank screen-clear frame some CLIs render before the usage screen
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session, command], check=True, timeout=5
+        )
+        time.sleep(
+            0.5
+        )  # let the CLI register the slash-command before Enter, or it can land as a no-op
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session, "Enter"], check=True, timeout=5
+        )
+        time.sleep(
+            1.5
+        )  # skip past the blank screen-clear frame some CLIs render before the usage screen
         return _tmux_wait_stable(session, timeout=8.0)
     except Exception:
         return None
     finally:
         subprocess.run(
             ["tmux", "kill-session", "-t", session],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
         )
 
 
@@ -356,6 +488,7 @@ def check_vendor_quota(orchestrator, backend: str) -> bool | None:
     reactive quota_exhausted() detection during the real call is the actual
     safety net; this is only a best-effort head start."""
     from orchestrator.core.state import log_info, log_warning
+
     if not orchestrator.config.get("vendor_quota_check_enabled", False):
         return None
     probe = VENDOR_QUOTA_PROBES.get(backend)
@@ -366,45 +499,64 @@ def check_vendor_quota(orchestrator, backend: str) -> bool | None:
         return None
 
     pane = _probe_vendor_quota_pane(
-        binary, probe["command"], trust_prompt=probe.get("trust_prompt"), dismiss=probe.get("dismiss"),
+        binary,
+        probe["command"],
+        trust_prompt=probe.get("trust_prompt"),
+        dismiss=probe.get("dismiss"),
     )
     if pane is None:
-        log_info(f"Could not check {backend}'s live quota (probe failed); assuming available.")
+        log_info(
+            f"Could not check {backend}'s live quota (probe failed); assuming available."
+        )
         return None
     pct = parse_vendor_quota_pct(backend, pane)
     if pct is None:
         log_info(f"Could not parse {backend}'s quota screen; assuming available.")
         return None
 
-    threshold = orchestrator.config.get("vendor_quota_check_threshold_pct", QUOTA_EXHAUSTED_THRESHOLD_PCT)
+    threshold = orchestrator.config.get(
+        "vendor_quota_check_threshold_pct", QUOTA_EXHAUSTED_THRESHOLD_PCT
+    )
     available = pct < threshold
     if not available:
-        log_warning(f"[!] {backend} is at {pct}% of its usage limit; treating as exhausted for hiring.")
+        log_warning(
+            f"[!] {backend} is at {pct}% of its usage limit; treating as exhausted for hiring."
+        )
     return available
 
 
 def _effective_developer_role(orchestrator, role: str) -> str:
     task_id = orchestrator.state.get("active_task_id")
     if task_id:
-        promotions = orchestrator.state.get("task_developer_promotions", {}).get(task_id, {})
+        promotions = orchestrator.state.get("task_developer_promotions", {}).get(
+            task_id, {}
+        )
     else:
         promotions = orchestrator.state.get("developer_promotions", {})
     return promotions.get(role, role)
 
+
 def escalate_developer_backend(orchestrator) -> None:
     from orchestrator.core.state import log_warning
     from orchestrator.core import scoring
+
     role = orchestrator.state.get("last_developer_role", "developer_senior")
     task_id = orchestrator.state.get("active_task_id")
     if task_id:
-        promotions = orchestrator.state.setdefault("task_developer_promotions", {}).setdefault(task_id, {})
+        promotions = orchestrator.state.setdefault(
+            "task_developer_promotions", {}
+        ).setdefault(task_id, {})
     else:
         promotions = orchestrator.state.setdefault("developer_promotions", {})
     effective_role = _effective_developer_role(orchestrator, role)
     effective_level = effective_role.rsplit("_", 1)[-1]
     effective_backend = get_backend(orchestrator, effective_role)
-    effective_model = get_active_model_for_role(orchestrator, effective_role, effective_backend)
-    scoring.record_event(orchestrator, "rd", effective_level, effective_backend, effective_model, -1.5)
+    effective_model = get_active_model_for_role(
+        orchestrator, effective_role, effective_backend
+    )
+    scoring.record_event(
+        orchestrator, "rd", effective_level, effective_backend, effective_model, -1.5
+    )
     promoted_role = {
         "developer_junior": "developer_middle",
         "developer_middle": "developer_senior",
@@ -418,6 +570,7 @@ def escalate_developer_backend(orchestrator) -> None:
     scope = f"task {task_id}" if task_id else "this run"
     log_warning(f"[!] Promoted {role} to {promoted_role} for {scope}.")
 
+
 def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
     """Deterministic firefighting: when internal staff is struggling on a task,
     hand it to the best-rated available vendor from backend_escalation_path.
@@ -428,6 +581,7 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
     """
     from orchestrator.core.state import log_warning
     from orchestrator.core import scoring
+
     role = orchestrator.state.get("last_developer_role", "developer_senior")
     effective_role = _effective_developer_role(orchestrator, role)
     if get_backend(orchestrator, effective_role) != "ollama":
@@ -442,15 +596,28 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
         return None
 
     task_id = task.get("id")
-    failed_routes = orchestrator.state.get("task_failed_model_routes", {}).get(task_id, [])
+    failed_routes = orchestrator.state.get("task_failed_model_routes", {}).get(
+        task_id, []
+    )
     candidates = []
     for candidate_backend in orchestrator.config.get("backend_escalation_path", []):
-        if candidate_backend == "ollama" or not backend_available(orchestrator, candidate_backend):
+        if candidate_backend == "ollama" or not backend_available(
+            orchestrator, candidate_backend
+        ):
             continue
-        model = get_active_model_for_role(orchestrator, effective_role, candidate_backend)
+        model = get_active_model_for_role(
+            orchestrator, effective_role, candidate_backend
+        )
         if f"{candidate_backend}/{model}" in failed_routes:
             continue
-        candidates.append((scoring.get_vendor_rating(orchestrator.config, candidate_backend, model), candidate_backend))
+        candidates.append(
+            (
+                scoring.get_vendor_rating(
+                    orchestrator.config, candidate_backend, model
+                ),
+                candidate_backend,
+            )
+        )
     if not candidates:
         return None
 
@@ -459,8 +626,12 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
         if check_vendor_quota(orchestrator, hired_backend) is False:
             mark_backend_quota_exhausted(orchestrator, hired_backend)
             continue
-        orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = hired_backend
+        orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = (
+            hired_backend
+        )
         orchestrator.save_state()
-        log_warning(f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight.")
+        log_warning(
+            f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight."
+        )
         return hired_backend
     return None

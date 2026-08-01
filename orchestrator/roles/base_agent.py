@@ -18,12 +18,15 @@ PONYTAIL_PROMPT = (
     "- Non-trivial logic must leave one runnable check behind."
 )
 
+
 def extract_json_response(response: str) -> str:
     """Return the first valid JSON value, tolerating a Markdown code fence."""
     text = response.strip()
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]).strip()
+        text = "\n".join(
+            lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]
+        ).strip()
     decoder = json.JSONDecoder()
     for index, character in enumerate(text):
         if character not in "[{":
@@ -35,12 +38,14 @@ def extract_json_response(response: str) -> str:
             continue
     raise ValueError("response does not contain valid JSON")
 
+
 def is_json_response(response: str) -> bool:
     try:
         extract_json_response(response)
         return True
     except (TypeError, ValueError):
         return False
+
 
 def is_strict_json_response(response: str) -> bool:
     try:
@@ -49,13 +54,18 @@ def is_strict_json_response(response: str) -> bool:
     except (TypeError, json.JSONDecodeError):
         return False
 
-def inject_ponytail_prompt(system_prompt: str | None, use_ponytail: bool, role: str | None = None) -> str | None:
+
+def inject_ponytail_prompt(
+    system_prompt: str | None, use_ponytail: bool, role: str | None = None
+) -> str | None:
     """Injects PONYTAIL_PROMPT if active and role is eligible (manager, developer, reviewer)."""
     if not use_ponytail:
         return system_prompt
     is_eligible = True
     if role is not None:
-        is_eligible = (role == "manager" or role.startswith("developer") or role == "reviewer")
+        is_eligible = (
+            role == "manager" or role.startswith("developer") or role == "reviewer"
+        )
     if is_eligible:
         if system_prompt:
             return system_prompt + PONYTAIL_PROMPT
@@ -63,15 +73,41 @@ def inject_ponytail_prompt(system_prompt: str | None, use_ponytail: bool, role: 
             return PONYTAIL_PROMPT.strip()
     return system_prompt
 
+
 class BaseAgent:
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
 
-    def call_agent(self, role: str, prompt: str, system_prompt: str | None = None, image_paths: list[str] | None = None, response_validator=None, response_schema: dict | None = None) -> str:
-        return self.orchestrator.call_agent(role, prompt, system_prompt, image_paths, response_validator, response_schema)
+    def call_agent(
+        self,
+        role: str,
+        prompt: str,
+        system_prompt: str | None = None,
+        image_paths: list[str] | None = None,
+        response_validator=None,
+        response_schema: dict | None = None,
+    ) -> str:
+        return self.orchestrator.call_agent(
+            role,
+            prompt,
+            system_prompt,
+            image_paths,
+            response_validator,
+            response_schema,
+        )
 
-    def call_agent_ollama_fallback(self, role: str, prompt: str, system_prompt: str | None = None) -> str:
+    def call_agent_ollama_fallback(
+        self, role: str, prompt: str, system_prompt: str | None = None
+    ) -> str:
         return self.orchestrator.call_agent_ollama_fallback(role, prompt, system_prompt)
 
-    def call_manager(self, prompt: str, system_prompt: str | None = None, response_validator=None, response_schema: dict | None = None) -> str:
-        return self.orchestrator.call_manager(prompt, system_prompt, response_validator, response_schema)
+    def call_manager(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        response_validator=None,
+        response_schema: dict | None = None,
+    ) -> str:
+        return self.orchestrator.call_manager(
+            prompt, system_prompt, response_validator, response_schema
+        )

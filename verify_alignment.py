@@ -6,8 +6,9 @@ readmes = {
     "zh-TW": "README_en.md",
     "zh-CN": "README_zh-CN.md",
     "ja": "README_ja.md",
-    "ru": "README_ru.md"  # Added Russian README
+    "ru": "README_ru.md",  # Added Russian README
 }
+
 
 def get_structural_signature(line):
     line_strip = line.strip()
@@ -27,6 +28,7 @@ def get_structural_signature(line):
     backticks_count = line.count("`")
     return f"TEXT:links={links_count}:backticks={backticks_count}"
 
+
 # Load contents
 contents = {}
 for lang, filename in readmes.items():
@@ -40,14 +42,16 @@ mismatches = False
 for lang in ["zh-TW", "zh-CN", "ja", "ru"]:  # Added Russian language to the loop
     lang_lines = contents[lang]
     if len(lang_lines) != len(en_sigs):
-        print(f"❌ Line count mismatch for {lang}: {len(lang_lines)} vs {len(en_sigs)} (en)")
+        print(
+            f"❌ Line count mismatch for {lang}: {len(lang_lines)} vs {len(en_sigs)} (en)"
+        )
         mismatches = True
         continue
-    
+
     for idx, (line, en_sig) in enumerate(zip(lang_lines, en_sigs)):
         lang_sig = get_structural_signature(line)
         if en_sig != lang_sig:
-            print(f"❌ Structural mismatch in {lang} at line {idx+1}")
+            print(f"❌ Structural mismatch in {lang} at line {idx + 1}")
             print(f"   EN: {contents['en'][idx]}")
             print(f"   {lang}: {line}")
             mismatches = True

@@ -24,7 +24,10 @@ def _error_category(error: Exception | None) -> str | None:
     text = str(error).lower()
     if "timeout" in text or "timed out" in text:
         return "timeout"
-    if any(marker in text for marker in ("quota", "rate limit", "429", "spending-limit", "token budget")):
+    if any(
+        marker in text
+        for marker in ("quota", "rate limit", "429", "spending-limit", "token budget")
+    ):
         return "quota"
     if "contract" in text or "json" in text or "file block" in text:
         return "contract"
@@ -32,7 +35,9 @@ def _error_category(error: Exception | None) -> str | None:
 
 
 def _usage_path(orchestrator) -> Path:
-    return orchestrator.ai_dir / orchestrator.config.get("llm_usage_log", "llm_usage.jsonl")
+    return orchestrator.ai_dir / orchestrator.config.get(
+        "llm_usage_log", "llm_usage.jsonl"
+    )
 
 
 def record_call(
@@ -59,13 +64,19 @@ def record_call(
     input_tokens, token_status = _token_count(model, messages)
     output_tokens = None
     if output is not None:
-        output_tokens, output_status = _token_count(model, [{"role": "assistant", "content": output}])
+        output_tokens, output_status = _token_count(
+            model, [{"role": "assistant", "content": output}]
+        )
         if token_status == "exact" and output_status != "exact":
             token_status = output_status
 
     if isinstance(provider_usage, dict):
-        input_tokens = provider_usage.get("prompt_tokens", provider_usage.get("input_tokens", input_tokens))
-        output_tokens = provider_usage.get("completion_tokens", provider_usage.get("output_tokens", output_tokens))
+        input_tokens = provider_usage.get(
+            "prompt_tokens", provider_usage.get("input_tokens", input_tokens)
+        )
+        output_tokens = provider_usage.get(
+            "completion_tokens", provider_usage.get("output_tokens", output_tokens)
+        )
         token_status = "provider"
 
     total_tokens = None
@@ -92,7 +103,9 @@ def record_call(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            handle.write(
+                json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+            )
     except OSError:
         # Telemetry must never change workflow behavior.
         return
@@ -113,7 +126,9 @@ def summary_markdown(orchestrator) -> str:
     if not records:
         return ""
 
-    by_model = defaultdict(lambda: {"calls": 0, "failed": 0, "input": 0, "output": 0, "total": 0})
+    by_model = defaultdict(
+        lambda: {"calls": 0, "failed": 0, "input": 0, "output": 0, "total": 0}
+    )
     for record in records:
         item = by_model[record.get("model") or "unknown"]
         item["calls"] += 1
@@ -132,5 +147,7 @@ def summary_markdown(orchestrator) -> str:
         "|---|---:|---:|---:|---:|---:|",
     ]
     for model, item in sorted(by_model.items()):
-        lines.append(f"| `{model}` | {item['calls']} | {item['failed']} | {item['input']} | {item['output']} | {item['total']} |")
+        lines.append(
+            f"| `{model}` | {item['calls']} | {item['failed']} | {item['input']} | {item['output']} | {item['total']} |"
+        )
     return "\n".join(lines)
