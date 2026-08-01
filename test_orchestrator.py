@@ -670,6 +670,62 @@ def test_configure_ollama_uses_detected_windows_endpoint(
     assert initialized_orchestrator.config["ollama_url"] == "http://172.17.144.1:11434"
 
 
+def test_review_revise_reset_revisions_clears_counter_before_incrementing(
+    tmp_path, no_git, monkeypatch
+):
+    # A prior run already hit max_revisions (code_revisions == 2): without
+    # --reset-revisions, a plain `revise` would push it to 3, past max_rev,
+    # so the very next automatic reject immediately re-pauses with no real
+    # retry. --reset-revisions clears it first so the auto-revise loop gets
+    # a genuine fresh budget, without touching the worktree or tasks the
+    # way `reset` would.
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "WAITING_FOR_OWNER",
+            "code_revisions": 2,
+            "human_review_source": "Reviewer",
+            "human_review_details": "Fix the two flagged bugs.",
+            "pass_state": "COMPLETED",
+            "resume_state": "IMPLEMENTING",
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", ["orchestrator.py", "review", "revise", "--reset-revisions"]
+    )
+
+    orchestrator_main.main()
+
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["state"] == "IMPLEMENTING"
+    assert state["code_revisions"] == 1
+    assert any(t["id"] == "HUMAN-REVIEW-1" for t in state["tasks"])
+
+
+def test_review_revise_without_reset_revisions_keeps_incrementing(
+    tmp_path, no_git, monkeypatch
+):
+    write_ai_company(
+        tmp_path,
+        state_overrides={
+            "state": "WAITING_FOR_OWNER",
+            "code_revisions": 2,
+            "human_review_source": "Reviewer",
+            "human_review_details": "Fix the two flagged bugs.",
+            "pass_state": "COMPLETED",
+            "resume_state": "IMPLEMENTING",
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "review", "revise"])
+
+    orchestrator_main.main()
+
+    state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
+    assert state["code_revisions"] == 3
+
+
 def test_inline_referenced_markdown_appends_existing_file_content(tmp_path):
     workspace = tmp_path
     (workspace / "docs").mkdir()

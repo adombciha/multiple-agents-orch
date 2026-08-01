@@ -144,6 +144,14 @@ def main():
     review_parser.add_argument(
         "--run", action="store_true", help="Continue the workflow after the decision"
     )
+    review_parser.add_argument(
+        "--reset-revisions",
+        action="store_true",
+        help="With 'revise': clear the code/plan revision counter first, giving the "
+        "auto-revise loop a fresh budget instead of immediately re-pausing if it "
+        "was paused for hitting max_revisions. Keeps the current worktree and "
+        "tasks -- unlike 'reset', nothing already implemented is discarded.",
+    )
 
     reset_parser = subparsers.add_parser("reset", help="Reset the orchestrator state")
     reset_parser.add_argument(
@@ -386,6 +394,8 @@ def main():
                     orchestrator.state["plan_revisions"] = 0
                 else:
                     next_state = "IMPLEMENTING"
+                    if args.reset_revisions:
+                        orchestrator.state["code_revisions"] = 0
                     n = orchestrator.state.get("code_revisions", 0) + 1
                     orchestrator.state["code_revisions"] = n
                     orchestrator.state.setdefault("tasks", []).append(
