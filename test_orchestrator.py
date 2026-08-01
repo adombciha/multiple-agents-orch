@@ -1379,6 +1379,28 @@ def test_developing_plan_keeps_section_level_readme_tasks(initialized_orchestrat
     assert "## Quick Start" in manager.call_args.args[0]
 
 
+def test_developing_plan_ignores_markdown_paths_inside_reference_block(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("Build a small backend app.", encoding="utf-8")
+    request = (
+        "Build the app as specified.\n\n"
+        "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->\n"
+        "## docs/spec.md\n\n# Spec\n\n## Some Heading\n\nDetails.\n"
+        "<!-- REFERENCE-ONLY:END -->\n"
+    )
+    initialized_orchestrator.request_path.write_text(request, encoding="utf-8")
+    spec = initialized_orchestrator.workspace / "docs" / "spec.md"
+    spec.parent.mkdir()
+    spec.write_text("# Spec\n\n## Some Heading\n\nDetails.\n", encoding="utf-8")
+    manager = Mock(return_value='{"tasks": [{"id": "T1", "description": "implement backend", "target_files": ["backend/app.py"], "rd_level": "middle", "qa_level": "middle"}], "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}}}')
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    prompt_sent_to_manager = manager.call_args.args[0]
+    assert "docs/spec.md" not in prompt_sent_to_manager
+    assert initialized_orchestrator.state["tasks"][0]["id"] == "T1"
+
+
 def test_developing_plan_uses_whole_file_task_for_new_markdown(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("只允許新增 docs/litellm-telemetry.md", encoding="utf-8")
     initialized_orchestrator.request_path.write_text("建立 docs/litellm-telemetry.md", encoding="utf-8")

@@ -10,12 +10,22 @@ from orchestrator.core.state import AgentOrchestrator, Colors, log_success, log_
 from orchestrator.core import scoring
 
 
+REFERENCE_BLOCK_START = "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
+REFERENCE_BLOCK_END = "<!-- REFERENCE-ONLY:END -->"
+
+
 def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
     """Some backends (e.g. grok in manager/planning calls) only ever see the
     prompt text, not the filesystem -- a path mentioned in the prompt is just
     words to them. If the prompt references an existing .md file by relative
     path, append that file's actual content so every backend sees it, not
-    just the ones with their own file-reading tools."""
+    just the ones with their own file-reading tools.
+
+    The appended content is wrapped in REFERENCE_BLOCK_START/END markers so
+    that DEVELOPING_PLAN's unrelated "existing markdown file to edit"
+    detection (which scans request text for any *.md mention) skips it --
+    otherwise a referenced spec/plan doc gets misread as something to
+    rewrite section-by-section instead of background context."""
     referenced = []
     for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])", prompt):
         path = Path(name)
@@ -28,9 +38,10 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
             referenced.append(resolved)
     if not referenced:
         return prompt
-    appended = "\n\n---\nReferenced file contents (inlined automatically so every backend can see them):\n"
+    appended = f"\n\n{REFERENCE_BLOCK_START}\nReferenced file contents (inlined automatically so every backend can see them; this is context, not a request to create or edit these files):\n"
     for path in referenced:
         appended += f"\n## {path.relative_to(workspace)}\n\n{path.read_text(encoding='utf-8')}\n"
+    appended += f"\n{REFERENCE_BLOCK_END}\n"
     return prompt + appended
 
 

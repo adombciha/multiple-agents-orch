@@ -6,6 +6,14 @@ from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent, extract_json_response, is_strict_json_response
 from orchestrator.core import scoring, roster, brain
 
+# Must match orchestrator.main's REFERENCE_BLOCK_START/END: auto-inlined
+# reference material (e.g. a spec/plan doc the request pointed at) lives
+# between these markers so it isn't mistaken below for an existing
+# Markdown file the user wants edited.
+_REFERENCE_BLOCK_RE = re.compile(
+    r"<!-- REFERENCE-ONLY:START.*?-->.*?<!-- REFERENCE-ONLY:END -->", re.DOTALL
+)
+
 TASK_PLAN_SCHEMA = {
     "type": "object",
     "properties": {
@@ -104,8 +112,9 @@ class DeveloperAgent(BaseAgent):
             "roster": roster_data,
         }
         request_text = self.orchestrator.request_path.read_text(encoding="utf-8") if self.orchestrator.request_path.exists() else planning_input
+        request_text_for_file_detection = _REFERENCE_BLOCK_RE.sub("", request_text)
         requested_files = []
-        for name in re.findall(r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])", request_text, re.IGNORECASE):
+        for name in re.findall(r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])", request_text_for_file_detection, re.IGNORECASE):
             path = Path(name)
             target = (self.orchestrator.workspace / path).resolve()
             if not path.is_absolute() and self.orchestrator.workspace in target.parents:
