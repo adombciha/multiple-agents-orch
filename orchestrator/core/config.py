@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
     "max_visual_image_bytes": 10 * 1024 * 1024,
     "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
+    "max_plan_escalations": 1,  # After max_revisions narrow fixes fail a stage, give the Manager this many chances to replan before pausing for a human
     "backends": {
         "manager": "grok",
         "architect": "grok",

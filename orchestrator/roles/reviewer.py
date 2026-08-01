@@ -168,9 +168,6 @@ class ReviewerAgent(BaseAgent):
                     f"Revising implementation (Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
                 )
             else:
-                log_warning(
-                    "Reached max code review revisions. Pausing for human review."
-                )
-                self.orchestrator.pause_for_human_review(
+                self.orchestrator.escalate_to_replan_or_pause(
                     "Reviewer", review, "IMPLEMENTING", "COMPLETED"
                 )

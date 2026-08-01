@@ -358,6 +358,48 @@ class AgentOrchestrator:
         )
         self.save_state()
 
+    def escalate_to_replan_or_pause(
+        self, source: str, feedback: str, resume_state: str, pass_state: str
+    ) -> bool:
+        """Called where a review/QA stage would otherwise pause for a human
+        after exhausting max_revisions on narrow, single-stage fix tasks.
+
+        Repeated rejection on the same stage is often a sign the *task
+        breakdown* is wrong, not that the developer needs another attempt --
+        e.g. a bug spanning multiple files gets split into single-file FIX
+        tasks that structurally can't touch all the files a real fix needs.
+        Before giving up on automation entirely, give the Manager one
+        bounded chance (`max_plan_escalations`, default 1) to reconsider the
+        plan with the failure history in hand. Returns True if it escalated
+        to DEVELOPING_PLAN, False if it paused for a human instead (already
+        used its escalation, or none configured)."""
+        max_escalations = self.config.get("max_plan_escalations", 1)
+        if self.state.get("plan_escalations", 0) >= max_escalations:
+            log_warning(
+                f"Reached max plan escalations; pausing for human review after {source} rejection."
+            )
+            self.pause_for_human_review(source, feedback, resume_state, pass_state)
+            return False
+        self.state["plan_escalations"] = self.state.get("plan_escalations", 0) + 1
+        self.state["code_revisions"] = 0
+        self.state["state"] = "DEVELOPING_PLAN"
+        if self.requirements_path.exists():
+            with open(self.requirements_path, "a", encoding="utf-8") as f:
+                f.write(
+                    f"\n\n## Repeated failure during implementation (escalated by {source})\n\n"
+                    "A previous implementation attempt exhausted its revision budget "
+                    f"still failing {source} review. Reconsider the task/file "
+                    "breakdown -- files that must change together for a single "
+                    "fix (e.g. an HTML file and the scripts it loads) should be "
+                    "one task, not split across several. Failure feedback:\n\n"
+                    f"{feedback[:2000]}\n"
+                )
+        self.save_state()
+        log_warning(
+            f"Reached max code revisions after {source} rejection; escalating to the Manager for a plan reconsideration ({self.state['plan_escalations']}/{max_escalations})."
+        )
+        return True
+
     def get_windows_host_ip(self) -> str:
         """Finds the default route gateway (usually the Windows Host IP in WSL)."""
         try:

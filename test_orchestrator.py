@@ -2930,6 +2930,53 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
     assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "junior"
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
 
+
+def test_step_testing_failed_at_max_revisions_escalates_then_pauses(
+    initialized_orchestrator, monkeypatch
+):
+    # First time hitting max_revisions: gets one bounded chance to replan
+    # (Manager reconsiders the task/file breakdown) instead of immediately
+    # giving up on automation.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "target_files": ["app.py"],
+            "status": "completed",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"junior": 1},
+        "qa": {"junior": 1},
+    }
+    initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config[
+        "max_revisions"
+    ]
+    monkeypatch.setattr(
+        initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed"))
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent", Mock(return_value="FAILED\nfix it")
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "DEVELOPING_PLAN"
+    assert initialized_orchestrator.state["plan_escalations"] == 1
+    assert initialized_orchestrator.state["code_revisions"] == 0
+    assert (
+        "Repeated failure during implementation"
+        in initialized_orchestrator.requirements_path.read_text(encoding="utf-8")
+    )
+
+    # Second time hitting max_revisions after the escalation was already
+    # used: no more automatic options, pause for a human.
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config[
         "max_revisions"
     ]
@@ -3031,6 +3078,40 @@ def test_step_reviewing_code_rejected_revises_until_max(
     assert initialized_orchestrator.state["tasks"][-1]["rd_level"] == "senior"
     assert initialized_orchestrator.state["tasks"][-1]["qa_level"] == "senior"
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
+
+
+def test_step_reviewing_code_rejected_at_max_revisions_escalates_then_pauses(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.test_results_path.write_text("tests", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "target_files": ["app.py"],
+            "status": "completed",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        }
+    ]
+    initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config[
+        "max_revisions"
+    ]
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'),
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_reviewing_code()
+
+    assert initialized_orchestrator.state["state"] == "DEVELOPING_PLAN"
+    assert initialized_orchestrator.state["plan_escalations"] == 1
+    assert initialized_orchestrator.state["code_revisions"] == 0
 
     initialized_orchestrator.state["code_revisions"] = initialized_orchestrator.config[
         "max_revisions"
