@@ -920,7 +920,9 @@ class DeveloperAgent(BaseAgent):
             backend = self.orchestrator.get_backend(effective_role)
 
             target_files = task.get("target_files", [])
-            if not target_files and str(task.get("id", "")).startswith("FIX-"):
+            if not target_files and str(task.get("id", "")).startswith(
+                ("FIX-", "HUMAN-REVIEW-")
+            ):
                 target_files = list(
                     dict.fromkeys(
                         path

@@ -688,6 +688,7 @@ def test_review_revise_reset_revisions_clears_counter_before_incrementing(
             "human_review_details": "Fix the two flagged bugs.",
             "pass_state": "COMPLETED",
             "resume_state": "IMPLEMENTING",
+            "tasks": [{"id": "T-1", "target_files": ["app.py"], "status": "completed"}],
         },
     )
     monkeypatch.chdir(tmp_path)
@@ -700,6 +701,8 @@ def test_review_revise_reset_revisions_clears_counter_before_incrementing(
     state = json.loads((tmp_path / ".ai-company" / "state.json").read_text())
     assert state["state"] == "IMPLEMENTING"
     assert state["code_revisions"] == 1
+    human_review_task = next(t for t in state["tasks"] if t["id"] == "HUMAN-REVIEW-1")
+    assert human_review_task["target_files"] == ["app.py"]
     assert any(t["id"] == "HUMAN-REVIEW-1" for t in state["tasks"])
 
 
@@ -1463,6 +1466,57 @@ def test_legacy_fix_task_inherits_original_target_files(
         },
         {
             "id": "FIX-REV-1",
+            "description": "fix app",
+            "status": "pending",
+            "rd_level": "middle",
+            "qa_level": "junior",
+        },
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"middle": 1, "junior": 1},
+        "qa": {"junior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(return_value="[FILE_START: app.py]\nfixed\n[FILE_END: app.py]"),
+    )
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
+    assert (initialized_orchestrator.workspace / "app.py").read_text(
+        encoding="utf-8"
+    ) == "fixed"
+
+
+def test_human_review_task_inherits_original_target_files(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: HUMAN-REVIEW-N tasks (created by `review revise`) used
+    # to get no target_files fallback at all -- only "FIX-"-prefixed task
+    # IDs did. For codex/claude backends (which edit the worktree directly
+    # rather than emitting [FILE_START] blocks), the implementing step
+    # detects a change by checking whether any target_files path differs
+    # from its pre-task contents; with an empty target_files list that
+    # check is vacuously false, so a correct fix was always reported as
+    # "produced no permitted file changes" -- observed live on
+    # gitMCPApplication.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "change app",
+            "target_files": ["app.py"],
+            "status": "completed",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        },
+        {
+            "id": "HUMAN-REVIEW-1",
             "description": "fix app",
             "status": "pending",
             "rd_level": "middle",

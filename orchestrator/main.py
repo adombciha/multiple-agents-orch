@@ -402,6 +402,15 @@ def main():
                         {
                             "id": f"HUMAN-REVIEW-{n}",
                             "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
+                            "target_files": list(
+                                dict.fromkeys(
+                                    path
+                                    for existing_task in orchestrator.state.get(
+                                        "tasks", []
+                                    )
+                                    for path in existing_task.get("target_files", [])
+                                )
+                            ),
                             "status": "pending",
                             **orchestrator.fix_task_levels(),
                         }
