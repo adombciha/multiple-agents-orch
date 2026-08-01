@@ -30,13 +30,16 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
     path, append that file's actual content so every backend sees it, not
     just the ones with their own file-reading tools.
 
-    The appended content is wrapped in REFERENCE_BLOCK_START/END markers so
-    that DEVELOPING_PLAN's unrelated "existing markdown file to edit"
-    detection (which scans request text for any *.md mention) skips it --
+    The appended content is wrapped in REFERENCE_BLOCK_START/END markers, and
+    the original path mention in the prompt text is rewritten to not look
+    like a bare file path, so that DEVELOPING_PLAN's unrelated "existing
+    markdown file to edit" detection (which scans the whole saved request
+    for any *.md mention, wherever it appears) doesn't catch either copy --
     otherwise a referenced spec/plan doc gets misread as something to
     rewrite section-by-section instead of background context."""
+    pattern = re.compile(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])")
     referenced = []
-    for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])", prompt):
+    for name in pattern.findall(prompt):
         path = Path(name)
         if path.is_absolute():
             continue
@@ -47,11 +50,22 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
             referenced.append(resolved)
     if not referenced:
         return prompt
+
+    def _mask(match: re.Match) -> str:
+        path = Path(match.group(0))
+        resolved = (workspace / path).resolve()
+        return (
+            f"'{resolved.stem}' (see reference material below)"
+            if resolved in referenced
+            else match.group(0)
+        )
+
+    masked_prompt = pattern.sub(_mask, prompt)
     appended = f"\n\n{REFERENCE_BLOCK_START}\nReferenced file contents (inlined automatically so every backend can see them; this is context, not a request to create or edit these files):\n"
     for path in referenced:
         appended += f"\n## {path.relative_to(workspace)}\n\n{path.read_text(encoding='utf-8')}\n"
     appended += f"\n{REFERENCE_BLOCK_END}\n"
-    return prompt + appended
+    return masked_prompt + appended
 
 
 def ollama_available(url: str) -> bool:

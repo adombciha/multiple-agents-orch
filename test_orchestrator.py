@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -679,9 +680,29 @@ def test_inline_referenced_markdown_appends_existing_file_content(tmp_path):
         "Implement docs/plan.md exactly as written.", workspace
     )
 
-    assert "Implement docs/plan.md exactly as written." in result
+    assert "'plan' (see reference material below)" in result
     assert "# The Plan" in result
     assert "Do the thing." in result
+
+
+def test_inline_referenced_markdown_masks_path_mention_outside_reference_block(
+    tmp_path,
+):
+    # The path mention in the human-written prompt text must not survive as
+    # a bare "path.md" substring anywhere outside the reference block --
+    # otherwise DEVELOPING_PLAN's markdown-file-to-edit detection (which
+    # scans the whole saved request, not just the appended block) still
+    # catches it, exactly like the appended block itself is designed to
+    # avoid.
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("content", encoding="utf-8")
+
+    result = orchestrator_main.inline_referenced_markdown(
+        "Follow plan.md exactly.", tmp_path
+    )
+
+    prefix = result.split(orchestrator_main.REFERENCE_BLOCK_START)[0]
+    assert not re.search(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])", prefix)
 
 
 def test_inline_referenced_markdown_ignores_missing_file(tmp_path):
@@ -1970,6 +1991,39 @@ def test_developing_plan_ignores_markdown_paths_inside_reference_block(
     spec = initialized_orchestrator.workspace / "docs" / "spec.md"
     spec.parent.mkdir()
     spec.write_text("# Spec\n\n## Some Heading\n\nDetails.\n", encoding="utf-8")
+    manager = Mock(
+        return_value='{"tasks": [{"id": "T1", "description": "implement backend", "target_files": ["backend/app.py"], "rd_level": "middle", "qa_level": "middle"}], "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}}}'
+    )
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    prompt_sent_to_manager = manager.call_args.args[0]
+    assert "docs/spec.md" not in prompt_sent_to_manager
+    assert initialized_orchestrator.state["tasks"][0]["id"] == "T1"
+
+
+def test_developing_plan_ignores_markdown_path_referenced_in_original_request_text(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test for the full `start` -> `inline_referenced_markdown`
+    # -> DEVELOPING_PLAN path: the human-written prompt sentence itself
+    # names the referenced file by path (that's how inline_referenced_
+    # markdown knows what to inline), and that mention must not survive
+    # unmasked outside the reference block, or DEVELOPING_PLAN misreads it
+    # as a file to edit section-by-section -- this happened live even after
+    # the reference block wrapping was added, because only the appended
+    # copy was protected, not the original mention.
+    initialized_orchestrator.requirements_path.write_text(
+        "Build a small backend app.", encoding="utf-8"
+    )
+    spec = initialized_orchestrator.workspace / "docs" / "spec.md"
+    spec.parent.mkdir()
+    spec.write_text("# Spec\n\n## Some Heading\n\nDetails.\n", encoding="utf-8")
+    request = orchestrator_main.inline_referenced_markdown(
+        "Build the app described in docs/spec.md.", initialized_orchestrator.workspace
+    )
+    initialized_orchestrator.request_path.write_text(request, encoding="utf-8")
     manager = Mock(
         return_value='{"tasks": [{"id": "T1", "description": "implement backend", "target_files": ["backend/app.py"], "rd_level": "middle", "qa_level": "middle"}], "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}}}'
     )
