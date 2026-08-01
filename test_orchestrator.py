@@ -542,6 +542,61 @@ def test_configure_ollama_uses_detected_windows_endpoint(initialized_orchestrato
     assert initialized_orchestrator.config["ollama_url"] == "http://172.17.144.1:11434"
 
 
+def test_inline_referenced_markdown_appends_existing_file_content(tmp_path):
+    workspace = tmp_path
+    (workspace / "docs").mkdir()
+    plan_path = workspace / "docs" / "plan.md"
+    plan_path.write_text("# The Plan\n\nDo the thing.", encoding="utf-8")
+
+    result = orchestrator_main.inline_referenced_markdown(
+        "Implement docs/plan.md exactly as written.", workspace
+    )
+
+    assert "Implement docs/plan.md exactly as written." in result
+    assert "# The Plan" in result
+    assert "Do the thing." in result
+
+
+def test_inline_referenced_markdown_ignores_missing_file(tmp_path):
+    result = orchestrator_main.inline_referenced_markdown(
+        "See docs/does_not_exist.md for details.", tmp_path
+    )
+
+    assert result == "See docs/does_not_exist.md for details."
+
+
+def test_inline_referenced_markdown_ignores_path_outside_workspace(tmp_path):
+    outside = tmp_path.parent / "outside.md"
+    outside.write_text("secret", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = orchestrator_main.inline_referenced_markdown(
+        "See ../outside.md for details.", workspace
+    )
+
+    assert "secret" not in result
+
+
+def test_inline_referenced_markdown_noop_when_no_md_referenced(tmp_path):
+    result = orchestrator_main.inline_referenced_markdown(
+        "Add a new feature with no file references.", tmp_path
+    )
+
+    assert result == "Add a new feature with no file references."
+
+
+def test_inline_referenced_markdown_dedupes_repeated_reference(tmp_path):
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("content", encoding="utf-8")
+
+    result = orchestrator_main.inline_referenced_markdown(
+        "See plan.md and also plan.md again.", tmp_path
+    )
+
+    assert result.count("## plan.md") == 1
+
+
 def test_call_ollama_encodes_local_image(initialized_orchestrator, monkeypatch, tmp_path):
     image = tmp_path / "screen.png"
     image.write_bytes(b"image")

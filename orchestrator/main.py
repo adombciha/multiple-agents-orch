@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import argparse
 import json
@@ -7,6 +8,30 @@ from urllib.request import urlopen
 from pathlib import Path
 from orchestrator.core.state import AgentOrchestrator, Colors, log_success, log_info, log_error, log_header
 from orchestrator.core import scoring
+
+
+def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
+    """Some backends (e.g. grok in manager/planning calls) only ever see the
+    prompt text, not the filesystem -- a path mentioned in the prompt is just
+    words to them. If the prompt references an existing .md file by relative
+    path, append that file's actual content so every backend sees it, not
+    just the ones with their own file-reading tools."""
+    referenced = []
+    for name in re.findall(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])", prompt):
+        path = Path(name)
+        if path.is_absolute():
+            continue
+        resolved = (workspace / path).resolve()
+        if workspace != resolved and workspace not in resolved.parents:
+            continue
+        if resolved.is_file() and resolved not in referenced:
+            referenced.append(resolved)
+    if not referenced:
+        return prompt
+    appended = "\n\n---\nReferenced file contents (inlined automatically so every backend can see them):\n"
+    for path in referenced:
+        appended += f"\n## {path.relative_to(workspace)}\n\n{path.read_text(encoding='utf-8')}\n"
+    return prompt + appended
 
 
 def ollama_available(url: str) -> bool:
@@ -108,9 +133,10 @@ def main():
                 return
             image_paths.append(str(path.resolve()))
 
-        # Save request prompt
+        # Save request prompt, auto-inlining any referenced .md files
+        full_prompt = inline_referenced_markdown(args.prompt, orchestrator.workspace)
         with open(orchestrator.request_path, "w", encoding="utf-8") as f:
-            f.write(args.prompt)
+            f.write(full_prompt)
         log_success(f"Saved request to {orchestrator.request_path}")
 
         # Reset state to PLANNING
