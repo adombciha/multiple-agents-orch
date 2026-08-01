@@ -1670,6 +1670,25 @@ def test_step_testing_failed_command_cannot_pass_on_qa_response(initialized_orch
     assert "tests failed" in initialized_orchestrator.state["tasks"][-1]["description"]
 
 
+def test_step_testing_command_not_found_pauses_without_fix_task(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1", "description": "implement", "status": "completed", "rd_level": "senior", "qa_level": "senior"}]
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock(return_value=(127, "bash: .venv/bin/python: No such file or directory")))
+    qa_agent = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", qa_agent)
+    escalate = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", escalate)
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["resume_state"] == "TESTING"
+    assert all(not t["id"].startswith("FIX-QA") for t in initialized_orchestrator.state["tasks"])
+    qa_agent.assert_not_called()
+    escalate.assert_not_called()
+
+
 def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")

@@ -255,6 +255,8 @@ def main():
             orchestrator.state["quota_exhausted_backends"] = {}
             orchestrator.state["failed_model_routes"] = []
             orchestrator.state["task_failed_model_routes"] = {}
+            orchestrator.state["tasks"] = []
+            orchestrator.state["active_task_id"] = None
             orchestrator.cleanup_worktree(merge=False)
             orchestrator.save_state()
             log_success(f"State reset to {args.state}")

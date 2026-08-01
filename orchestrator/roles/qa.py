@@ -19,6 +19,15 @@ class QAAgent(BaseAgent):
 
         log_info(f"Test exit code: {code}")
 
+        if code in (126, 127):
+            log_warning(f"[!] Test command could not run (exit {code}): environment problem, not a code failure. Pausing for human review.")
+            self.orchestrator.pause_for_human_review(
+                "QA",
+                f"Test command failed to launch (exit {code}), so no tests were executed.\nCommand: {test_cmd}\nOutput:\n{output}\nFix test_command in config.json, then approve to re-run TESTING.",
+                "TESTING", "TESTING",
+            )
+            return
+
         agent_context = json.dumps(self.orchestrator.read_agent_context(), ensure_ascii=False)
 
         if self.orchestrator.has_git:
