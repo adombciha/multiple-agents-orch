@@ -40,6 +40,14 @@ def _extract_marker(qa_reports, marker: str) -> str | None:
     return None
 
 
+_MISSING_DEPENDENCY_SIGNALS = re.compile(
+    r"modulenotfounderror|no module named|importerror|command not found|"
+    r"not installed|not found on path|not found in path|executable not found|"
+    r"missing dependency|cannot find (?:the )?(?:executable|binary|module)",
+    re.IGNORECASE,
+)
+
+
 class QAAgent(BaseAgent):
     def step_testing(self):
         from orchestrator.core.state import (
@@ -152,6 +160,18 @@ class QAAgent(BaseAgent):
         dependency_install_needed = _extract_marker(
             qa_reports, "DEPENDENCY_INSTALL_NEEDED"
         )
+        if dependency_install_needed and not _MISSING_DEPENDENCY_SIGNALS.search(output):
+            # QA can claim a missing dependency from general knowledge of
+            # the project (e.g. "playwright is in requirements.txt") even
+            # when this run's actual raw output shows nothing of the sort
+            # -- observed live once the QA backend switched to a stronger
+            # model that produces well-formed but stale/hallucinated
+            # suggestions instead of obviously-malformed ones. Only honor
+            # the marker when the raw output itself corroborates it.
+            log_warning(
+                f"[!] QA claimed a missing dependency but this run's raw output shows no such error; ignoring: {dependency_install_needed}"
+            )
+            dependency_install_needed = None
         if dependency_install_needed:
             log_warning(
                 f"[!] QA reports a missing environment dependency, not a code issue. Pausing for human review: {dependency_install_needed}"

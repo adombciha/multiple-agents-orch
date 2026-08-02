@@ -2917,7 +2917,14 @@ def test_step_testing_pauses_for_human_when_qa_reports_missing_dependency(
         }
     ]
     monkeypatch.setattr(
-        initialized_orchestrator, "run_command", Mock(return_value=(0, "3 skipped"))
+        initialized_orchestrator,
+        "run_command",
+        Mock(
+            return_value=(
+                0,
+                "SKIPPED [3] tests/test_gui.py: ModuleNotFoundError: No module named 'playwright'",
+            )
+        ),
     )
     monkeypatch.setattr(
         initialized_orchestrator,
@@ -3066,6 +3073,54 @@ def test_step_testing_ignores_dependency_marker_truncated_to_garbage(
         "call_agent",
         Mock(
             return_value="QA_STATUS: FAILED\nselector timeout\nDEPENDENCY_INSTALL_NEEDED: \\"
+        ),
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] != "WAITING_FOR_OWNER"
+
+
+def test_step_testing_ignores_dependency_marker_uncorroborated_by_raw_output(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: observed live after switching QA to a stronger
+    # backend (codex/gpt-5.6-luna) -- it stopped producing malformed
+    # marker values, but it still claimed
+    # `DEPENDENCY_INSTALL_NEEDED: pip install playwright && playwright
+    # install chromium` from general knowledge of the project (playwright
+    # is in requirements.txt) even though this run's actual raw test
+    # output had zero mention of playwright or any import/module error --
+    # it was a single unrelated mock-assertion failure. A well-formed
+    # value isn't enough; it must be corroborated by the raw output.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "implement",
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "run_command",
+        Mock(return_value=(1, "1 failed, 74 passed -- AssertionError: mock mismatch")),
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\nmock assertion mismatch\nDEPENDENCY_INSTALL_NEEDED: pip install -r requirements.txt && playwright install chromium"
         ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
