@@ -3033,6 +3033,48 @@ def test_step_testing_ignores_dependency_marker_wrapped_in_punctuation(
     assert initialized_orchestrator.state["state"] != "WAITING_FOR_OWNER"
 
 
+def test_step_testing_ignores_dependency_marker_truncated_to_garbage(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: observed live a third time -- the weak model's
+    # output got truncated mid-line to a bare "\", which isn't a "none
+    # needed" filler (nothing in the denylist matches it) but is equally
+    # useless as an "install command." Require real content, not just any
+    # non-empty string, before treating the marker as actionable.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "implement",
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator, "run_command", Mock(return_value=(1, "1 failed"))
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\nselector timeout\nDEPENDENCY_INSTALL_NEEDED: \\"
+        ),
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] != "WAITING_FOR_OWNER"
+
+
 def test_pause_for_human_review_includes_test_command_suggestion(
     initialized_orchestrator,
 ):

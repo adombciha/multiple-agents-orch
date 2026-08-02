@@ -31,7 +31,11 @@ def _extract_marker(qa_reports, marker: str) -> str | None:
                 # startswith check misses -- strip leading non-alphanumerics
                 # before comparing.
                 bare = re.sub(r"^[^a-zA-Z0-9]+", "", value).lower()
-                if value and not bare.startswith(no_op_starts):
+                # Require enough real content to be an actionable value at
+                # all -- weak models sometimes truncate mid-line into
+                # near-nothing (e.g. a bare "\"), which isn't a "none
+                # needed" filler but is equally useless to act on.
+                if len(bare) >= 5 and not bare.startswith(no_op_starts):
                     return value
     return None
 
