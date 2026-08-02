@@ -17,6 +17,7 @@ def _extract_marker(qa_reports, marker: str) -> str | None:
         "na ",
         "no ",
         "not needed",
+        "not required",
         "not applicable",
         "nothing",
     )
@@ -25,7 +26,12 @@ def _extract_marker(qa_reports, marker: str) -> str | None:
             stripped = line.strip()
             if stripped.upper().startswith(f"{marker}:"):
                 value = stripped.split(":", 1)[1].strip()
-                if value and not value.lower().startswith(no_op_starts):
+                # Weak models wrap the "not needed" filler in punctuation
+                # ("(None immediately required, but...)") that a plain
+                # startswith check misses -- strip leading non-alphanumerics
+                # before comparing.
+                bare = re.sub(r"^[^a-zA-Z0-9]+", "", value).lower()
+                if value and not bare.startswith(no_op_starts):
                     return value
     return None
 
