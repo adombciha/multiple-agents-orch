@@ -2359,6 +2359,40 @@ def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(
     )
 
 
+def test_developing_plan_allows_heading_changes_for_sole_readme_authoring_task(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: a task whose only target is a single existing Markdown
+    # file, submitted whole-file (file_blocks), used to have its heading-
+    # preservation guard left off by default unless it matched the narrow
+    # swap/translation markers. That silently rejected an ordinary "write the
+    # README" task (every route "failed the task output contract" because the
+    # new content didn't repeat the old scaffold's headings) even though the
+    # task's own scope makes it the sole owner of that file's content.
+    initialized_orchestrator.requirements_path.write_text(
+        "Build a small backend app.", encoding="utf-8"
+    )
+    initialized_orchestrator.request_path.write_text(
+        "Build a small backend app.", encoding="utf-8"
+    )
+    (initialized_orchestrator.workspace / "README.md").write_text(
+        "# Scaffold\n\n## TODO\n\nFill this in.\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_manager",
+        Mock(
+            return_value='{"tasks": [{"id": "T14", "description": "Write README.md documenting purpose, install, and usage.", "target_files": ["README.md"], "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'
+        ),
+    )
+
+    initialized_orchestrator.step_developing_plan()
+
+    task = initialized_orchestrator.state["tasks"][0]
+    assert task["output_contract"]["format"] == "file_blocks"
+    assert task["output_contract"]["allow_markdown_heading_changes"] is True
+
+
 def test_developing_plan_uses_file_edits_for_navigation_only_task(
     initialized_orchestrator, monkeypatch
 ):

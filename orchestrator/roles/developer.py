@@ -391,6 +391,11 @@ class DeveloperAgent(BaseAgent):
                         "response_must_start_with": "[FILE_START:",
                         "allow_prose": False,
                     }
+                sole_markdown_target = (
+                    len(target_files) == 1
+                    and Path(target_files[0]).suffix.lower() == ".md"
+                    and task["output_contract"]["format"] == "file_blocks"
+                )
                 if (
                     whole_file_docs
                     and any(Path(path).suffix.lower() == ".md" for path in target_files)
@@ -414,7 +419,7 @@ class DeveloperAgent(BaseAgent):
                             )
                         )
                     )
-                ):
+                ) or sole_markdown_target:
                     task["output_contract"]["allow_markdown_heading_changes"] = True
                 if task.get("complexity") not in {"routine", "moderate", "complex"}:
                     task["complexity"] = "complex"
