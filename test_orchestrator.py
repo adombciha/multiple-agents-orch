@@ -2965,6 +2965,57 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
 
 
+def test_step_testing_failed_narrows_target_files_to_ones_the_report_names(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: target_files used to be the union of every file any
+    # task had ever targeted, so a file touched once early on (e.g.
+    # README.md) stayed a permanent target forever. Per-file splitting then
+    # handed out a subtask for it on every later failure even when it had
+    # nothing to do with that failure, and the subtask could never succeed
+    # since there was nothing relevant left to fix. It should now narrow to
+    # just the files the QA report/output actually names, when any match.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "change app",
+            "target_files": ["app.py"],
+            "status": "completed",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        },
+        {
+            "id": "T-2",
+            "description": "write docs",
+            "target_files": ["README.md"],
+            "status": "completed",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        },
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"junior": 1},
+        "qa": {"junior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "run_command",
+        Mock(return_value=(1, "FAILED tests/test_app.py - app.py is broken")),
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent", Mock(return_value="QA_STATUS: FAILED")
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
+
+
 def test_step_testing_failed_at_max_revisions_escalates_then_pauses(
     initialized_orchestrator, monkeypatch
 ):

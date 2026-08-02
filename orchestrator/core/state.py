@@ -324,6 +324,26 @@ class AgentOrchestrator:
         with open(self.state_path, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=2)
 
+    def relevant_target_files(self, text: str) -> list:
+        """Narrow a QA/Reviewer failure report down to the files it actually
+        names, out of every file any task has ever targeted. Without this,
+        a FIX task's target_files (the union of every task's target_files
+        ever) keeps every file permanently in scope -- e.g. README.md stays
+        a target forever just because some earlier task touched it once
+        -- and per-file splitting then hands out a dead-end subtask for it
+        on every single failure, with nothing relevant to actually fix.
+        Falls back to the full set when nothing matches, so a failure that
+        doesn't literally name its files by path still gets full scope."""
+        known_files = list(
+            dict.fromkeys(
+                path
+                for task in self.state.get("tasks", [])
+                for path in task.get("target_files", [])
+            )
+        )
+        matched = [path for path in known_files if path in text]
+        return matched or known_files
+
     def pause_for_human_review(
         self, source: str, details: str, resume_state: str, pass_state: str
     ):

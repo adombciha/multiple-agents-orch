@@ -147,13 +147,7 @@ class ReviewerAgent(BaseAgent):
                     {
                         "id": fix_task_id,
                         "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
-                        "target_files": list(
-                            dict.fromkeys(
-                                path
-                                for task in self.orchestrator.state["tasks"]
-                                for path in task.get("target_files", [])
-                            )
-                        ),
+                        "target_files": self.orchestrator.relevant_target_files(review),
                         "output_contract": {
                             "format": "file_blocks",
                             "response_must_start_with": "[FILE_START:",

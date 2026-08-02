@@ -145,12 +145,8 @@ def apply_review_decision(
                 {
                     "id": f"HUMAN-REVIEW-{n}",
                     "description": f"Implement human review revisions:\n{orchestrator.state.get('human_review_details', '')[:2000]}",
-                    "target_files": list(
-                        dict.fromkeys(
-                            path
-                            for existing_task in orchestrator.state.get("tasks", [])
-                            for path in existing_task.get("target_files", [])
-                        )
+                    "target_files": orchestrator.relevant_target_files(
+                        orchestrator.state.get("human_review_details", "")
                     ),
                     "status": "pending",
                     **orchestrator.fix_task_levels(),
