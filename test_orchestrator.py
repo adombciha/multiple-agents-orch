@@ -2605,6 +2605,53 @@ def test_developing_plan_reopens_changed_completed_task(
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
 
 
+def test_developing_plan_tells_manager_to_preserve_completed_tasks_on_replan(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "old scope",
+            "target_files": ["app.py"],
+            "status": "completed",
+            "complexity": "routine",
+            "rd_level": "junior",
+            "qa_level": "junior",
+        }
+    ]
+    manager = Mock(
+        return_value='{"tasks": [{"id": "T-1", "description": "old scope", "target_files": ["app.py"], "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'
+    )
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    prompt = manager.call_args.args[0]
+    assert "plan revision, not a fresh start" in prompt
+    assert '"id": "T-1"' in prompt
+    assert '"status": "completed"' in prompt
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "completed"
+
+
+def test_developing_plan_omits_existing_tasks_rule_on_first_pass(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    manager = Mock(
+        return_value='{"tasks": [{"id": "T-1", "description": "implement", "target_files": ["app.py"], "complexity": "routine", "rd_level": "junior", "qa_level": "junior"}], "staffing": {"rd": {"junior": 1}, "qa": {"junior": 1}}}'
+    )
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    assert "plan revision, not a fresh start" not in manager.call_args.args[0]
+
+
 def test_developing_plan_rejects_staffing_that_cannot_cover_tasks(
     initialized_orchestrator, monkeypatch
 ):
