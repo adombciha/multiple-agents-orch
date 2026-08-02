@@ -5,6 +5,31 @@ from orchestrator.roles.base_agent import BaseAgent
 from orchestrator.core import scoring, brain
 
 
+def _extract_marker(qa_reports, marker: str) -> str | None:
+    """Pull the value after a `MARKER:` line QA was told to add only when
+    it applies. Weak local models don't reliably follow "only add this
+    line if X" -- they often add it anyway with a "None"/"not needed"
+    value instead of omitting it, so a naive extraction would treat that
+    as a real, actionable signal. Filter those out here."""
+    no_op_starts = (
+        "none",
+        "n/a",
+        "na ",
+        "no ",
+        "not needed",
+        "not applicable",
+        "nothing",
+    )
+    for _, _, report in qa_reports:
+        for line in report.splitlines():
+            stripped = line.strip()
+            if stripped.upper().startswith(f"{marker}:"):
+                value = stripped.split(":", 1)[1].strip()
+                if value and not value.lower().startswith(no_op_starts):
+                    return value
+    return None
+
+
 class QAAgent(BaseAgent):
     def step_testing(self):
         from orchestrator.core.state import (
@@ -105,15 +130,7 @@ class QAAgent(BaseAgent):
             f"QA report generated and saved to {self.orchestrator.qa_report_path}"
         )
 
-        test_command_suggestion = next(
-            (
-                line.split(":", 1)[1].strip()
-                for _, _, report in qa_reports
-                for line in report.splitlines()
-                if line.strip().upper().startswith("TEST_COMMAND_SUGGESTION:")
-            ),
-            None,
-        )
+        test_command_suggestion = _extract_marker(qa_reports, "TEST_COMMAND_SUGGESTION")
         if test_command_suggestion:
             self.orchestrator.state["test_command_suggestion"] = test_command_suggestion
             log_warning(
@@ -122,14 +139,8 @@ class QAAgent(BaseAgent):
         else:
             self.orchestrator.state.pop("test_command_suggestion", None)
 
-        dependency_install_needed = next(
-            (
-                line.split(":", 1)[1].strip()
-                for _, _, report in qa_reports
-                for line in report.splitlines()
-                if line.strip().upper().startswith("DEPENDENCY_INSTALL_NEEDED:")
-            ),
-            None,
+        dependency_install_needed = _extract_marker(
+            qa_reports, "DEPENDENCY_INSTALL_NEEDED"
         )
         if dependency_install_needed:
             log_warning(

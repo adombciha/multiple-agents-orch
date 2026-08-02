@@ -2947,6 +2947,50 @@ def test_step_testing_pauses_for_human_when_qa_reports_missing_dependency(
     escalate.assert_not_called()
 
 
+def test_step_testing_ignores_dependency_marker_when_qa_says_none_needed(
+    initialized_orchestrator, monkeypatch
+):
+    # Regression test: observed live -- a weak local QA model doesn't
+    # reliably follow "only add this line if it applies." It added
+    # `DEPENDENCY_INSTALL_NEEDED: None of the failures appear to be due to
+    # missing system dependencies...` even though nothing needed
+    # installing, which used to be treated as a real, actionable signal
+    # and paused the run with a nonsense "install command."
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "implement",
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator, "run_command", Mock(return_value=(1, "1 failed"))
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\nselector timeout\nDEPENDENCY_INSTALL_NEEDED: None of the failures appear to be due to missing system dependencies"
+        ),
+    )
+    monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] != "WAITING_FOR_OWNER"
+    assert "test_command_suggestion" not in initialized_orchestrator.state
+
+
 def test_pause_for_human_review_includes_test_command_suggestion(
     initialized_orchestrator,
 ):
