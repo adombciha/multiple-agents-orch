@@ -74,7 +74,7 @@ class QAAgent(BaseAgent):
             ]
             if not assigned_tasks:
                 continue
-            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes."""
+            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\nMandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command."""
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"
@@ -104,6 +104,23 @@ class QAAgent(BaseAgent):
         log_success(
             f"QA report generated and saved to {self.orchestrator.qa_report_path}"
         )
+
+        test_command_suggestion = next(
+            (
+                line.split(":", 1)[1].strip()
+                for _, _, report in qa_reports
+                for line in report.splitlines()
+                if line.strip().upper().startswith("TEST_COMMAND_SUGGESTION:")
+            ),
+            None,
+        )
+        if test_command_suggestion:
+            self.orchestrator.state["test_command_suggestion"] = test_command_suggestion
+            log_warning(
+                f"[!] QA suggests updating test_command: {test_command_suggestion}"
+            )
+        else:
+            self.orchestrator.state.pop("test_command_suggestion", None)
 
         def passed(report):
             lines = [line.strip() for line in report.splitlines() if line.strip()]

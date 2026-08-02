@@ -2855,6 +2855,60 @@ def test_step_testing_passed_moves_to_reviewing_code(
     assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
 
 
+def test_step_testing_captures_qa_test_command_suggestion(
+    initialized_orchestrator, monkeypatch
+):
+    # QA is required to flag it when the test command itself hides
+    # diagnostic info it needs (e.g. pytest -q silently swallowing skip
+    # reasons) -- this is human-owned config, so QA can only suggest a
+    # change here, never apply it itself.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "implement",
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    monkeypatch.setattr(
+        initialized_orchestrator, "run_command", Mock(return_value=(0, "tests ok"))
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: PASSED\nok\nTEST_COMMAND_SUGGESTION: add -rs so skip reasons are visible"
+        ),
+    )
+
+    initialized_orchestrator.step_testing()
+
+    assert (
+        initialized_orchestrator.state["test_command_suggestion"]
+        == "add -rs so skip reasons are visible"
+    )
+
+
+def test_pause_for_human_review_includes_test_command_suggestion(
+    initialized_orchestrator,
+):
+    initialized_orchestrator.state["test_command_suggestion"] = (
+        "add -rs so skip reasons are visible"
+    )
+
+    initialized_orchestrator.pause_for_human_review(
+        "QA", "details", "TESTING", "TESTING"
+    )
+
+    report = initialized_orchestrator.human_report_path.read_text(encoding="utf-8")
+    assert "add -rs so skip reasons are visible" in report
+
+
 def test_step_testing_failed_command_cannot_pass_on_qa_response(
     initialized_orchestrator, monkeypatch
 ):

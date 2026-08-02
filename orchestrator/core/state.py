@@ -364,6 +364,14 @@ class AgentOrchestrator:
         next_step = "確認後執行" if chinese else "After review, run"
         usage = summary_markdown(self)
         report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}:\n\n```bash\npython3 orchestrator.py approve --run\n```\n"
+        test_command_suggestion = self.state.get("test_command_suggestion")
+        if test_command_suggestion:
+            heading = (
+                "QA 建議調整 test_command"
+                if chinese
+                else "QA suggests updating test_command"
+            )
+            report += f"\n\n## {heading}\n\n{test_command_suggestion}\n"
         if usage:
             report += f"\n\n{usage}\n"
         self.human_report_path.write_text(report, encoding="utf-8")
