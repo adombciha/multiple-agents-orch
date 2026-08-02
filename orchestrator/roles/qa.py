@@ -74,7 +74,7 @@ class QAAgent(BaseAgent):
             ]
             if not assigned_tasks:
                 continue
-            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\nMandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command."""
+            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\nMandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command.\n\nAlso mandatory: if any failure or skip is caused by a missing OS-level/environment dependency (an interpreter, package, browser binary, service, etc. that must be installed on the machine, not something a code change can fix), you MUST add a line `DEPENDENCY_INSTALL_NEEDED: <exact shell command(s) a human should run>`. Do not mark this PASSED and do not describe it as something the Developer should work around in code -- a human has to install it."""
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"
@@ -121,6 +121,27 @@ class QAAgent(BaseAgent):
             )
         else:
             self.orchestrator.state.pop("test_command_suggestion", None)
+
+        dependency_install_needed = next(
+            (
+                line.split(":", 1)[1].strip()
+                for _, _, report in qa_reports
+                for line in report.splitlines()
+                if line.strip().upper().startswith("DEPENDENCY_INSTALL_NEEDED:")
+            ),
+            None,
+        )
+        if dependency_install_needed:
+            log_warning(
+                f"[!] QA reports a missing environment dependency, not a code issue. Pausing for human review: {dependency_install_needed}"
+            )
+            self.orchestrator.pause_for_human_review(
+                "QA",
+                f"QA reports that test failures/skips are caused by a missing environment dependency, not a code bug. A human needs to install it, then approve to re-run TESTING.\n\nRun this:\n```bash\n{dependency_install_needed}\n```\n\nQA report:\n{qa_report[:2000]}",
+                "TESTING",
+                "TESTING",
+            )
+            return
 
         def passed(report):
             lines = [line.strip() for line in report.splitlines() if line.strip()]

@@ -2894,6 +2894,59 @@ def test_step_testing_captures_qa_test_command_suggestion(
     )
 
 
+def test_step_testing_pauses_for_human_when_qa_reports_missing_dependency(
+    initialized_orchestrator, monkeypatch
+):
+    # A missing OS-level dependency (e.g. playwright not installed) can
+    # never be fixed by a code-only FIX task -- Developer just burns
+    # revision/escalation budget rewording skip messages instead of
+    # actually resolving anything. QA must be able to say "a human needs
+    # to run this install command," and the orchestrator must pause
+    # immediately for that instead of looping through code revisions.
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "implement",
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    monkeypatch.setattr(
+        initialized_orchestrator, "run_command", Mock(return_value=(0, "3 skipped"))
+    )
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\nskipped tests\nDEPENDENCY_INSTALL_NEEDED: pip install playwright && playwright install chromium"
+        ),
+    )
+    escalate = Mock()
+    monkeypatch.setattr(
+        initialized_orchestrator, "escalate_developer_backend", escalate
+    )
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] == "WAITING_FOR_OWNER"
+    assert initialized_orchestrator.state["human_review_source"] == "QA"
+    assert (
+        "pip install playwright && playwright install chromium"
+        in initialized_orchestrator.state["human_review_details"]
+    )
+    assert initialized_orchestrator.state["code_revisions"] == 0
+    assert all(
+        not t["id"].startswith("FIX-QA")
+        for t in initialized_orchestrator.state["tasks"]
+    )
+    escalate.assert_not_called()
+
+
 def test_pause_for_human_review_includes_test_command_suggestion(
     initialized_orchestrator,
 ):
