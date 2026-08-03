@@ -247,7 +247,7 @@ class QAAgent(BaseAgent):
                         "id": fix_task_id,
                         "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\nQA feedback:\n{qa_report[:2000]}",
                         "target_files": self.orchestrator.relevant_target_files(
-                            f"{output}\n{qa_report}"
+                            f"{output}\n{qa_report}", primary=output
                         ),
                         "output_contract": {
                             "format": "file_blocks",

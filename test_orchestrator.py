@@ -1810,6 +1810,42 @@ def test_file_blocks_cannot_remove_existing_markdown_headings(initialized_orches
     )
 
 
+def test_file_blocks_reject_python_that_does_not_parse(initialized_orchestrator):
+    # The [FILE_START:] protocol is bracket-based, so models leak Markdown
+    # escapes like \[ into the payload; one such write breaks collection
+    # for the entire suite.
+    output = "[FILE_START: app.py]\nvalue = 1\n\\[\n\\]\n[FILE_END: app.py]"
+
+    assert initialized_orchestrator.parse_and_write_files(output, ["app.py"]) == []
+    assert not (initialized_orchestrator.workspace / "app.py").exists()
+
+
+def test_relevant_target_files_prefers_files_named_by_test_output(
+    initialized_orchestrator,
+):
+    initialized_orchestrator.state["tasks"] = [
+        {"target_files": ["tests/test_smoke.py", "README.md", "backend/api.py"]}
+    ]
+    test_output = 'ERROR collecting tests/test_smoke.py\nFile "tests/test_smoke.py", line 90'
+    qa_report = "| README.md | PASSED |\n| backend/api.py | PASSED |\n"
+
+    assert initialized_orchestrator.relevant_target_files(
+        f"{test_output}\n{qa_report}", primary=test_output
+    ) == ["tests/test_smoke.py"]
+
+
+def test_relevant_target_files_falls_back_when_output_names_nothing(
+    initialized_orchestrator,
+):
+    initialized_orchestrator.state["tasks"] = [
+        {"target_files": ["README.md", "backend/api.py"]}
+    ]
+
+    assert initialized_orchestrator.relevant_target_files(
+        "review says backend/api.py leaks a handle", primary="exit code 1"
+    ) == ["backend/api.py"]
+
+
 def test_markdown_edit_blocks_replace_only_exact_text(initialized_orchestrator):
     readme = initialized_orchestrator.workspace / "README.md"
     readme.write_text(

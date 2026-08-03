@@ -324,7 +324,7 @@ class AgentOrchestrator:
         with open(self.state_path, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=2)
 
-    def relevant_target_files(self, text: str) -> list:
+    def relevant_target_files(self, text: str, primary: str = "") -> list:
         """Narrow a QA/Reviewer failure report down to the files it actually
         names, out of every file any task has ever targeted. Without this,
         a FIX task's target_files (the union of every task's target_files
@@ -333,7 +333,16 @@ class AgentOrchestrator:
         -- and per-file splitting then hands out a dead-end subtask for it
         on every single failure, with nothing relevant to actually fix.
         Falls back to the full set when nothing matches, so a failure that
-        doesn't literally name its files by path still gets full scope."""
+        doesn't literally name its files by path still gets full scope.
+
+        `primary` is a narrower slice of the same failure -- raw test output,
+        where a path only shows up in the traceback of a file that actually
+        broke. It wins whenever it names anything, because a thorough QA
+        report also lists every file it merely *checked*, passing ones
+        included, in its summary tables. Matching the whole report therefore
+        fans a single real bug out into one dead-end subtask per project
+        file, and testing cannot re-run until every one of them grinds
+        through its own retry and escalation budget."""
         known_files = list(
             dict.fromkeys(
                 path
@@ -341,8 +350,11 @@ class AgentOrchestrator:
                 for path in task.get("target_files", [])
             )
         )
-        matched = [path for path in known_files if path in text]
-        return matched or known_files
+        for source in (primary, text):
+            matched = [path for path in known_files if path and path in source]
+            if matched:
+                return matched
+        return known_files
 
     def pause_for_human_review(
         self, source: str, details: str, resume_state: str, pass_state: str

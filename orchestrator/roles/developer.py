@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import sys
 import json
 import re
@@ -17,6 +18,24 @@ from orchestrator.core import scoring, roster, brain
 _REFERENCE_BLOCK_RE = re.compile(
     r"<!-- REFERENCE-ONLY:START.*?-->.*?<!-- REFERENCE-ONLY:END -->", re.DOTALL
 )
+
+
+def _parse_error(filepath: str, content: str) -> str | None:
+    """Reject generated content that does not even parse, so a malformed
+    response is retried instead of written to disk. The [FILE_START:] marker
+    protocol is built from square brackets, which pushes models into emitting
+    Markdown-escaped `\\[` / `\\]` inside the payload -- fine as Markdown,
+    a SyntaxError as Python -- and a single such write breaks pytest
+    collection for the whole suite, hiding every other result behind it."""
+    suffix = Path(filepath).suffix.lower()
+    try:
+        if suffix == ".py":
+            ast.parse(content)
+        elif suffix == ".json":
+            json.loads(content)
+    except (SyntaxError, ValueError) as error:
+        return str(error)
+    return None
 
 TASK_PLAN_SCHEMA = {
     "type": "object",
@@ -601,6 +620,13 @@ class DeveloperAgent(BaseAgent):
                     )
                     continue
 
+            parse_error = _parse_error(filepath_str, content)
+            if parse_error:
+                log_warning(
+                    f"Skipping file whose content does not parse: {filepath_str}: {parse_error}"
+                )
+                continue
+
             if dry_run:
                 written_files.append(filepath_str)
                 continue
@@ -648,6 +674,12 @@ class DeveloperAgent(BaseAgent):
             if any(heading not in updated for heading in headings):
                 log_warning(
                     f"Skipping Markdown edit that removes existing headings: {filepath_str}"
+                )
+                continue
+            parse_error = _parse_error(filepath_str, updated)
+            if parse_error:
+                log_warning(
+                    f"Skipping edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
             if not dry_run:
@@ -733,6 +765,12 @@ class DeveloperAgent(BaseAgent):
             if any(existing_heading not in updated for existing_heading in headings):
                 log_warning(
                     f"Skipping Markdown section edit that removes existing headings: {filepath_str}"
+                )
+                continue
+            parse_error = _parse_error(filepath_str, updated)
+            if parse_error:
+                log_warning(
+                    f"Skipping section edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
             if not dry_run:
