@@ -85,6 +85,35 @@ class DeveloperAgent(BaseAgent):
                 return headings[index]
         return None
 
+    @staticmethod
+    def _file_scoped_contract(
+        base_dir: Path, filepath: str, heading: str | None
+    ) -> dict:
+        """Pick the narrowest output contract a single-file FIX task can meet.
+        Rewriting a whole existing Markdown doc means reproducing every heading
+        verbatim or parse_and_write_files discards the response, so a revision
+        touching several unrelated sections -- nothing to pin a single heading
+        on -- fails that check on every route and burns the task's entire retry
+        budget without ever writing a byte. An OLD/NEW edit leaves everything it
+        does not touch alone, satisfying the same check for free."""
+        if heading:
+            return {
+                "format": "markdown_section_replacements",
+                "response_must_start_with": "[SECTION_EDIT_START:",
+                "allow_prose": False,
+            }
+        if Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file():
+            return {
+                "format": "file_edits",
+                "response_must_start_with": "[FILE_EDIT_START:",
+                "allow_prose": False,
+            }
+        return {
+            "format": "file_blocks",
+            "response_must_start_with": "[FILE_START:",
+            "allow_prose": False,
+        }
+
     def _reference_headings_for_fix_task(
         self,
         tasks: list[dict],
@@ -838,22 +867,22 @@ class DeveloperAgent(BaseAgent):
                 tasks, task, section_base
             )
             for filepath in task.get("target_files", []):
+                if len(task.get("target_files", [])) != 1:
+                    break
                 heading = self._section_heading_for_file(
                     section_base,
                     filepath,
                     task.get("section_heading"),
                     reference_headings,
                 )
-                if heading and len(task.get("target_files", [])) == 1:
+                if heading:
                     task["section_heading"] = heading
-                    task["output_contract"] = {
-                        "format": "markdown_section_replacements",
-                        "response_must_start_with": "[SECTION_EDIT_START:",
-                        "allow_prose": False,
-                    }
                     log_info(
                         f"Scoped {task['id']} to damaged section {task['section_heading']}."
                     )
+                task["output_contract"] = self._file_scoped_contract(
+                    section_base, filepath, heading
+                )
                 break
         for task in list(tasks):
             if task.get("status") != "pending" or not str(
@@ -880,33 +909,22 @@ class DeveloperAgent(BaseAgent):
             )
             split_tasks = []
             for index, path in enumerate(target_files, 1):
-                split_task = {
-                    **task,
-                    "id": f"{task_id}-{index}",
-                    "target_files": [path],
-                    "output_contract": {
-                        "format": "markdown_section_replacements"
-                        if task.get("section_heading")
-                        else "file_blocks",
-                        "response_must_start_with": "[SECTION_EDIT_START:"
-                        if task.get("section_heading")
-                        else "[FILE_START:",
-                        "allow_prose": False,
-                    },
-                }
                 heading = self._section_heading_for_file(
                     section_base,
                     path,
                     task.get("section_heading"),
                     reference_headings,
                 )
+                split_task = {
+                    **task,
+                    "id": f"{task_id}-{index}",
+                    "target_files": [path],
+                    "output_contract": self._file_scoped_contract(
+                        section_base, path, heading
+                    ),
+                }
                 if heading:
                     split_task["section_heading"] = heading
-                    split_task["output_contract"] = {
-                        "format": "markdown_section_replacements",
-                        "response_must_start_with": "[SECTION_EDIT_START:",
-                        "allow_prose": False,
-                    }
                 split_tasks.append(split_task)
             tasks[task_index : task_index + 1] = split_tasks
             for state_key in ("task_developer_promotions", "task_failed_model_routes"):
@@ -1143,8 +1161,10 @@ class DeveloperAgent(BaseAgent):
                 elif use_file_edits:
                     filepath = target_files[0]
                     prompt += (
-                        "Return only an exact file edit block for the declared target file. "
+                        "Return only exact file edit blocks for the declared target file. "
                         "Put the complete existing text to replace in [OLD] and the complete replacement text in [NEW]. "
+                        "[OLD] must be copied verbatim from the current file contents above and must appear there exactly once; "
+                        "repeat the whole block once per independent change, and leave every other part of the file untouched. "
                         "Do not return the complete file, other files, analysis, Markdown fences, or explanations.\n"
                         f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
                     )

@@ -1482,6 +1482,54 @@ def test_translation_task_receives_read_only_primary_readme(
     assert "must never be modified" in prompt
 
 
+def test_fix_task_on_existing_markdown_downgrades_to_targeted_edits(
+    initialized_orchestrator, monkeypatch
+):
+    # A whole-file rewrite has to reproduce every heading verbatim, which no
+    # route managed for a revision spanning several unrelated sections.
+    initialized_orchestrator.config["use_worktree"] = False
+    initialized_orchestrator.config["backends"]["developer_senior"] = "ollama"
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "FIX-QA-2-13",
+            "description": "Fix QA verification issues.",
+            "target_files": ["README.md"],
+            "output_contract": {"format": "file_blocks"},
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
+    }
+    readme = initialized_orchestrator.workspace / "README.md"
+    readme.write_text(
+        "# Project\n\n## Storage\n\nUses S3.\n\n## Verify\n\nRun pytest.\n",
+        encoding="utf-8",
+    )
+    call_agent = Mock(
+        return_value=(
+            "[FILE_EDIT_START: README.md]\n[OLD]\nUses S3.\n[NEW]\nUses a NAS pointer.\n[FILE_EDIT_END: README.md]"
+        )
+    )
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    task = initialized_orchestrator.state["tasks"][0]
+    assert task["output_contract"]["format"] == "file_edits"
+    assert "[FILE_EDIT_START: README.md]" in call_agent.call_args.args[1]
+    assert readme.read_text(encoding="utf-8") == (
+        "# Project\n\n## Storage\n\nUses a NAS pointer.\n\n## Verify\n\nRun pytest.\n"
+    )
+
+
 def test_whole_markdown_task_keeps_declared_file_block_contract(
     initialized_orchestrator, monkeypatch
 ):
