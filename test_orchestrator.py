@@ -1088,6 +1088,30 @@ def test_requirements_validator_requires_structured_json():
     assert "## Project Overview & Context" in render_requirements(data)
 
 
+def test_manager_planning_supplies_requirements_schema(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.request_path.write_text("Update translated README files", encoding="utf-8")
+    requirements = {
+        "project_overview": "Update translations",
+        "functional_requirements": ["Synchronize README content"],
+        "technical_specifications": [],
+        "scope_boundaries": ["README files only"],
+    }
+    call_manager = Mock(side_effect=['{"use_sales": false}', json.dumps(requirements)])
+    monkeypatch.setattr(app.manager, "call_manager", call_manager)
+
+    app.manager.step_planning()
+
+    requirements_call = call_manager.call_args_list[1]
+    assert (
+        json.dumps(requirements_call.kwargs["response_schema"])
+        in requirements_call.args[1]
+    )
+    assert app.state["state"] == "DEVELOPING_PLAN"
+
+
 def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
     initialized_orchestrator.state["staffing"] = {"qa": {"senior": 4, "junior": -1}}
 

@@ -151,7 +151,13 @@ class ManagerAgent(BaseAgent):
                 "You are the project's Sales specialist.",
             )
 
-        system_prompt = """You are the Project Manager of an AI software company. Convert the request into a structured requirements object. Output only one valid JSON object matching the supplied schema. Do not output Markdown, code fences, explanations, progress messages, or prose."""
+        system_prompt = (
+            "You are the Project Manager of an AI software company. "
+            "Convert the request into a structured requirements object. "
+            "Output only one valid JSON object matching this schema:\n"
+            f"{json.dumps(REQUIREMENTS_SCHEMA)}\n"
+            "Do not output Markdown, code fences, explanations, progress messages, or prose."
+        )
         requirements_prompt = f"{request}\n\nSales Notes:\n{sales_notes or 'No sales consultation required.'}"
         requirements_json = self.call_manager(
             requirements_prompt,
