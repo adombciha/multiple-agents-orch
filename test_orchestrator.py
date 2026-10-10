@@ -13,10 +13,9 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.core import backends, grok, gpt, scoring, roster, brain
+from orchestrator.core import backends, gpt, scoring, roster, brain
 from orchestrator.core.telemetry import record_call, summary_markdown
 from orchestrator.core.backends import quota_exhausted
-from orchestrator.core.grok import extract_schema_payload
 from orchestrator.roles.base_agent import is_json_response
 from orchestrator.roles.developer import is_task_plan_response
 from orchestrator.roles.manager import (
@@ -163,8 +162,8 @@ def test_usage_summary_markdown_groups_calls_by_model(
     record_call(
         initialized_orchestrator,
         role="manager",
-        backend="grok",
-        model="grok-4.5",
+        backend="codex",
+        model="gpt-6.1-sol",
         prompt="prompt",
         system_prompt=None,
         output="output",
@@ -173,7 +172,7 @@ def test_usage_summary_markdown_groups_calls_by_model(
 
     summary = summary_markdown(initialized_orchestrator)
     assert "## LiteLLM Token Usage" in summary
-    assert "`grok-4.5`" in summary
+    assert "`gpt-6.1-sol`" in summary
     assert "| 6 |" in summary
 
 
@@ -181,8 +180,8 @@ def test_call_with_usage_records_success_and_failure(initialized_orchestrator):
     assert (
         initialized_orchestrator._call_with_usage(
             "manager",
-            "grok",
-            "grok-4.5",
+            "codex",
+            "gpt-6.1-sol",
             "prompt",
             None,
             lambda: "response",
@@ -193,8 +192,8 @@ def test_call_with_usage_records_success_and_failure(initialized_orchestrator):
     with pytest.raises(RuntimeError, match="failed"):
         initialized_orchestrator._call_with_usage(
             "manager",
-            "grok",
-            "grok-4.5",
+            "codex",
+            "gpt-6.1-sol",
             "prompt",
             None,
             lambda: (_ for _ in ()).throw(RuntimeError("failed")),
@@ -222,6 +221,46 @@ def test_write_ai_company_overrides_do_not_mutate_default_config(tmp_path):
     assert config["use_worktree"] is False
     assert DEFAULT_CONFIG["use_worktree"] is True
     assert state["state"] == "TESTING"
+
+
+def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(monkeypatch):
+    monkeypatch.setattr(backends, "_agy_models_cache", (0.0, ()))
+    run = Mock(return_value=Mock(
+        returncode=0,
+        stdout=(
+            "gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)\n"
+            "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+            "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+            "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+            "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n"
+        ),
+    ))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    assert backends.resolve_agy_model("auto:gemini-flash-medium") == "gemini-3.8-flash-medium"
+    assert backends.resolve_agy_model("auto:gemini-flash-low") == "gemini-3.8-flash-low"
+    assert backends.resolve_agy_model("auto:gemini-pro-low") == "gemini-3.1-pro-low"
+    assert backends.resolve_agy_model("auto:claude-sonnet-medium") == "claude-sonnet-5-5-medium"
+    assert backends.resolve_agy_model("gemini-3.8-flash-low") == "gemini-3.8-flash-low"
+    run.assert_called_once()
+
+
+def test_legacy_config_migrates_removed_backends_but_keeps_manual_agy_model(tmp_path, no_git):
+    config, _ = write_ai_company(tmp_path)
+    config["backends"]["ra"] = "grok"
+    config["role_model_backends"]["ra"] = "grok"
+    config["role_models"]["ra"] = "grok-4.5"
+    config["role_model_routes"]["ra"] = [["grok", "grok-4.5"], ["ollama", "qwen3:8b"]]
+    config["role_models"]["sales"] = "claude-sonnet-5-5-medium"
+    (tmp_path / ".ai-company" / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    app = AgentOrchestrator(tmp_path)
+    app.load_config_and_state()
+
+    assert app.config["backends"]["ra"] == "agy"
+    assert app.config["role_model_routes"]["ra"][0] == ["agy", "auto:gemini-flash-medium"]
+    assert app.config["role_models"]["sales"] == "claude-sonnet-5-5-medium"
+    assert "grok" not in (tmp_path / ".ai-company" / "config.json").read_text(encoding="utf-8")
 
 
 def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_git):
@@ -325,6 +364,42 @@ def test_save_state_writes_current_state_to_state_file(initialized_orchestrator)
     )
 
 
+def test_save_state_interrupted_write_preserves_previous_state(
+    initialized_orchestrator, monkeypatch
+):
+    original = initialized_orchestrator.state_path.read_bytes()
+    original_files = set(initialized_orchestrator.ai_dir.iterdir())
+
+    def interrupted_dump(_state, stream, indent):
+        stream.write("{")
+        raise OSError("interrupted")
+
+    monkeypatch.setattr("orchestrator.core.state.json.dump", interrupted_dump)
+    initialized_orchestrator.state["state"] = "TESTING"
+
+    with pytest.raises(OSError, match="interrupted"):
+        initialized_orchestrator.save_state()
+
+    assert initialized_orchestrator.state_path.read_bytes() == original
+    assert set(initialized_orchestrator.ai_dir.iterdir()) == original_files
+
+
+def test_init_rejects_corrupt_state_without_clearing_artifacts(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.state_path.write_text("{", encoding="utf-8")
+    initialized_orchestrator.request_path.write_text("keep request", encoding="utf-8")
+    clear = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "clear_run_artifacts", clear)
+
+    with pytest.raises(RuntimeError, match="artifacts were preserved"):
+        initialized_orchestrator.init_project()
+
+    clear.assert_not_called()
+    assert initialized_orchestrator.request_path.read_text(encoding="utf-8") == "keep request"
+    assert initialized_orchestrator.state_path.read_text(encoding="utf-8") == "{"
+
+
 def test_run_command_success_returns_stdout_and_stderr(
     initialized_orchestrator, monkeypatch
 ):
@@ -386,6 +461,27 @@ def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkey
     assert run.call_args.kwargs["cwd"] == worktree
 
 
+def test_codex_exec_is_read_only_and_uses_file_block_output(
+    initialized_orchestrator, monkeypatch
+):
+    run = Mock(
+        return_value=Mock(
+            returncode=0,
+            stdout="[FILE_START: app.py]\nok\n[FILE_END: app.py]",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    result = backends.call_codex(initialized_orchestrator, "prompt", model="auto")
+
+    assert result.startswith("[FILE_START: app.py]")
+    assert run.call_args.args[0][:5] == [
+        "codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check"
+    ]
+    assert "-m" not in run.call_args.args[0]
+
+
 def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
     initialized_orchestrator, monkeypatch
 ):
@@ -394,20 +490,9 @@ def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
 
     backends.call_agy(initialized_orchestrator, "prompt", model="gemini-3.1-pro")
 
-    assert run.call_args.args[0][0:3] == ["agy", "--model", "Gemini 3.1 Pro (Low)"]
-
-
-def test_grok_uses_agent_worktree(initialized_orchestrator, monkeypatch):
-    worktree = initialized_orchestrator.ai_dir / "worktree"
-    worktree.mkdir()
-    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
-    monkeypatch.setattr(grok.subprocess, "run", run)
-
-    grok.call(
-        initialized_orchestrator, "prompt", role="developer_junior", model="test-model"
-    )
-
-    assert run.call_args.kwargs["cwd"] == worktree
+    assert run.call_args.args[0][0:6] == [
+        "agy", "--sandbox", "--mode", "plan", "--model", "Gemini 3.1 Pro (Low)"
+    ]
 
 
 def test_run_command_use_worktree_false_runs_in_workspace(
@@ -984,74 +1069,6 @@ def test_call_ollama_request_exception_raises_runtime_error(
         initialized_orchestrator.call_ollama("hello")
 
 
-def test_grok_structured_call_uses_schema_and_logs_capable_command(
-    initialized_orchestrator, monkeypatch
-):
-    completed = Mock(returncode=0, stdout='{"ok":true}', stderr="")
-    runner = Mock(return_value=completed)
-    monkeypatch.setattr(grok.subprocess, "run", runner)
-
-    assert (
-        backends.call_grok(
-            initialized_orchestrator,
-            "prompt",
-            role="manager",
-            model="grok-4.5",
-            response_schema={"type": "object"},
-        )
-        == '{"ok":true}'
-    )
-
-    command = runner.call_args.args[0]
-    assert command[0:2] == ["grok", "-p"]
-    assert "--effort" in command
-    assert "medium" in command
-    assert "--json-schema" in command
-
-
-def test_grok_json_envelope_extracts_schema_payload():
-    payload = {
-        "project_overview": "Sync docs",
-        "functional_requirements": [],
-        "technical_specifications": [],
-        "scope_boundaries": [],
-    }
-    envelope = json.dumps(
-        {"session_id": "123", "result": {"content": json.dumps(payload)}}
-    )
-    schema = {"required": list(payload)}
-
-    assert json.loads(extract_schema_payload(envelope, schema)) == payload
-
-
-def test_grok_developer_uses_single_turn_coding_mode(
-    initialized_orchestrator, monkeypatch
-):
-    completed = Mock(
-        returncode=0,
-        stdout="[FILE_START: hello.py]\nprint('ok')\n[FILE_END: hello.py]",
-        stderr="",
-    )
-    runner = Mock(return_value=completed)
-    monkeypatch.setattr(grok.subprocess, "run", runner)
-
-    backends.call_grok(
-        initialized_orchestrator,
-        "edit prompt",
-        role="developer_middle",
-        model="grok-4.5",
-    )
-
-    command = runner.call_args.args[0]
-    assert "--json-schema" not in command
-    assert "--max-turns" in command
-    assert "--no-plan" in command
-    assert "--no-subagents" in command
-    assert "--no-memory" in command
-    assert "--disable-web-search" in command
-    assert "--verbatim" in command
-
-
 def test_task_plan_validator_requires_tasks_array():
     assert not is_task_plan_response('{"requirements": "not a task plan"}')
     assert is_task_plan_response('{"tasks": [], "staffing": {}, "specialists": []}')
@@ -1084,7 +1101,7 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
 def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_senior", "codex")
-        == "gpt-5.6-luna"
+        == "auto"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_middle", "ollama")
@@ -1095,15 +1112,15 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
         == "gemma4:latest"
     )
     assert (
-        initialized_orchestrator.get_active_model_for_role("architect", "grok")
-        == "grok-4.5"
+        initialized_orchestrator.get_active_model_for_role("architect", "codex")
+        == "auto"
     )
     assert (
-        initialized_orchestrator.get_active_model_for_role("ra", "grok") == "grok-4.5"
+        initialized_orchestrator.get_active_model_for_role("ra", "agy") == "auto:gemini-flash-medium"
     )
     assert (
-        initialized_orchestrator.get_active_model_for_role("sales", "grok")
-        == "grok-4.5"
+        initialized_orchestrator.get_active_model_for_role("sales", "agy")
+        == "auto:gemini-flash-medium"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama")
@@ -1133,7 +1150,7 @@ def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
     app.load_config_and_state()
 
     assert app.get_backend("developer_junior") == "codex"
-    assert app.get_active_model_for_role("reviewer", "codex") == "gpt-5.6-luna"
+    assert app.get_active_model_for_role("reviewer", "codex") == "auto"
     assert app.config["ollama_keep_alive"] == 0
 
 
@@ -1149,10 +1166,10 @@ def test_developer_plan_does_not_require_file_blocks(
 ):
     initialized_orchestrator.state["state"] = "DEVELOPING_PLAN"
     initialized_orchestrator.config["role_model_routes"]["developer_senior"] = [
-        ["grok", "grok-4.5"]
+        ["agy", "gemini-3.8-flash-medium"]
     ]
     monkeypatch.setattr(
-        initialized_orchestrator, "call_grok", Mock(return_value="# Plan")
+        initialized_orchestrator, "call_agy", Mock(return_value="# Plan")
     )
 
     assert initialized_orchestrator.call_agent("developer_senior", "prompt") == "# Plan"
@@ -1163,11 +1180,11 @@ def test_invalid_architect_status_falls_back_to_next_route(
 ):
     initialized_orchestrator.state["state"] = "REVIEWING_PLAN"
     initialized_orchestrator.config["role_model_routes"]["architect"] = [
-        ["grok", "grok-4.5"],
+        ["agy", "gemini-3.8-flash-medium"],
         ["ollama", "qwen3:8b"],
     ]
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
-    monkeypatch.setattr(initialized_orchestrator, "call_grok", Mock(return_value="..."))
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", Mock(return_value="..."))
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_agent_ollama_fallback",
@@ -1185,13 +1202,13 @@ def test_output_contract_failure_falls_back_to_next_route(
 ):
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
-        ["grok", "grok-4.5"],
+        ["agy", "gemini-3.8-flash-medium"],
         ["ollama", "qwen3:8b"],
     ]
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(
         initialized_orchestrator,
-        "call_grok",
+        "call_agy",
         Mock(return_value="[FILE_START: bad.py]\ninvalid\n[FILE_END: bad.py]"),
     )
     monkeypatch.setattr(
@@ -1239,17 +1256,19 @@ def test_implementing_route_failures_are_scoped_to_active_task(
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.state["active_task_id"] = "T-1"
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
-        ["grok", "grok-4.5"]
+        ["agy", "gemini-3.8-flash-medium"]
     ]
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(
-        initialized_orchestrator, "call_grok", Mock(return_value="invalid")
+        initialized_orchestrator, "call_agy", Mock(side_effect=RuntimeError("invalid"))
     )
 
     with pytest.raises(RuntimeError):
         initialized_orchestrator.call_agent("developer_junior", "prompt")
 
-    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == []
+    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == [
+        "agy/gemini-3.8-flash-medium"
+    ]
     assert initialized_orchestrator.state["failed_model_routes"] == []
     initialized_orchestrator.state["active_task_id"] = "T-2"
     assert (
@@ -1262,12 +1281,12 @@ def test_developer_route_accepts_markdown_edit_blocks(
 ):
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
-        ["grok", "grok-4.5"]
+        ["agy", "gemini-3.8-flash-medium"]
     ]
     response = "[FILE_EDIT_START: README.md]\n[OLD]\nold\n[NEW]\nnew\n[FILE_EDIT_END: README.md]"
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(
-        initialized_orchestrator, "call_grok", Mock(return_value=response)
+        initialized_orchestrator, "call_agy", Mock(return_value=response)
     )
 
     assert initialized_orchestrator.call_agent("developer_junior", "prompt") == response
@@ -1351,7 +1370,7 @@ def test_implementing_missing_section_heading_falls_back_to_whole_file(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.config["use_worktree"] = False
-    initialized_orchestrator.config["backends"]["developer_junior"] = "grok"
+    initialized_orchestrator.config["backends"]["developer_junior"] = "agy"
     initialized_orchestrator.requirements_path.write_text(
         "requirements", encoding="utf-8"
     )
@@ -1616,7 +1635,40 @@ def test_direct_developer_task_stays_pending_when_no_file_changes(
 
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
     assert initialized_orchestrator.state["tasks"][0]["revisions"] == 1
-    assert initialized_orchestrator.call_agent.call_args.args[4] is None
+    assert callable(initialized_orchestrator.call_agent.call_args.args[4])
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "[FILE_START: one.py]\nprint(1)\n[FILE_END: one.py]",
+        "[FILE_START: one.py]\nprint(1)\n[FILE_END: one.py]"
+        "[FILE_START: two.py]\nprint(2)\n[FILE_END: two.py]"
+        "[FILE_START: extra.py]\nprint(3)\n[FILE_END: extra.py]",
+    ],
+)
+def test_incomplete_or_extra_file_response_does_not_write_or_complete(
+    initialized_orchestrator, monkeypatch, output
+):
+    initialized_orchestrator.config["use_worktree"] = False
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T-1", "description": "update two files",
+        "target_files": ["one.py", "two.py"], "status": "pending",
+        "rd_level": "senior", "qa_level": "senior",
+    }]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1}, "qa": {"senior": 1},
+    }
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value=output))
+
+    initialized_orchestrator.step_implementing()
+
+    assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
+    assert not (initialized_orchestrator.workspace / "one.py").exists()
+    assert not (initialized_orchestrator.workspace / "two.py").exists()
+    assert not (initialized_orchestrator.workspace / "extra.py").exists()
 
 
 def test_implementing_skips_read_only_inventory_tasks(
@@ -1693,15 +1745,8 @@ def test_legacy_fix_task_inherits_original_target_files(
 def test_human_review_task_inherits_original_target_files(
     initialized_orchestrator, monkeypatch
 ):
-    # Regression test: HUMAN-REVIEW-N tasks (created by `review revise`) used
-    # to get no target_files fallback at all -- only "FIX-"-prefixed task
-    # IDs did. For codex/claude backends (which edit the worktree directly
-    # rather than emitting [FILE_START] blocks), the implementing step
-    # detects a change by checking whether any target_files path differs
-    # from its pre-task contents; with an empty target_files list that
-    # check is vacuously false, so a correct fix was always reported as
-    # "produced no permitted file changes" -- observed live on
-    # gitMCPApplication.
+    # Regression test: HUMAN-REVIEW-N tasks need target files inherited
+    # from the original task so file-block responses can be validated.
     initialized_orchestrator.requirements_path.write_text(
         "requirements", encoding="utf-8"
     )
@@ -1838,10 +1883,8 @@ def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator
 
     written = initialized_orchestrator.parse_and_write_files(output, ["allowed.py"])
 
-    assert written == ["allowed.py"]
-    assert (initialized_orchestrator.workspace / "allowed.py").read_text(
-        encoding="utf-8"
-    ) == "ok"
+    assert written == []
+    assert not (initialized_orchestrator.workspace / "allowed.py").exists()
     assert not (initialized_orchestrator.workspace / "test_orchestrator.py").exists()
 
 
@@ -2034,12 +2077,12 @@ def test_manager_invalid_json_falls_back_to_next_route(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.config["role_model_routes"]["manager"] = [
-        ["grok", "grok-4.5"],
-        ["codex", "gpt-5.6-luna"],
+        ["agy", "auto:gemini-flash-medium"],
+        ["codex", "auto"],
     ]
-    grok = Mock(return_value="Here is the JSON you requested: not valid")
+    agy = Mock(return_value="Here is the JSON you requested: not valid")
     codex = Mock(return_value='{"use_sales": false}')
-    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
 
     result = initialized_orchestrator.call_agent(
@@ -2065,35 +2108,35 @@ def test_run_to_end_pauses_instead_of_raising_on_unhandled_error(
     assert initialized_orchestrator.state["human_review_source"] == "Orchestrator"
 
 
-def test_manager_retries_luna_then_ollama_after_token_failure(
+def test_manager_retries_agy_then_ollama_after_token_failure(
     initialized_orchestrator, monkeypatch
 ):
-    grok = Mock(side_effect=RuntimeError("maximum context length"))
+    agy = Mock(side_effect=RuntimeError("maximum context length"))
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
-    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
     assert initialized_orchestrator.call_manager("prompt") == "fallback"
-    grok.assert_called_once_with("prompt", None, role="manager", model="grok-4.5")
-    codex.assert_called_once_with("prompt", None, role="manager", model="gpt-5.6-luna")
+    codex.assert_called_once_with("prompt", None, role="manager", model="auto")
+    agy.assert_called_once_with("prompt", None, role="manager", model="auto:gemini-flash-medium")
     ollama.assert_called_once_with("manager", "prompt", None, model="qwen3:8b")
 
 
-def test_reviewer_retries_luna_then_ollama_after_token_failure(
+def test_reviewer_retries_agy_then_ollama_after_token_failure(
     initialized_orchestrator, monkeypatch
 ):
-    grok = Mock(side_effect=RuntimeError("maximum context length"))
+    agy = Mock(side_effect=RuntimeError("maximum context length"))
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
-    monkeypatch.setattr(initialized_orchestrator, "call_grok", grok)
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
-    grok.assert_called_once_with("prompt", None, role="reviewer", model="grok-4.5")
-    codex.assert_called_once_with("prompt", None, role="reviewer", model="gpt-5.6-luna")
+    codex.assert_called_once_with("prompt", None, role="reviewer", model="auto")
+    agy.assert_called_once_with("prompt", None, role="reviewer", model="auto:gemini-flash-medium")
     ollama.assert_called_once_with("reviewer", "prompt", None, model="gemma4:latest")
 
 
@@ -2125,11 +2168,11 @@ def test_token_fallback_promotes_manager_only_for_token_errors(
         initialized_orchestrator.token_fallback_model(
             "manager", RuntimeError("maximum context length")
         )
-        == "gpt-5.6-luna"
+        == "auto:gemini-flash-medium"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("manager", "codex")
-        == "gpt-5.6-luna"
+        == "auto"
     )
     assert (
         initialized_orchestrator.token_fallback_model(
@@ -3664,7 +3707,7 @@ def test_setup_worktree_cleans_up_before_git_worktree_add(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     events = []
     monkeypatch.setattr(
-        initialized_orchestrator, "cleanup_worktree", lambda: events.append("cleanup")
+        initialized_orchestrator, "cleanup_worktree", lambda: events.append("cleanup") or True
     )
     monkeypatch.setattr(
         initialized_orchestrator,
@@ -3728,19 +3771,19 @@ def test_cleanup_worktree_merge_false_removes_listed_worktree_and_deletes_branch
 ):
     initialized_orchestrator.has_git = True
     worktree = initialized_orchestrator.ai_dir / "worktree"
-    run = Mock(return_value=(0, f"{worktree} ai-feature-branch\n"))
+    run = Mock(return_value=(0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"))
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     initialized_orchestrator.cleanup_worktree(merge=False)
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list"], capture=True),
+        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
         call(
-            ["git", "worktree", "remove", "--force", str(worktree)],
+            ["git", "worktree", "remove", str(worktree)],
             cwd=initialized_orchestrator.workspace,
         ),
         call(
-            ["git", "branch", "-D", "ai-feature-branch"],
+            ["git", "branch", "-d", "ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
         ),
     ]
@@ -3750,18 +3793,65 @@ def test_cleanup_worktree_skips_remove_when_worktree_list_has_no_worktree(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.has_git = True
-    run = Mock(return_value=(0, "/repo master\n"))
+    run = Mock(return_value=(0, "stdout:\nworktree /repo\nbranch refs/heads/master\n\nstderr:\n"))
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     initialized_orchestrator.cleanup_worktree()
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list"], capture=True),
-        call(
-            ["git", "branch", "-D", "ai-feature-branch"],
-            cwd=initialized_orchestrator.workspace,
-        ),
+        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
     ]
+
+
+def test_cleanup_worktree_preserves_path_owned_by_another_branch(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.has_git = True
+    worktree = initialized_orchestrator.ai_dir / "worktree"
+    worktree.mkdir()
+    sentinel = worktree / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    run = Mock(return_value=(
+        0, f"stdout:\nworktree {worktree}\nbranch refs/heads/user-branch\n\nstderr:\n"
+    ))
+    monkeypatch.setattr(initialized_orchestrator, "run_command", run)
+
+    assert initialized_orchestrator.cleanup_worktree() is False
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    run.assert_called_once_with(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=initialized_orchestrator.workspace,
+    )
+
+
+def test_cleanup_worktree_stops_if_remove_fails(initialized_orchestrator, monkeypatch):
+    initialized_orchestrator.has_git = True
+    worktree = initialized_orchestrator.ai_dir / "worktree"
+    run = Mock(side_effect=[
+        (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
+        (1, "dirty worktree"),
+    ])
+    monkeypatch.setattr(initialized_orchestrator, "run_command", run)
+
+    assert initialized_orchestrator.cleanup_worktree() is False
+    assert run.call_count == 2
+    assert run.call_args_list[-1] == call(
+        ["git", "worktree", "remove", str(worktree)],
+        cwd=initialized_orchestrator.workspace,
+    )
+
+
+def test_reset_keeps_state_when_worktree_cleanup_fails(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.state["tasks"] = [{"id": "T-1"}]
+    before = copy.deepcopy(initialized_orchestrator.state)
+    monkeypatch.setattr(initialized_orchestrator, "cleanup_worktree", Mock(return_value=False))
+
+    with pytest.raises(RuntimeError, match="run state was preserved"):
+        orchestrator_main.clear_run_state(initialized_orchestrator, "PLANNING")
+
+    assert initialized_orchestrator.state == before
 
 
 def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(
@@ -3771,11 +3861,12 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     run = Mock(
         side_effect=[
+            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
             (0, ""),
+            (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
             (0, ""),
             (0, "merged"),
-            (0, f"{worktree} ai-feature-branch\n"),
             (0, ""),
             (0, ""),
         ]
@@ -3785,23 +3876,24 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
+        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
         call(
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
         ),
+        call(["git", "status", "--porcelain"], cwd=worktree),
         call(["git", "add", "."], cwd=worktree),
         call(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=worktree),
         call(
             ["git", "merge", "ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
         ),
-        call(["git", "worktree", "list"], capture=True),
         call(
-            ["git", "worktree", "remove", "--force", str(worktree)],
+            ["git", "worktree", "remove", str(worktree)],
             cwd=initialized_orchestrator.workspace,
         ),
         call(
-            ["git", "branch", "-D", "ai-feature-branch"],
+            ["git", "branch", "-d", "ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
         ),
     ]
@@ -3814,7 +3906,9 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     run = Mock(
         side_effect=[
+            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
             (0, ""),
+            (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
             (0, ""),
             (1, "conflict"),
@@ -3827,10 +3921,12 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
+        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
         call(
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
         ),
+        call(["git", "status", "--porcelain"], cwd=worktree),
         call(["git", "add", "."], cwd=worktree),
         call(["git", "commit", "-m", "AI Auto-commit before merge"], cwd=worktree),
         call(
@@ -3853,7 +3949,9 @@ def test_cleanup_worktree_merge_failure_aborts_and_records_conflict(
     merge_output = "stdout:\nCONFLICT (add/add): Merge conflict in docs/litellm-telemetry.md\nstderr:\n"
     run = Mock(
         side_effect=[
+            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
             (0, ""),
+            (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
             (0, ""),
             (1, merge_output),
@@ -4178,23 +4276,6 @@ def test_maybe_hire_vendor_noop_for_vendor_backed_role(initialized_orchestrator)
 
 # --- Auto-weighting: proactive vendor quota probe ---
 
-CLAUDE_USAGE_SAMPLE = """
-   Current session
-   █████                                              10% used
-   Resets 4:39am (Asia/Taipei)
-
-   Current week (all models)
-   ██████▌                                            13% used
-   Resets Aug 6, 1:59am (Asia/Taipei)
-"""
-
-GROK_USAGE_SAMPLE = """
-     Session usage is unavailable until the session starts.
-
-     Weekly limit: 2%
-     Next reset: August 1, 19:28
-"""
-
 AGY_CREDITS_DISABLED_SAMPLE = """
 Model AI Credits
 
@@ -4206,14 +4287,6 @@ Model AI Credits
 
 Remaining AI Credits: 0
 """
-
-
-def test_parse_vendor_quota_pct_reads_claude_weekly_usage():
-    assert backends.parse_vendor_quota_pct("claude", CLAUDE_USAGE_SAMPLE) == 13
-
-
-def test_parse_vendor_quota_pct_reads_grok_weekly_limit():
-    assert backends.parse_vendor_quota_pct("grok", GROK_USAGE_SAMPLE) == 2
 
 
 def test_parse_vendor_quota_pct_agy_credits_not_enabled_is_unknown():
@@ -4247,10 +4320,10 @@ def test_check_vendor_quota_flags_exhausted_vendor(
     monkeypatch.setattr(
         backends,
         "_probe_vendor_quota_pane",
-        Mock(return_value=GROK_USAGE_SAMPLE.replace("2%", "99%")),
+        Mock(return_value=AGY_CREDITS_EXHAUSTED_SAMPLE),
     )
 
-    assert backends.check_vendor_quota(initialized_orchestrator, "grok") is False
+    assert backends.check_vendor_quota(initialized_orchestrator, "agy") is False
 
 
 def test_maybe_hire_vendor_skips_exhausted_vendor_and_hires_next(

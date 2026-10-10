@@ -593,6 +593,12 @@ class DeveloperAgent(BaseAgent):
             if allowed_files is not None
             else None
         )
+        if allowed is not None and any(
+            str(Path(block[0].strip())) not in allowed
+            for block in (*matches, *edits, *section_edits)
+        ):
+            log_warning("Rejecting response with files outside the task contract.")
+            return []
 
         written_files = []
         for filepath_str, content in matches:
@@ -1113,14 +1119,6 @@ class DeveloperAgent(BaseAgent):
                 if allow_markdown_heading_changes
                 else "Preserve all unrelated content and existing Markdown headings."
             )
-            before_contents = {
-                filepath: (
-                    (base_dir / filepath).read_bytes()
-                    if (base_dir / filepath).is_file()
-                    else None
-                )
-                for filepath in target_files
-            }
             prompt = (
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
@@ -1143,7 +1141,7 @@ class DeveloperAgent(BaseAgent):
                 if memory_block:
                     prompt += f"\n{memory_block}\n"
 
-            if backend in ["ollama", "agy", "grok"]:
+            if backend in ["ollama", "agy", "codex"]:
                 if use_section_blocks:
                     filepath = target_files[0]
                     required_heading = task["section_heading"]
@@ -1179,9 +1177,6 @@ class DeveloperAgent(BaseAgent):
                         "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
                         "Do not output analysis, a plan, Markdown fences, or explanations."
                     )
-            else:
-                prompt += "Modify the code files directly in the repository. Provide details of the changes you make."
-
             if (
                 self.orchestrator.state["code_revisions"] > 0
                 or task.get("revisions", 0) > 0
@@ -1209,7 +1204,7 @@ class DeveloperAgent(BaseAgent):
             system_prompt += (
                 f" (RD {agent_number}). Write and edit code to fulfill the task."
             )
-            if backend in ["ollama", "agy", "grok"]:
+            if backend in ["ollama", "agy", "codex"]:
                 if use_section_blocks:
                     system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."
                 else:
@@ -1217,15 +1212,15 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
-                return bool(
+                return set(
                     self.parse_and_write_files(
                         response,
-                        task.get("target_files"),
+                        target_files,
                         dry_run=True,
                         allowed_heading=task.get("section_heading"),
                         allow_markdown_heading_changes=allow_markdown_heading_changes,
                     )
-                )
+                ) == set(target_files)
 
             try:
                 dev_output = self.call_agent(
@@ -1233,14 +1228,19 @@ class DeveloperAgent(BaseAgent):
                     prompt,
                     system_prompt,
                     response_validator=valid_file_response
-                    if backend in ["ollama", "agy", "grok"]
+                    if backend in ["ollama", "agy", "codex"]
                     else None,
                 )
             except RuntimeError as error:
                 self.retry_task_or_pause(task, str(error))
                 return
 
-            if backend in ["ollama", "agy", "grok"]:
+            if backend in ["ollama", "agy", "codex"]:
+                if not valid_file_response(dev_output):
+                    self.retry_task_or_pause(
+                        task, f"Task {task['id']} omitted or invalidated target files."
+                    )
+                    return
                 written = self.parse_and_write_files(
                     dev_output,
                     task.get("target_files"),
@@ -1259,26 +1259,6 @@ class DeveloperAgent(BaseAgent):
                         task, f"Task {task['id']} produced no permitted file changes."
                     )
                     return
-            else:
-                changed_files = [
-                    filepath
-                    for filepath in target_files
-                    if (
-                        (base_dir / filepath).read_bytes()
-                        if (base_dir / filepath).is_file()
-                        else None
-                    )
-                    != before_contents[filepath]
-                ]
-                if not changed_files:
-                    self.retry_task_or_pause(
-                        task, f"Task {task['id']} produced no permitted file changes."
-                    )
-                    return
-                log_success(
-                    f"Developer changed files directly: {', '.join(changed_files)}"
-                )
-
             developer_logs.append(
                 f"--- Task {task['id']} implementation output ---\n{dev_output}\n"
             )

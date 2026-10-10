@@ -9,10 +9,45 @@ import requests
 from pathlib import Path
 
 AGY_MODEL_ALIASES = {
-    "gemini-3.5-flash": "Gemini 3.5 Flash (Medium)",
+    "gemini-3.5-flash": "auto:gemini-flash-medium",
     "gemini-3.1-pro": "Gemini 3.1 Pro (Low)",
-    "gpt-oss-120b": "Gemini 3.5 Flash (Medium)",
+    "gpt-oss-120b": "GPT-OSS 120B (Medium)",
+    "gemini-3.8-flash-medium": "Gemini 3.8 Flash (Medium)",
 }
+
+_agy_models_cache = (0.0, ())
+
+
+def resolve_agy_model(model: str) -> str:
+    if not model.startswith("auto:"):
+        return AGY_MODEL_ALIASES.get(model, model)
+
+    global _agy_models_cache
+    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 3600:
+        result = subprocess.run(
+            ["agy", "models"], capture_output=True, text=True, timeout=60, check=False
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Cannot list AGY models: {result.stderr.strip()}")
+        _agy_models_cache = (
+            time.monotonic(),
+            tuple(line.split("\t", 1)[0] for line in result.stdout.splitlines() if "\t" in line),
+        )
+
+    family, effort = model.removeprefix("auto:").rsplit("-", 1)
+    prefix, _, variant = family.partition("-")
+    pattern = re.compile(
+        rf"^{re.escape(prefix)}-(\d+(?:\.\d+)*)-{re.escape(variant)}-{re.escape(effort)}$"
+    ) if prefix == "gemini" else re.compile(
+        rf"^{re.escape(prefix)}-{re.escape(variant)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+    )
+    matches = ((tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
+               for name in _agy_models_cache[1]
+               if (match := pattern.fullmatch(name)))
+    try:
+        return max(matches)[1]
+    except ValueError as exc:
+        raise RuntimeError(f"No AGY model available for {model}") from exc
 
 
 def get_backend(orchestrator, role: str) -> str:
@@ -149,12 +184,13 @@ def call_codex(
     cmd = [
         "codex",
         "exec",
-        "--dangerously-bypass-approvals-and-sandbox",
+        "--sandbox",
+        "read-only",
         "--skip-git-repo-check",
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
-    if model:
+    if model and model != "auto":
         cmd.extend(["-m", model])
     effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if effort:
@@ -189,39 +225,6 @@ def call_codex(
         raise e
 
 
-def call_claude(
-    orchestrator, prompt: str, system_prompt: str | None = None, role: str = "developer"
-) -> str:
-    from orchestrator.core.state import log_info
-
-    full_prompt = ""
-    if system_prompt:
-        full_prompt += f"{system_prompt}\n\n"
-    full_prompt += prompt
-
-    cmd = ["claude", "--print", "--dangerously-skip-permissions"]
-    model = orchestrator.get_active_model_for_role(role, "claude")
-    if model:
-        cmd.extend(["--model", model])
-    cmd.append(full_prompt)
-
-    log_info(f"Running Claude Code: {' '.join(cmd[:-1])} ...")
-    result = subprocess.run(
-        cmd,
-        cwd=orchestrator.agent_workspace(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=1800,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Claude CLI failed with code {result.returncode}:\n{result.stderr}"
-        )
-    return result.stdout
-
-
 def call_agy(
     orchestrator,
     prompt: str,
@@ -236,9 +239,10 @@ def call_agy(
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
     full_prompt += prompt
 
-    cmd = ["agy"]
+    cmd = ["agy", "--sandbox", "--mode", "plan"]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
-    model = AGY_MODEL_ALIASES.get(model, model)
+    if model:
+        model = resolve_agy_model(model)
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--print", full_prompt])
@@ -258,19 +262,6 @@ def call_agy(
             f"agy CLI failed with code {result.returncode}:\n{result.stderr}"
         )
     return result.stdout
-
-
-def call_grok(
-    orchestrator,
-    prompt: str,
-    system_prompt: str | None = None,
-    role: str = "developer",
-    model: str | None = None,
-    response_schema: dict | None = None,
-) -> str:
-    from orchestrator.core import grok
-
-    return grok.call(orchestrator, prompt, system_prompt, role, model, response_schema)
 
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
@@ -330,16 +321,9 @@ def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
 QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
 
 # Interactive-mode-only quota/usage commands, discovered per-CLI since none of
-# these expose a headless flag for it. `trust_prompt`/`dismiss` handle one-time
-# TUI modals (e.g. Grok's "trust this directory?" prompt on first launch).
+# these expose a headless flag for it.
 VENDOR_QUOTA_PROBES = {
     "codex": {"command": "/status"},
-    "claude": {"command": "/usage"},
-    "grok": {
-        "command": "/usage",
-        "trust_prompt": r"Yes, proceed",
-        "dismiss": (r"New worktree|Resume session", "Escape"),
-    },
     "agy": {"command": "/credits"},
 }
 
@@ -457,10 +441,7 @@ def parse_vendor_quota_pct(backend: str, pane: str) -> int | None:
     """Extract a 0-100 'how exhausted is this vendor' number from a captured
     quota-screen pane. Returns None when the format isn't recognized (unknown,
     not exhausted) rather than guessing."""
-    if backend == "grok":
-        m = re.search(r"Weekly limit:\s*(\d{1,3})%", pane)
-        return int(m.group(1)) if m else None
-    if backend in ("claude", "codex"):
+    if backend == "codex":
         m = re.search(r"Current week[^\n]*[\s\S]{0,80}?(\d{1,3})%\s*used", pane)
         if m:
             return int(m.group(1))

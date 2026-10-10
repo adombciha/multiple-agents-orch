@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import re
 import time
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 import requests
@@ -165,8 +166,10 @@ class AgentOrchestrator:
                 if existing_state.get("state") in {"COMPLETED", "FAILED"}:
                     log_info("Clearing completed or failed workflow artifacts.")
                     self.clear_run_artifacts()
-            except (OSError, json.JSONDecodeError):
-                self.clear_run_artifacts()
+            except (OSError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    "Cannot read workflow state; existing artifacts were preserved."
+                ) from error
         self.ai_dir.mkdir(exist_ok=True)
 
         # Write config if not exists
@@ -197,7 +200,8 @@ class AgentOrchestrator:
             if self.config_path.exists()
             else None
         )
-        self.cleanup_worktree(merge=False)
+        if not self.cleanup_worktree(merge=False):
+            raise RuntimeError("Could not clear the worktree; run artifacts were preserved.")
         shutil.rmtree(self.ai_dir, ignore_errors=True)
         if self.has_git:
             self.run_command(["git", "worktree", "prune"], cwd=self.workspace)
@@ -297,7 +301,21 @@ class AgentOrchestrator:
             loaded_config = json.load(f)
         self.explicit_backends = set(loaded_config.get("backends", {}))
 
-        from orchestrator.core.config import merge_defaults
+        from orchestrator.core.config import merge_defaults, migrate_legacy_config
+
+        migrated_config = migrate_legacy_config(loaded_config)
+        if migrated_config != loaded_config:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.config_path.parent, delete=False
+            ) as f:
+                temp_path = Path(f.name)
+                try:
+                    json.dump(migrated_config, f, indent=2)
+                except Exception:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+            os.replace(temp_path, self.config_path)
+            loaded_config = migrated_config
 
         self.config = merge_defaults(DEFAULT_CONFIG, loaded_config)
 
@@ -312,6 +330,9 @@ class AgentOrchestrator:
         self.state.setdefault("task_failed_model_routes", {})
         self.state.setdefault("task_developer_promotions", {})
         self.state.setdefault("task_backend_overrides", {})
+        for task_id, backend in list(self.state["task_backend_overrides"].items()):
+            if backend in {"claude", "grok"}:
+                self.state["task_backend_overrides"][task_id] = self.config["backends"]["developer_senior"]
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -321,8 +342,19 @@ class AgentOrchestrator:
 
     def save_state(self):
         """Saves current state to state.json."""
-        with open(self.state_path, "w", encoding="utf-8") as f:
-            json.dump(self.state, f, indent=2)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False
+        ) as f:
+            temp_path = Path(f.name)
+            try:
+                json.dump(self.state, f, indent=2)
+            except Exception:
+                temp_path.unlink(missing_ok=True)
+                raise
+        try:
+            os.replace(temp_path, self.state_path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def relevant_target_files(self, text: str, primary: str = "") -> list:
         """Narrow a QA/Reviewer failure report down to the files it actually
@@ -548,21 +580,6 @@ class AgentOrchestrator:
             lambda: backends.call_codex(self, prompt, system_prompt, role, model),
         )
 
-    def call_claude(
-        self, prompt: str, system_prompt: str | None = None, role: str = "developer"
-    ) -> str:
-        from orchestrator.core import backends
-
-        selected_model = self.get_active_model_for_role(role, "claude")
-        return self._call_with_usage(
-            role,
-            "claude",
-            selected_model,
-            prompt,
-            system_prompt,
-            lambda: backends.call_claude(self, prompt, system_prompt, role),
-        )
-
     def call_agy(
         self,
         prompt: str,
@@ -580,28 +597,6 @@ class AgentOrchestrator:
             prompt,
             system_prompt,
             lambda: backends.call_agy(self, prompt, system_prompt, role, model),
-        )
-
-    def call_grok(
-        self,
-        prompt: str,
-        system_prompt: str | None = None,
-        role: str = "developer",
-        model: str | None = None,
-        response_schema: dict | None = None,
-    ) -> str:
-        from orchestrator.core import backends
-
-        selected_model = model or self.get_active_model_for_role(role, "grok")
-        return self._call_with_usage(
-            role,
-            "grok",
-            selected_model,
-            prompt,
-            system_prompt,
-            lambda: backends.call_grok(
-                self, prompt, system_prompt, role, model, response_schema
-            ),
         )
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
@@ -846,44 +841,6 @@ class AgentOrchestrator:
                             "Agent response failed the task output contract"
                         )
                     return response
-                if backend == "grok":
-                    grok_kwargs = {"role": role, "model": model}
-                    if response_schema is not None:
-                        grok_kwargs["response_schema"] = response_schema
-                    response = self.call_grok(prompt, system_prompt, **grok_kwargs)
-                    if (
-                        self.state.get("state") == "IMPLEMENTING"
-                        and role.startswith("developer")
-                        and not any(
-                            marker in response
-                            for marker in (
-                                "[FILE_START:",
-                                "[FILE_EDIT_START:",
-                                "[SECTION_EDIT_START:",
-                            )
-                        )
-                    ):
-                        raise ResponseContractError(
-                            "Developer response omitted required file blocks"
-                        )
-                    self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
-                    return response
-                if backend == "claude":
-                    response = self.call_claude(prompt, system_prompt, role=role)
-                    self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
-                    return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
                 errors.append(f"{backend}/{model}: {error}")
@@ -972,29 +929,7 @@ class AgentOrchestrator:
         if routed is not None:
             return routed
 
-        if backend == "claude":
-            if not backends.backend_available(self, "claude"):
-                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
-            try:
-                return self.call_claude(prompt, system_prompt, role=role)
-            except Exception as e:
-                if backends.quota_exhausted(e):
-                    backends.mark_backend_quota_exhausted(self, "claude")
-                log_warning(f"Claude backend failed: {e}")
-                log_warning("Falling back to Ollama backend.")
-                return self.call_agent_ollama_fallback(role, prompt, system_prompt)
-        elif backend == "grok":
-            if not backends.backend_available(self, "grok"):
-                return self.call_agy_quota_fallback(role, prompt, system_prompt)
-            try:
-                return self.call_grok(prompt, system_prompt, role=role)
-            except Exception as e:
-                if backends.quota_exhausted(e):
-                    backends.mark_backend_quota_exhausted(self, "grok")
-                log_warning(f"Grok Build backend failed: {e}")
-                log_warning("Falling back to AGY, then Ollama.")
-                return self.call_agy_quota_fallback(role, prompt, system_prompt)
-        elif backend == "codex":
+        if backend == "codex":
             if not backends.backend_available(self, "codex"):
                 return self.call_agy_quota_fallback(role, prompt, system_prompt)
             try:
@@ -1033,8 +968,9 @@ class AgentOrchestrator:
                 log_warning(f"agy backend failed: {e}")
                 log_warning("Falling back to Ollama backend.")
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
-        else:
+        elif backend == "ollama":
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
+        raise ValueError(f"Unsupported backend: {backend}")
 
     # Git & Worktree Isolation
     def setup_worktree(self):
@@ -1043,7 +979,8 @@ class AgentOrchestrator:
             return
 
         wt_path = self.ai_dir / "worktree"
-        self.cleanup_worktree()
+        if not self.cleanup_worktree():
+            raise RuntimeError("Git worktree cleanup failed; existing work was preserved.")
 
         log_info(
             f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'..."
@@ -1066,6 +1003,21 @@ class AgentOrchestrator:
 
         wt_path = self.ai_dir / "worktree"
 
+        code, listed = self.run_command(
+            ["git", "worktree", "list", "--porcelain"], cwd=self.workspace
+        )
+        if code != 0:
+            log_error(f"Failed to list Git worktrees: {listed}")
+            return False
+        listing = listed.partition("stdout:\n")[2].partition("\nstderr:")[0]
+        owned = any(
+            f"worktree {wt_path}" in record.splitlines()
+            and "branch refs/heads/ai-feature-branch" in record.splitlines()
+            for record in listing.split("\n\n")
+        )
+        if not owned:
+            return not merge and not wt_path.exists()
+
         if merge:
             code, _ = self.run_command(
                 [
@@ -1078,12 +1030,30 @@ class AgentOrchestrator:
                 cwd=self.workspace,
             )
             branch_exists = code == 0
+            if not branch_exists:
+                log_error("The owned worktree branch no longer exists.")
+                return False
             if branch_exists:
                 log_info(f"Merging 'ai-feature-branch' back into {self.base_branch}...")
-                self.run_command(["git", "add", "."], cwd=wt_path)
-                self.run_command(
-                    ["git", "commit", "-m", "AI Auto-commit before merge"], cwd=wt_path
+                code, status = self.run_command(
+                    ["git", "status", "--porcelain"], cwd=wt_path
                 )
+                if code != 0:
+                    log_error(f"Failed to inspect feature worktree: {status}")
+                    return False
+                changes = status.partition("stdout:\n")[2].partition("\nstderr:")[0].strip()
+                if changes:
+                    code, output = self.run_command(["git", "add", "."], cwd=wt_path)
+                    if code != 0:
+                        log_error(f"Failed to stage feature worktree: {output}")
+                        return False
+                    code, output = self.run_command(
+                        ["git", "commit", "-m", "AI Auto-commit before merge"],
+                        cwd=wt_path,
+                    )
+                    if code != 0:
+                        log_error(f"Failed to commit feature worktree: {output}")
+                        return False
 
                 code, output = self.run_command(
                     ["git", "merge", "ai-feature-branch"], cwd=self.workspace
@@ -1119,17 +1089,20 @@ class AgentOrchestrator:
                 else:
                     log_success(f"Successfully merged changes to {self.base_branch}!")
 
-        wt_list = self.run_command(["git", "worktree", "list"], capture=True)[1]
-        if "worktree" in wt_list:
-            log_info("Removing Git worktree...")
-            self.run_command(
-                ["git", "worktree", "remove", "--force", str(wt_path)],
-                cwd=self.workspace,
-            )
-
-        self.run_command(
-            ["git", "branch", "-D", "ai-feature-branch"], cwd=self.workspace
+        log_info("Removing Git worktree...")
+        code, output = self.run_command(
+            ["git", "worktree", "remove", str(wt_path)],
+            cwd=self.workspace,
         )
+        if code != 0:
+            log_error(f"Failed to remove Git worktree: {output}")
+            return False
+        code, output = self.run_command(
+            ["git", "branch", "-d", "ai-feature-branch"], cwd=self.workspace
+        )
+        if code != 0:
+            log_error(f"Failed to delete feature branch: {output}")
+            return False
         return True
 
     def queue_worktree_repair_task(self):

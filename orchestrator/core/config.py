@@ -14,10 +14,10 @@ DEFAULT_CONFIG = {
     "max_revisions": 2,
     "max_plan_escalations": 1,  # After max_revisions narrow fixes fail a stage, give the Manager this many chances to replan before pausing for a human
     "backends": {
-        "manager": "grok",
-        "architect": "grok",
+        "manager": "codex",
+        "architect": "codex",
         "developer": "codex",
-        "reviewer": "grok",
+        "reviewer": "codex",
         "qa": "ollama",
         "developer_senior": "codex",
         "developer_middle": "ollama",
@@ -26,14 +26,14 @@ DEFAULT_CONFIG = {
         "qa_middle": "ollama",
         "qa_junior": "ollama",
         "assistant": "ollama",
-        "ra": "grok",
+        "ra": "agy",
         "security": "ollama",
         "devops": "ollama",
         "uiux": "ollama",
         "uiux_visual_review": "ollama",
         "fae": "ollama",
         "integration": "ollama",
-        "sales": "grok",
+        "sales": "agy",
         "sre": "agy",
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
@@ -43,35 +43,33 @@ DEFAULT_CONFIG = {
     "vendor_quota_check_threshold_pct": 95,
     "model_tiers": {
         "ollama": ["gemma4:latest", "gemma2:2b", "gemma2:9b"],
-        "agy": ["Gemini 3.5 Flash (Medium)", "Gemini 3.1 Pro (Low)"],
-        "codex": ["gpt-5.6-luna"],
-        "claude": ["claude-3-5-haiku", "claude-3-7-sonnet"],
-        "grok": ["grok-4.5"],
+        "agy": ["auto:gemini-flash-medium"],
+        "codex": ["auto"],
     },
     "role_models": {
-        "manager": "grok-4.5",
-        "reviewer": "grok-4.5",
-        "developer_senior": "gpt-5.6-luna",
+        "manager": "auto",
+        "reviewer": "auto",
+        "developer_senior": "auto",
         "developer_middle": "granite4.1:8b",
         "developer_junior": "gemma4:latest",
         "qa_senior": "gemma4:latest",
         "qa_middle": "gemma4:latest",
         "qa_junior": "gemma4:latest",
         "assistant": "gemma4:latest",
-        "architect": "grok-4.5",
-        "ra": "grok-4.5",
+        "architect": "auto",
+        "ra": "auto:gemini-flash-medium",
         "security": "deepseek-coder:6.7b",
         "devops": "qwen2.5-coder:14b",
         "uiux": "qwen3:8b",
         "uiux_visual_review": "llama3.2-vision:latest",
         "fae": "qwen3:8b",
         "integration": "deepseek-coder:6.7b",
-        "sales": "grok-4.5",
-        "sre": "Gemini 3.1 Pro (Low)",
+        "sales": "auto:gemini-flash-medium",
+        "sre": "auto:gemini-flash-medium",
     },
     "role_model_backends": {
-        "manager": "grok",
-        "reviewer": "grok",
+        "manager": "codex",
+        "reviewer": "codex",
         "developer_senior": "codex",
         "developer_middle": "ollama",
         "developer_junior": "ollama",
@@ -79,42 +77,43 @@ DEFAULT_CONFIG = {
         "qa_middle": "ollama",
         "qa_junior": "ollama",
         "assistant": "ollama",
-        "architect": "grok",
-        "ra": "grok",
+        "architect": "codex",
+        "ra": "agy",
         "security": "ollama",
         "devops": "ollama",
         "uiux": "ollama",
         "uiux_visual_review": "ollama",
         "fae": "ollama",
         "integration": "ollama",
-        "sales": "grok",
+        "sales": "agy",
         "sre": "agy",
     },
     "role_model_tiers": {
-        "manager": ["grok-4.5", "gpt-5.6-luna"],
-        "reviewer": ["grok-4.5", "gpt-5.6-luna"],
+        "manager": ["auto", "auto:gemini-flash-medium"],
+        "reviewer": ["auto", "auto:gemini-flash-medium"],
         "qa_senior": ["deepseek-r1:7b"],
         "qa_middle": ["qwen2.5-coder:14b"],
-        "architect": ["grok-4.5", "gpt-5.6-luna"],
-        "developer_senior": ["gpt-5.6-luna", "gpt-oss:20b", "granite4.1:8b"],
+        "architect": ["auto", "auto:gemini-flash-medium"],
+        "developer_senior": ["auto", "gpt-oss:20b", "granite4.1:8b"],
         "developer_middle": ["granite4.1:8b", "codegemma:7b", "qwen2.5-coder:7b"],
         "developer_junior": ["gemma4:latest", "qwen2.5-coder:7b", "codegemma:7b"],
-        "ra": ["grok-4.5"],
-        "sales": ["grok-4.5"],
+        "ra": ["auto:gemini-flash-medium"],
+        "sales": ["auto:gemini-flash-medium"],
     },
     "role_model_routes": {
         "manager": [
-            ["grok", "grok-4.5"],
-            ["codex", "gpt-5.6-luna"],
+            ["codex", "auto"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "qwen3:8b"],
         ],
         "architect": [
-            ["grok", "grok-4.5"],
-            ["codex", "gpt-5.6-luna"],
+            ["codex", "auto"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "gemma4:latest"],
         ],
         "developer_senior": [
-            ["codex", "gpt-5.6-luna"],
+            ["codex", "auto"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "gpt-oss:20b"],
             ["ollama", "granite4.1:8b"],
         ],
@@ -136,8 +135,8 @@ DEFAULT_CONFIG = {
             ["ollama", "qwen2.5-coder:7b"],
         ],
         "reviewer": [
-            ["grok", "grok-4.5"],
-            ["codex", "gpt-5.6-luna"],
+            ["codex", "auto"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "gemma4:latest"],
         ],
         "security": [
@@ -162,14 +161,18 @@ DEFAULT_CONFIG = {
             ["ollama", "gemma4:latest"],
         ],
         "ra": [
-            ["grok", "grok-4.5"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "qwen3:8b"],
             ["ollama", "gemma4:latest"],
         ],
         "sales": [
-            ["grok", "grok-4.5"],
+            ["agy", "auto:gemini-flash-medium"],
             ["ollama", "qwen3:8b"],
             ["ollama", "gemma4:latest"],
+        ],
+        "sre": [
+            ["agy", "auto:gemini-flash-medium"],
+            ["ollama", "qwen3:8b"],
         ],
         "assistant": [
             ["ollama", "gemma4:latest"],
@@ -188,7 +191,7 @@ DEFAULT_CONFIG = {
         "qa": {"senior": 1, "middle": 2, "junior": 3},
     },
     "qa_ollama_fallback_model": "qwen2.5-coder:7b",
-    # Internal staff trust weights (ollama-backed roles only). Vendors (claude/codex/agy/grok)
+    # Internal staff trust weights (ollama-backed roles only). Vendors (codex/agy)
     # are billed per token and use vendor_scores below instead of a headcount weight.
     "worker_weights": {
         "rd": {"senior": 1.0, "middle": 1.0, "junior": 1.0},
@@ -210,3 +213,51 @@ def merge_defaults(defaults: dict, values: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+def migrate_legacy_config(values: dict) -> dict:
+    migrated = deepcopy(values)
+    removed = {"claude", "grok"}
+    old_models = {"grok-4.5", "gpt-5.6-luna", "claude-3-5-haiku", "claude-3-7-sonnet"}
+    old_models.add("Gemini 3.5 Flash (Medium)")
+
+    for field in ("backends", "role_model_backends"):
+        for role, backend in migrated.get(field, {}).items():
+            if backend in removed:
+                migrated[field][role] = DEFAULT_CONFIG[field].get(role, "ollama")
+
+    for role, model in migrated.get("role_models", {}).items():
+        if model in old_models:
+            migrated["role_models"][role] = DEFAULT_CONFIG["role_models"].get(role, model)
+
+    for role, models in migrated.get("role_model_tiers", {}).items():
+        migrated["role_model_tiers"][role] = [
+            "auto:gemini-flash-medium" if model.startswith("Gemini") and model in old_models
+            else "auto" if model in old_models else model
+            for model in models
+        ]
+
+    for role, routes in migrated.get("role_model_routes", {}).items():
+        routes = [route for route in routes if route[0] not in removed]
+        routes = [
+            [backend, DEFAULT_CONFIG["model_tiers"].get(backend, [model])[0] if model in old_models else model]
+            for backend, model in routes
+        ]
+        preferred = DEFAULT_CONFIG["role_model_routes"].get(role, [None])[0]
+        if preferred and (not routes or routes[0][0] != preferred[0]):
+            routes.insert(0, deepcopy(preferred))
+        migrated["role_model_routes"][role] = routes
+
+    for backend in removed:
+        migrated.get("model_tiers", {}).pop(backend, None)
+    for backend, models in migrated.get("model_tiers", {}).items():
+        migrated["model_tiers"][backend] = [
+            "auto:gemini-flash-medium" if model == "Gemini 3.5 Flash (Medium)"
+            else "auto" if model == "gpt-5.6-luna" else model
+            for model in models
+        ]
+    if "backend_escalation_path" in migrated:
+        migrated["backend_escalation_path"] = [
+            backend for backend in migrated["backend_escalation_path"] if backend not in removed
+        ]
+    return migrated

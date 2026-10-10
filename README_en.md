@@ -18,7 +18,7 @@ python3 -m venv .venv
 
 最後一條命令只驗證 CLI 能載入，不會連線至 AI backend 或建立 worktree。專案沒有 `--version` 選項。
 
-要執行 AI workflow，請安裝並登入 `.ai-company/config.json` 中選定的 CLI backend（`grok`、`codex`、`agy` 或 `claude`），或為 `ollama` role 執行 Ollama 服務。協調器不定義額外的 Grok API-key 環境變數；請按照 `grok` CLI 的要求完成認證。只有在 Git worktree 隔離不可用或不需要時，才將設定中的 `use_worktree` 設為 `false`。
+要執行 AI workflow，請安裝並登入選定的 CLI backend（`codex` 或 `agy`），或為 `ollama` role 執行 Ollama 服務。只有在 Git worktree 隔離不可用或不需要時，才將 `use_worktree` 設為 `false`。
 
 ## Workflow 與檔案
 
@@ -55,19 +55,19 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 | 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
 | --- | --- | --- | --- | --- |
-| PM | 每次任務 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `qwen3:8b` |
-| Architect | 每次任務 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `gemma4:latest` |
-| RD Senior | 跨模組／架構／高風險實作 | `gpt-5.6-luna` (`low`) | `gpt-oss:20b` | `granite4.1:8b` |
+| PM | 每次任務 | Codex `auto` | AGY `auto:gemini-flash-medium` | `qwen3:8b` |
+| Architect | 每次任務 | Codex `auto` | AGY `auto:gemini-flash-medium` | `gemma4:latest` |
+| RD Senior | 跨模組／架構／高風險實作 | Codex `auto` (`low`) | `gpt-oss:20b` | `granite4.1:8b` |
 | RD Middle | 一般功能實作 | `granite4.1:8b` | `codegemma:7b` | `qwen2.5-coder:7b` |
 | RD Junior | 重複、明確、小修改 | `gemma4:latest` | `qwen2.5-coder:7b` | `codegemma:7b` |
 | QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
 | QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| Reviewer | 最終程式碼審查 | `grok-4.5` (`medium`) | `gpt-5.6-luna` (`high`) | `gemma4:latest` |
+| Reviewer | 最終程式碼審查 | Codex `auto` | AGY `auto:gemini-flash-medium` | `gemma4:latest` |
 | Security | auth、secrets、PII、payment、攻擊面 | `deepseek-coder:6.7b` | `gemma4:latest` | `qwen2.5-coder:7b` |
 | DevOps | CI/CD、Docker、release、rollback、pipeline | `granite4.1:8b` | `qwen2.5-coder:7b` | `gemma4:latest` |
-| RA | 法規、合規、產業規範 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
-| Sales | 競品、商業需求、客戶價值 | `grok-4.5` | `qwen3:8b` | `gemma4:latest` |
+| RA | 法規、合規、產業規範 | AGY `auto:gemini-flash-medium` | `qwen3:8b` | `gemma4:latest` |
+| Sales | 競品、商業需求、客戶價值 | AGY `auto:gemini-flash-medium` | `qwen3:8b` | `gemma4:latest` |
 | UI/UX | UI、流程、a11y、wireframe | `granite4.1:8b` | `gemma4:latest` | — |
 | UI/UX Visual Review | 有 screenshot／mockup 時 | `qwen3-vl:4b` | — | — |
 | FAE | 客戶環境、SDK、設備、驗收 | `granite4.1:8b` | `gemma4:latest` | — |
@@ -86,19 +86,19 @@ python3 orchestrator.py start "Review the settings screen" --image /absolute/pat
 
 內部也支援 specialist context 的 `[IMAGE: /absolute/path/to/screenshot.png]` marker；不存在或無法讀取的檔案會略過，並維持文字 review。
 
-## Grok specialists 說明
+## 自動選型說明
 
-Grok 是 PM、Architect、Reviewer、RA 與 Sales 可使用的外部 CLI backend。`orchestrator/core/grok.py` 集中處理 Grok CLI 模式、JSON envelope 解包與單回合限制。PM、Architect 和 Reviewer 使用 strict JSON machine output，再由 Python 產生人類可讀 Markdown；Developer 使用 Grok 時會關閉 plan、subagent、memory、web search 與工具，只接受指定 file/section blocks。RA 與 Sales 保留一般研究模式。
+Codex role 使用 `auto`，交由已安裝的 Codex CLI 選擇推薦模型。AGY role 預設使用 `auto:gemini-flash-medium`，執行時透過 `agy models` 選擇最新 Gemini Flash Medium，清單快取一小時。也可以用 `auto:gemini-flash-low`、`auto:gemini-pro-low`、`auto:claude-sonnet-medium`、`auto:claude-opus-medium` 等系列選擇器。
 
-在 workflow 選擇任一 role 前，請安裝可用且已認證的 `grok` CLI。專案使用的直接介面是：
+AGY 的 Gemini 3.8 Flash Low、3.7 Flash Low/Medium、3.1 Pro、Claude Sonnet 與 Claude Opus 型號也都可以直接指定 ID；手動指定就維持固定版本。移除的是獨立的 Claude Code 與 Grok backend，不是 AGY 內的 Claude 模型。
 
 ```bash
-grok -p "<prompt>" -m grok-4.5
+agy models
 ```
 
-支援設定的 Grok model 是 `grok-4.5`。請在 `.ai-company/config.json` 中設定 `backends.ra` / `backends.sales`、`role_models.ra` / `role_models.sales`、`role_model_backends.ra` / `role_model_backends.sales`、`role_model_tiers.ra` / `role_model_tiers.sales` 和 `model_tiers.grok`。role model 依序從 `role_model_tiers`、`role_models`，最後從 `grok-4.5` 解析。
+載入舊設定時，已移除的 Grok／Claude Code backend 會遷移至該角色的新預設；Ollama 仍只使用本機已安裝的模型，不會自動下載。
 
-`set-backend` 支援設定 `grok`；Grok 不可用時依該 role 的 `role_model_routes` 順序 fallback。strict JSON 契約失敗會停止，不會額外呼叫付費模型。RA 輸出是 model review，不是經過驗證的法律研究；specialist 仍由 PM 依任務需求選擇。
+`set-backend` 支援 `ollama`、`codex`、`agy`。RA 輸出是 model review，不是經過驗證的法律研究；specialist 仍由 PM 依任務需求選擇。
 
 ## 自動 review 與 human review
 
@@ -145,7 +145,7 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`：approval 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；從記錄的 state 恢復。`python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；輸出 recorded-decision message。`python3 orchestrator.py review revise --run` |
 | `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`；預設 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合併，並儲存選定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`claude`、`agy`、`grok`。`developer` 和 `qa` 會更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`agy`。`developer` 和 `qa` 會更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
 
 每個 subcommand 也支援 `--help`，例如 `python3 orchestrator.py review --help`。無效的 role/backend/decision 值會被 argparse 拒絕。`.ai-company/` 缺失時，`status`、`approve`、`review`、`reset` 和 `set-backend` 會報告需要初始化；`approve` 和 `review` 也會拒絕非 `WAITING_FOR_OWNER` state。
 
@@ -166,13 +166,13 @@ python3 orchestrator.py status
 python3 orchestrator.py run
 ```
 
-設定受支援的 backend，或在執行 workflow 前透過設定項為 specialist 設定 Grok：
+設定受支援的 backend，或在執行 workflow 前為 specialist 選擇 AGY 模型：
 
 ```bash
 python3 orchestrator.py init
 python3 orchestrator.py set-backend reviewer agy
-# Edit .ai-company/config.json: keep backends.ra or backends.sales as "grok".
-grok -p "Summarize the regulatory risks" -m grok-4.5
+# Edit .ai-company/config.json to pin role_model_routes.ra[0][1] if needed.
+agy models
 ```
 
 處理暫停的 review：
@@ -185,12 +185,12 @@ python3 orchestrator.py review reject
 
 ## 自動加權與角色扮演式 staffing
 
-系統將內部 staff（Ollama）和付費 vendor（Claude、Codex、Grok、Agy）視為一家小型公司，模擬各種角色，並根據實際表現自動調整信任權重與投票影響力，而不是手動固定誰算 senior 或 junior。
+系統將內部 staff（Ollama）和付費 vendor（Codex、Agy）視為一家小型公司，根據實際表現調整信任權重與投票影響力。
 
 ### Staff 與 vendor
 
 - **Internal staff**：路由至 `ollama` backend 的 `developer_senior/middle/junior` 和 `qa_senior/middle/junior` role，會被視為免費、長期 staff，並累積信任權重（`worker_weights`）。
-- **Paid vendors**：`claude`、`codex`、`agy` 和 `grok` CLI backend 不計入 internal performance；每個 `backend/model` 配對會以獨立的 **vendor scorecard**（`vendor_scores`）追蹤 rating、job count 和 failure count。
+- **Paid vendors**：`codex` 和 `agy` CLI backend 不計入 internal performance；每個 `backend/model` 配對會以獨立的 **vendor scorecard**（`vendor_scores`）追蹤。
 
 ### 信任權重與評分事件
 
@@ -248,15 +248,15 @@ python3 verify_alignment.py
 git diff --check
 ```
 
-測試使用 mocks、fixtures 和 temporary directories，因此不需要真實 Grok 或其他 external AI credential。pytest 成功時會顯示通過摘要並以 exit code `0` 結束；`verify_alignment.py` 會報告所有翻譯檔案結構對齊並以 `0` 結束。repository 沒有獨立設定的 lint、type-check 或 formatter command，因此不額外記錄虛構命令；`git diff --check` 是可用的基本 whitespace/patch 檢查。
+測試使用 mocks、fixtures 和 temporary directories，因此不需要 external AI credential。pytest 成功時會顯示通過摘要並以 exit code `0` 結束；`verify_alignment.py` 檢查翻譯檔案結構。`git diff --check` 是可用的基本 whitespace/patch 檢查。
 
 真實 workflow 執行仍需要選定的 backend CLI 和登入狀態、可存取的 `ollama` role 所需 Ollama server，以及 `use_worktree` 為 true 時的 Git worktree 支援。目標專案需要其他測試時，可在 `.ai-company/config.json` 中透過 `test_command` 修改 test command。
 
 ## 範圍與限制
 
-- Specialist 選擇是動態的；沒有 CLI command 可以強制選擇 Grok、RA 或 Sales。
-- Grok 的設定 model list 包含 `grok-4.5`；沒有第二個設定的 Grok-model fallback。
-- `set-backend` 只支援文件列出的 roles 和 backend values；`grok` 可直接設定，但必須先完成 Grok CLI 認證。
+- Specialist 選擇是動態的；沒有 CLI command 可以強制選擇 RA 或 Sales。
+- AGY auto selector 需要 `agy models` 成功；手動指定的模型 ID 保持固定。
+- `set-backend` 只支援文件列出的 roles 和 backend values。
 - `reset --state` 接受 string；請使用有效 workflow states 才能恢復有意義的工作。
 - AI workflow commands 可能修改目標專案的 Git worktree，並可能產生 provider 使用費用。
 

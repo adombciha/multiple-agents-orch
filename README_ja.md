@@ -43,20 +43,13 @@ PM は要件を分析して任意の specialists を配置します。その結�
 | `backend_escalation_path`, `staffing_limits` | backend escalation と RD/QA staffing の上限。 |
 | `telemetry_enabled`, `llm_usage_log` | LiteLLM の token metadata 記録と JSONL path。デフォルトは workflow directory の `llm_usage.jsonl` で、prompt/output は保存しません。 |
 
-## Grok specialists について
+## 自動モデル選択
 
-Grok は PM、Architect、Reviewer、RA、Sales が利用できる外部 CLI backend です。`orchestrator/core/grok.py` が Grok CLI mode、JSON envelope の抽出、single-turn 制限を一元管理します。PM、Architect、Reviewer は strict JSON machine output を使用し、Python が人間向け Markdown を生成します。Developer が Grok に routed された場合は plan、subagent、memory、web search、tools を無効化し、指定された file/section blocks だけを返します。RA と Sales は通常の research mode を維持します。
-
-workflow がいずれかの role を選ぶ前に、動作し認証済みの `grok` CLI をインストールしてください。プロジェクトが使用する直接の interface は次のとおりです。
+Codex の `auto` は CLI の推奨モデルを使用します。AGY の `auto:gemini-flash-medium` は `agy models` から最新の Gemini Flash Medium を選択し、一覧を 1 時間キャッシュします。`auto:gemini-flash-low`、`auto:gemini-pro-low`、`auto:claude-sonnet-medium`、`auto:claude-opus-medium` も使用できます。Gemini 3.8 Flash Low、3.7 Flash Low/Medium、3.1 Pro、Claude Sonnet、Opus のモデル ID は明示指定できます。削除したのは独立した Claude Code と Grok backend であり、AGY 内の Claude モデルではありません。
 
 ```bash
-grok -p "<prompt>" -m grok-4.5
+agy models
 ```
-
-設定でサポートされる Grok model は `grok-4.5` です。`.ai-company/config.json` で `backends.ra` / `backends.sales`、`role_models.ra` / `role_models.sales`、`role_model_backends.ra` / `role_model_backends.sales`、`role_model_tiers.ra` / `role_model_tiers.sales`、`model_tiers.grok` を使い backend と model を設定します。role model は `role_model_tiers`、`role_models`、`grok-4.5` の順に解決されます。
-
-`set-backend` では `grok` backend を直接設定できます。Grok が利用できない場合は、その role の `role_model_routes` に従って fallback します。strict JSON contract の失敗時は、別の有料 model を呼び出さず停止します。RA output は model review であり、検証済みの法律調査ではありません。specialist は引き続き PM が task に応じて選択します。
-
 ## 自動 review と human review
 
 Automatic review と owner review は異なる result 名と transition を使用します。
@@ -102,7 +95,7 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: approval 後に続行、デフォルトは off | `WAITING_FOR_OWNER` でのみ有効です。記録済み state から再開します。`python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`、`revise`、`reject` | `--run`: `pass` または `revise` 後に続行、デフォルトは off | `WAITING_FOR_OWNER` でのみ有効です。recorded-decision message を出力します。`python3 orchestrator.py review revise --run` |
 | `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`: デフォルトは `PLANNING`、string state value を受理 | revision/runtime routing data を消去し、worktree を merge せず削除して、選択した state を保存します。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | config の `backends` を更新します。roles: `manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends: `ollama`、`codex`、`claude`、`agy`、`grok`。`developer` と `qa` は senior/middle/junior routes を更新します。`python3 orchestrator.py set-backend reviewer agy` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | config の `backends` を更新します。roles: `manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends: `ollama`、`codex`、`agy`。`developer` と `qa` は senior/middle/junior routes を更新します。`python3 orchestrator.py set-backend reviewer agy` |
 
 各 subcommand も `--help` をサポートします。例: `python3 orchestrator.py review --help`。無効な role/backend/decision の値は argparse に拒否されます。`.ai-company/` がない場合、`status`、`approve`、`review`、`reset`、`set-backend` は初期化が必要だと報告します。`approve` と `review` は `WAITING_FOR_OWNER` 以外の state も拒否します。
 
@@ -123,13 +116,13 @@ python3 orchestrator.py status
 python3 orchestrator.py run
 ```
 
-サポートされる backend を設定するか、workflow 実行前に config entries を編集して specialist 用の Grok を設定します。
+サポートされる backend を設定するか、workflow 実行前に AGY モデルを選択します。
 
 ```bash
 python3 orchestrator.py init
 python3 orchestrator.py set-backend reviewer agy
-# Edit .ai-company/config.json: keep backends.ra or backends.sales as "grok".
-grok -p "Summarize the regulatory risks" -m grok-4.5
+# Edit .ai-company/config.json to pin role_model_routes.ra[0][1] if needed.
+agy models
 ```
 
 停止した review を処理します。
@@ -142,12 +135,12 @@ python3 orchestrator.py review reject
 
 ## 自動 weighting と role-play staffing
 
-このシステムは、internal staff（Ollama）と有料 vendor（Claude、Codex、Grok、Agy）を小さな会社のように管理し、roles を演じながら、実際の performance に基づいて trust weight と voting influence を自動調整します。誰を senior や junior として扱うかを手動で固定する必要はありません。
+このシステムは internal staff（Ollama）と有料 vendor（Codex、Agy）の実際の performance に基づき、trust weight と voting influence を調整します。
 
 ### Staff と vendor
 
 - **Internal staff**: `ollama` backend に routed された `developer_senior/middle/junior` と `qa_senior/middle/junior` roles は、蓄積する trust weight（`worker_weights`）を持つ無料の長期 staff として扱われます。
-- **Paid vendors**: `claude`、`codex`、`agy`、`grok` CLI backends は internal performance に含まれません。代わりに各 `backend/model` pairing が、rating、job count、failure count を持つ独立した **vendor scorecard**（`vendor_scores`）で追跡されます。
+- **Paid vendors**：`codex` 和 `agy` CLI backends 由 `vendor_scores` 独立跟踪。
 
 ### Trust weight と scoring event
 
@@ -205,15 +198,15 @@ python3 verify_alignment.py
 git diff --check
 ```
 
-tests は mocks、fixtures、temporary directories を使用するため、実際の Grok やその他の external AI credential は不要です。pytest が成功すると passing summary と exit code `0` で終了します。`verify_alignment.py` はすべての翻訳ファイルが構造的に一致すると報告し、`0` で終了します。repository には個別に設定された lint、type-check、formatter command がないため、記載しません。`git diff --check` は利用可能な基本 whitespace/patch check です。
+tests は mocks、fixtures、temporary directories を使用し、外部 AI 認証は不要です。pytest 成功時の終了コードは `0` です。`git diff --check` で基本的な空白を確認できます。
 
 実際の workflow 実行には、選択した backend CLI と login、`ollama` roles 用にアクセス可能な Ollama server、`use_worktree` が true の場合の Git worktree support が必要です。対象プロジェクトに別の command が必要な場合は、`.ai-company/config.json` の `test_command` で test commands を変更できます。
 
 ## 範囲と制限
 
-- Specialist selection は動的です。タスクに対して Grok、RA、Sales を強制する CLI command はありません。
-- Grok の設定済み model list には `grok-4.5` があり、2 番目に設定された Grok-model fallback はありません。
-- `set-backend` がサポートするのは記載済みの roles と backend values です。Grok CLI の認証後は `grok` を設定できます。
+- Specialist selection is dynamic; no CLI command forces RA or Sales for a task.
+- AGY auto selectors require `agy models` to succeed; explicit model IDs stay pinned.
+- `set-backend` supports only the documented roles and backend values.
 - `reset --state` は string を受け取ります。意味のある作業を再開するには有効な workflow states を使用してください。
 - AI workflow commands は対象プロジェクトの Git worktree を変更する可能性があり、provider usage または料金が発生することがあります。
 

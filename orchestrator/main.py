@@ -24,7 +24,7 @@ REFERENCE_BLOCK_END = "<!-- REFERENCE-ONLY:END -->"
 
 
 def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
-    """Some backends (e.g. grok in manager/planning calls) only ever see the
+    """Some backends in manager/planning calls only ever see the
     prompt text, not the filesystem -- a path mentioned in the prompt is just
     words to them. If the prompt references an existing .md file by relative
     path, append that file's actual content so every backend sees it, not
@@ -74,6 +74,8 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     the saved request prompt -- callers decide separately whether to keep it
     (`reject`, so the same ask gets re-planned) or clear it too (`reset`,
     so a fresh `start` is required)."""
+    if orchestrator.cleanup_worktree(merge=False) is False:
+        raise RuntimeError("Git worktree cleanup failed; run state was preserved.")
     orchestrator.state["state"] = target_state
     orchestrator.state["plan_revisions"] = 0
     orchestrator.state["code_revisions"] = 0
@@ -96,7 +98,6 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["task_failed_model_routes"] = {}
     orchestrator.state["tasks"] = []
     orchestrator.state["active_task_id"] = None
-    orchestrator.cleanup_worktree(merge=False)
 
 
 def apply_approve(orchestrator: AgentOrchestrator) -> None:
@@ -335,7 +336,7 @@ def main():
     )
     backend_parser.add_argument(
         "backend",
-        choices=["ollama", "codex", "claude", "agy", "grok"],
+        choices=["ollama", "codex", "agy"],
         help="The backend to use",
     )
 

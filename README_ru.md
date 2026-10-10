@@ -18,7 +18,7 @@ python3 -m venv .venv
 
 Последняя команда проверяет загрузку CLI. Она не подключается к AI backend и не создаёт worktree. Опции `--version` нет.
 
-Для запуска AI workflow установите и авторизуйте выбранные в `.ai-company/config.json` CLI backend (`grok`, `codex`, `agy` или `claude`) либо запустите Ollama для роли `ollama`. Оркестратор не задаёт дополнительную переменную Grok API key: авторизуйте CLI `grok` согласно его требованиям. Устанавливайте `use_worktree` в `false` только если изоляция Git worktree недоступна или не нужна.
+Для запуска AI workflow установите и авторизуйте выбранный CLI backend (`codex` или `agy`) либо запустите Ollama для роли `ollama`. Устанавливайте `use_worktree` в `false` только если изоляция Git worktree недоступна или не нужна.
 
 ## Workflow и файлы
 
@@ -47,20 +47,13 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 | `backend_escalation_path`, `staffing_limits` | Backend escalation and RD/QA staffing limits. |
 | `telemetry_enabled`, `llm_usage_log` | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
 
-## Специалисты Grok
+## Automatic model selection
 
-Grok is an external CLI backend available to PM, Architect, Reviewer, RA, and Sales. `orchestrator/core/grok.py` centralizes Grok CLI modes, JSON-envelope extraction, and single-turn restrictions. PM, Architect, and Reviewer use strict machine-readable JSON that Python renders into human-readable Markdown. A Developer routed to Grok runs without plan mode, subagents, memory, web search, or tools and may return only the requested file or section blocks. RA and Sales retain normal research mode.
-
-Install a working, authenticated `grok` CLI before a workflow selects either role. The direct interface used by the project is:
+Codex `auto` uses the installed CLI's recommended model. AGY `auto:gemini-flash-medium` reads `agy models`, selects the newest available Gemini Flash Medium, and caches the list for one hour. Other selectors include `auto:gemini-flash-low`, `auto:gemini-pro-low`, `auto:claude-sonnet-medium`, and `auto:claude-opus-medium`. Exact AGY model IDs remain selectable, including Gemini 3.8 Flash Low, Gemini 3.7 Flash Low/Medium, Gemini 3.1 Pro, Claude Sonnet, and Claude Opus. The removed backends are standalone Claude Code and Grok, not Claude models available through AGY.
 
 ```bash
-grok -p "<prompt>" -m grok-4.5
+agy models
 ```
-
-The supported configured Grok model is `grok-4.5`. Configure the backend and model in `.ai-company/config.json` with `backends.ra` / `backends.sales`, `role_models.ra` / `role_models.sales`, `role_model_backends.ra` / `role_model_backends.sales`, `role_model_tiers.ra` / `role_model_tiers.sales`, and `model_tiers.grok`. The role model resolves from `role_model_tiers`, then `role_models`, then `grok-4.5`.
-
-`set-backend` supports the `grok` backend directly. When Grok is unavailable, fallback follows that role's `role_model_routes`. A strict JSON contract failure stops without calling another paid model. RA output is a model review, not verified legal research; PM still selects specialists based on task needs.
-
 ## Автоматическая и человеческая проверка
 
 Автоматическая проверка и проверка владельцем используют разные имена результатов и переходы.
@@ -106,7 +99,7 @@ Use `python3 orchestrator.py status` to see the current state and revision count
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: continue after approval; default off | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. `python3 orchestrator.py review revise --run` |
 | `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`; default `PLANNING`, accepts a string state value | Clears revision/runtime routing data, removes the worktree without merging it, and stores the selected state. `python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `claude`, `agy`, `grok`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `agy`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
 
 Each subcommand also supports `--help`, for example `python3 orchestrator.py review --help`. Invalid role/backend/decision values are rejected by argparse. `status`, `approve`, `review`, `reset`, and `set-backend` report that initialization is required when `.ai-company/` is absent; `approve` and `review` also reject states other than `WAITING_FOR_OWNER`.
 
@@ -127,13 +120,13 @@ Run the normal automated workflow (requires the configured backends and, by defa
 python3 orchestrator.py run
 ```
 
-Set a supported backend, or configure Grok for a specialist by editing its config entries before running the workflow:
+Set a supported backend or select an AGY model before running the workflow:
 
 ```bash
 python3 orchestrator.py init
 python3 orchestrator.py set-backend reviewer agy
-# Edit .ai-company/config.json: keep backends.ra or backends.sales as "grok".
-grok -p "Summarize the regulatory risks" -m grok-4.5
+# Edit .ai-company/config.json to pin role_model_routes.ra[0][1] if needed.
+agy models
 ```
 
 Resolve a paused review:
@@ -146,12 +139,12 @@ python3 orchestrator.py review reject
 
 ## Автоматическое взвешивание и ролевой штат
 
-Система управляет внутренними сотрудниками (Ollama) и платными поставщиками (Claude, Codex, Grok, Agy) как небольшой компанией, разыгрывая роли и автоматически корректируя доверительные веса и влияние при голосовании на основе реальных результатов, вместо ручного определения того, кто считается старшим или младшим специалистом.
+Система управляет внутренними сотрудниками (Ollama) и платными поставщиками (Codex, Agy), корректируя доверительные веса на основе результатов.
 
 ### Сотрудники и поставщики
 
 - **Внутренние сотрудники**: роли `developer_senior/middle/junior` и `qa_senior/middle/junior`, направленные в backend `ollama`, считаются бесплатными долгосрочными сотрудниками с накапливаемым доверительным весом (`worker_weights`).
-- **Платные поставщики**: CLI backend `claude`, `codex`, `agy` и `grok` не учитываются во внутренних результатах; вместо этого каждая пара `backend/model` отслеживается в отдельной **карточке поставщика** (`vendor_scores`) с рейтингом, количеством заданий и количеством сбоев.
+- **Платные поставщики**: CLI backend `codex` и `agy` отслеживаются отдельно в `vendor_scores`.
 
 ### Доверительные веса и события оценки
 
@@ -209,15 +202,15 @@ python3 verify_alignment.py
 git diff --check
 ```
 
-Тесты используют mocks, fixtures и временные каталоги, поэтому реальные учётные данные Grok или другого внешнего AI не требуются. A successful pytest run ends with a passing summary and exit code `0`; `verify_alignment.py` reports that all translation files are structurally aligned and exits `0`. The repository has no separate configured lint, type-check, or formatter command, so none is documented. `git diff --check` is the available basic whitespace/patch check.
+Тесты используют mocks, fixtures и временные каталоги, поэтому внешняя AI авторизация не требуется. Успешный pytest завершается с кодом `0`; `git diff --check` проверяет пробелы.
 
 Real workflow execution still needs the selected backend CLI and login, an accessible Ollama server for `ollama` roles, and Git worktree support when `use_worktree` is true. Test commands can be changed with `test_command` in `.ai-company/config.json` when the target project needs a different command.
 
 ## Область и ограничения
 
-- Specialist selection is dynamic; no CLI command forces Grok, RA, or Sales for a task.
-- Grok's configured model list contains `grok-4.5`; it has no configured second Grok-model fallback.
-- `set-backend` supports only its documented roles and backend values; `grok` can be selected after the Grok CLI is authenticated.
+- Specialist selection is dynamic; no CLI command forces RA or Sales for a task.
+- AGY auto selectors require `agy models` to succeed; explicit model IDs stay pinned.
+- `set-backend` supports only the documented roles and backend values.
 - `reset --state` accepts a string; use valid workflow states to resume meaningful work.
 - AI workflow commands can modify the target project's Git worktree and can incur provider usage or charges.
 
