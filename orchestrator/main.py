@@ -30,13 +30,10 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
     path, append that file's actual content so every backend sees it, not
     just the ones with their own file-reading tools.
 
-    The appended content is wrapped in REFERENCE_BLOCK_START/END markers, and
-    the original path mention in the prompt text is rewritten to not look
-    like a bare file path, so that DEVELOPING_PLAN's unrelated "existing
-    markdown file to edit" detection (which scans the whole saved request
-    for any *.md mention, wherever it appears) doesn't catch either copy --
-    otherwise a referenced spec/plan doc gets misread as something to
-    rewrite section-by-section instead of background context."""
+    The appended content is wrapped in REFERENCE_BLOCK_START/END markers.
+    References are masked outside those markers so DEVELOPING_PLAN does not
+    mistake background documents for edit targets. Paths on an explicit
+    "Target files:" line remain visible to the planner."""
     pattern = re.compile(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])")
     referenced = []
     for name in pattern.findall(prompt):
@@ -52,6 +49,9 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
         return prompt
 
     def _mask(match: re.Match) -> str:
+        line_start = prompt.rfind("\n", 0, match.start()) + 1
+        if re.match(r"\s*Target files\s*:", prompt[line_start : match.start()], re.I):
+            return match.group(0)
         path = Path(match.group(0))
         resolved = (workspace / path).resolve()
         return (
@@ -61,7 +61,7 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
         )
 
     masked_prompt = pattern.sub(_mask, prompt)
-    appended = f"\n\n{REFERENCE_BLOCK_START}\nReferenced file contents (inlined automatically so every backend can see them; this is context, not a request to create or edit these files):\n"
+    appended = f"\n\n{REFERENCE_BLOCK_START}\nReferenced file contents (inlined automatically so every backend can see them; this block is context, and edit targets are identified outside it):\n"
     for path in referenced:
         appended += f"\n## {path.relative_to(workspace)}\n\n{path.read_text(encoding='utf-8')}\n"
     appended += f"\n{REFERENCE_BLOCK_END}\n"

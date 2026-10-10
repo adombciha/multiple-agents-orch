@@ -1001,6 +1001,19 @@ def test_inline_referenced_markdown_masks_path_mention_outside_reference_block(
     assert not re.search(r"[A-Za-z0-9_.\-/]+\.md(?![A-Za-z0-9_])", prefix)
 
 
+def test_inline_referenced_markdown_preserves_explicit_target_files(tmp_path):
+    (tmp_path / "README_en.md").write_text("# Translation\n", encoding="utf-8")
+    (tmp_path / "spec.md").write_text("# Context\n", encoding="utf-8")
+
+    result = orchestrator_main.inline_referenced_markdown(
+        "Target files: README_en.md\nFollow spec.md for context.", tmp_path
+    )
+
+    prefix = result.split(orchestrator_main.REFERENCE_BLOCK_START)[0]
+    assert "Target files: README_en.md" in prefix
+    assert "spec.md" not in prefix
+
+
 def test_inline_referenced_markdown_ignores_missing_file(tmp_path):
     result = orchestrator_main.inline_referenced_markdown(
         "See docs/does_not_exist.md for details.", tmp_path
