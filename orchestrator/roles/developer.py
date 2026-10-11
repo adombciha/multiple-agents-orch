@@ -1,8 +1,9 @@
 from __future__ import annotations
 import ast
-import sys
+import difflib
 import json
 import re
+import sys
 from pathlib import Path
 from orchestrator.roles.base_agent import (
     BaseAgent,
@@ -44,6 +45,43 @@ def _parse_error(filepath: str, content: str) -> str | None:
     except ValueError as error:
         return str(error)
     return None
+
+
+def _current_file_excerpt(filepath: str, original: str, old: str) -> str:
+    source_lines = original.splitlines()
+    old_lines = old.splitlines()
+    if not source_lines:
+        return ""
+
+    normalized_source = [line.strip() for line in source_lines]
+    normalized_old = [line.strip() for line in old_lines]
+    match = max(
+        difflib.SequenceMatcher(
+            None, normalized_old, normalized_source
+        ).get_matching_blocks(),
+        key=lambda block: block.size,
+    )
+    if match.size:
+        focus = match.b + match.size - 1
+    else:
+        anchors = sorted(
+            (line for line in normalized_old if line), key=len, reverse=True
+        )
+        close = (
+            difflib.get_close_matches(anchors[0], normalized_source, n=1, cutoff=0.5)
+            if anchors
+            else []
+        )
+        focus = normalized_source.index(close[0]) if close else 0
+
+    start = max(0, focus - 5)
+    end = min(len(source_lines), start + 12)
+    if end - start < 12:
+        start = max(0, end - 12)
+    excerpt = "\n".join(
+        f"{index + 1}: {source_lines[index][:140]}" for index in range(start, end)
+    )
+    return (f"Current {filepath} excerpt (lines {start + 1}-{end}):\n{excerpt}")[:1000]
 
 
 TASK_PLAN_SCHEMA = {
@@ -592,10 +630,12 @@ class DeveloperAgent(BaseAgent):
     ) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
 
-        def reject(message: str) -> None:
+        def reject(message: str, retry_context: str | None = None) -> None:
             log_warning(message)
             if validation_errors is not None:
                 validation_errors.append(message)
+                if retry_context:
+                    validation_errors.append(retry_context)
 
         pattern = re.compile(
             r"^[ \t]*\[FILE_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n(.*?)"
@@ -735,8 +775,15 @@ class DeveloperAgent(BaseAgent):
             original = target_path.read_text(encoding="utf-8")
             old_matches = original.count(old) if old else 0
             if old_matches != 1:
+                message = (
+                    f"Skipping edit whose OLD text is not unique: {filepath_str} "
+                    f"(matched {old_matches} times)"
+                )
                 reject(
-                    f"Skipping edit whose OLD text is not unique: {filepath_str} (matched {old_matches} times)"
+                    message,
+                    _current_file_excerpt(filepath_str, original, old)
+                    if old_matches == 0
+                    else None,
                 )
                 continue
             updated = original.replace(old, new, 1)
@@ -1020,8 +1067,9 @@ class DeveloperAgent(BaseAgent):
         _, rd_assignments = self.orchestrator.allocate_workers("rd", tasks)
         for task in pending_tasks:
             self.orchestrator.state["active_task_id"] = task["id"]
-            log_info(f"Implementing Task {task['id']}: {task['description']}")
-            description = task["description"].lstrip().lower()
+            task_description = task.get("implementation_scope") or task["description"]
+            log_info(f"Implementing Task {task['id']}: {task_description}")
+            description = task_description.lstrip().lower()
             if description.startswith(
                 (
                     "inventory ",
@@ -1191,7 +1239,7 @@ class DeveloperAgent(BaseAgent):
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
                 f"Exclusive writable files: {json.dumps(target_files)}\n"
-                f"Description: {task['description']}\n"
+                f"Description: {task_description}\n"
                 f"Machine contract: {json.dumps(machine_contract)}\n"
                 "The description may describe a larger parent task. Implement only the portion belonging to target_files. "
                 "Do not emit blocks for other files mentioned in the description or review feedback.\n"
@@ -1206,9 +1254,7 @@ class DeveloperAgent(BaseAgent):
                 )
 
             if backend == "ollama":
-                memory_block = brain.inject_prompt(
-                    self.orchestrator, task["description"]
-                )
+                memory_block = brain.inject_prompt(self.orchestrator, task_description)
                 if memory_block:
                     prompt += f"\n{memory_block}\n"
 

@@ -2394,6 +2394,54 @@ def test_repeated_invalid_edits_pause_with_specific_feedback(
     assert (app.workspace / "two.py").read_text(encoding="utf-8") == "value = 1\n"
 
 
+def test_stale_old_retry_includes_current_file_excerpt(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["use_worktree"] = False
+    app.config["role_model_routes"]["developer_senior"] = [["ollama", "model-a"]]
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    app.plan_path.write_text("plan", encoding="utf-8")
+    app.state["state"] = "IMPLEMENTING"
+    app.state["tasks"] = [
+        {
+            "id": "T-STALE-EDIT",
+            "description": "Update the delivery state",
+            "target_files": ["state.py"],
+            "output_contract": {"format": "file_edits"},
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    app.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    source = 'def delivery_state():\n    return "WAITING_FOR_DELIVERY"\n'
+    (app.workspace / "state.py").write_text(source, encoding="utf-8")
+    stale_response = (
+        "[FILE_EDIT_START: state.py]\n[OLD]\n"
+        'def delivery_state():\n    return "COMPLETED"\n'
+        "[NEW]\n"
+        'def delivery_state():\n    return "WAITING_FOR_DELIVERY"\n'
+        "[FILE_EDIT_END: state.py]"
+    )
+    ollama_call = Mock(return_value=stale_response)
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"])
+    )
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(app, "call_agent_ollama_fallback", ollama_call)
+
+    app.step_implementing()
+
+    retry_prompt = ollama_call.call_args_list[1].args[1]
+    assert "Current state.py excerpt" in retry_prompt
+    assert 'return "WAITING_FOR_DELIVERY"' in retry_prompt
+    assert (app.workspace / "state.py").read_text(encoding="utf-8") == source
+
+
 def test_implementing_skips_read_only_inventory_tasks(
     initialized_orchestrator, monkeypatch
 ):
@@ -2813,6 +2861,67 @@ def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == []
     assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
+
+
+def test_missing_old_edit_reports_current_file_excerpt_without_writing(
+    initialized_orchestrator,
+):
+    initialized_orchestrator.config["use_worktree"] = False
+    source = initialized_orchestrator.workspace / "state.py"
+    current = 'def delivery_state():\n    return "WAITING_FOR_DELIVERY"\n'
+    source.write_text(current, encoding="utf-8")
+    response = (
+        "[FILE_EDIT_START: state.py]\n[OLD]\n"
+        'def delivery_state():\n    return "COMPLETED"\n'
+        "[NEW]\n"
+        'def delivery_state():\n    return "WAITING_FOR_DELIVERY"\n'
+        "[FILE_EDIT_END: state.py]"
+    )
+    errors = []
+
+    assert (
+        initialized_orchestrator.parse_and_write_files(
+            response, ["state.py"], dry_run=True, validation_errors=errors
+        )
+        == []
+    )
+
+    assert "state.py (matched 0 times)" in errors[0]
+    assert "Current state.py excerpt" in errors[1]
+    assert 'return "WAITING_FOR_DELIVERY"' in errors[1]
+    assert source.read_text(encoding="utf-8") == current
+
+
+def test_implementing_prompt_uses_functional_scope_over_parent_description(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["use_worktree"] = False
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    app.plan_path.write_text("plan", encoding="utf-8")
+    app.state["state"] = "IMPLEMENTING"
+    app.state["tasks"] = [
+        {
+            "id": "FLOW-STATE-01",
+            "description": "PARENT PROMPT " * 30,
+            "implementation_scope": "Implement the shared pause API only.",
+            "target_files": ["state.py"],
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    app.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    call_agent = Mock(
+        return_value="[FILE_START: state.py]\ndef pause_requested():\n    return True\n[FILE_END: state.py]"
+    )
+    monkeypatch.setattr(app, "call_agent", call_agent)
+
+    app.step_implementing()
+
+    prompt = call_agent.call_args.args[1]
+    assert "Description: Implement the shared pause API only." in prompt
+    assert "PARENT PROMPT" not in prompt
 
 
 def test_invalid_python_edit_reports_parse_error_without_writing(
