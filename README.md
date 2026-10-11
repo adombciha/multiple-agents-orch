@@ -49,13 +49,21 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 
 ## Automatic model selection
 
-Codex roles default to `auto`, which lets the installed Codex CLI select its recommended model. AGY roles default to `auto:gemini-flash-medium`; the orchestrator reads `agy models` and selects the latest available Gemini Flash Medium version, caching the list for one hour. Other AGY families can use selectors such as `auto:gemini-flash-low`, `auto:gemini-pro-low`, `auto:claude-sonnet-medium`, or `auto:claude-opus-medium`.
+Codex roles default to `auto`, which lets the installed Codex CLI select its recommended model. AGY roles default to `auto:gemini-flash-medium`; the orchestrator reads `agy models` and selects the latest available Gemini Flash Medium version (Gemini 3.8 Flash Medium), caching the list for one hour. Other AGY families can use selectors such as `auto:gemini-flash-low`, `auto:gemini-pro-low`, `auto:claude-sonnet-medium`, or `auto:claude-opus-medium`.
 
 Any AGY model ID listed by `agy models` can also be pinned explicitly, including Gemini 3.8 Flash Low, Gemini 3.7 Flash Low/Medium, Gemini 3.1 Pro, Claude Sonnet, and Claude Opus. An explicit ID stays pinned. Claude models are available through AGY; the separate Claude Code backend and Grok backend are removed.
 
 ```bash
 agy models
 ```
+
+### Local Ollama dynamic model routing
+
+For local Ollama execution, the orchestrator uses `tev1:4b` exclusively as a fast decision router via the Ollama `/v1/systemone` endpoint (never as a task executor via `/api/chat`).
+- **Endpoint model discovery**: Installed models are discovered dynamically from the configured Ollama endpoint (`/api/tags`) without pulling or deleting models.
+- **Privacy and compact state**: Candidate models are selected based on a compact role and task summary along with candidate descriptions—the full task prompt is never transmitted to the router.
+- **Validation and safe fallback**: The orchestrator strictly validates the returned model choice, confidence score, and installed candidate allowlist. If the `/v1/systemone` endpoint or router is unavailable, or if output is invalid or low-confidence, the system safely falls back to the configured static route fallback chain.
+- **Local isolation**: All dynamic routing is kept local to Ollama and does not alter Codex or AGY routes.
 
 On load, legacy config entries using Grok or Claude Code are migrated to the current role defaults. Unsupported models are not downloaded automatically; Ollama still uses locally installed model tags.
 

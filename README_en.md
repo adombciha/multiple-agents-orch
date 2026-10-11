@@ -88,13 +88,21 @@ python3 orchestrator.py start "Review the settings screen" --image /absolute/pat
 
 ## 自動選型說明
 
-Codex role 使用 `auto`，交由已安裝的 Codex CLI 選擇推薦模型。AGY role 預設使用 `auto:gemini-flash-medium`，執行時透過 `agy models` 選擇最新 Gemini Flash Medium，清單快取一小時。也可以用 `auto:gemini-flash-low`、`auto:gemini-pro-low`、`auto:claude-sonnet-medium`、`auto:claude-opus-medium` 等系列選擇器。
+Codex role 使用 `auto`，交由已安裝的 Codex CLI 選擇推薦模型。AGY role 預設使用 `auto:gemini-flash-medium`，執行時透過 `agy models` 選擇最新 Gemini Flash Medium（Gemini 3.8 Flash Medium），清單快取一小時。也可以用 `auto:gemini-flash-low`、`auto:gemini-pro-low`、`auto:claude-sonnet-medium`、`auto:claude-opus-medium` 等系列選擇器。
 
 AGY 的 Gemini 3.8 Flash Low、3.7 Flash Low/Medium、3.1 Pro、Claude Sonnet 與 Claude Opus 型號也都可以直接指定 ID；手動指定就維持固定版本。移除的是獨立的 Claude Code 與 Grok backend，不是 AGY 內的 Claude 模型。
 
 ```bash
 agy models
 ```
+
+### 本機 Ollama 動態模型路由
+
+針對本機 Ollama 角色執行，系統採用 `tev1:4b` 專門透過 Ollama `/v1/systemone` 端點作為決策路由器（絕對不透過 `/api/chat` 作為任務執行者）：
+- **端點模型探索**：透過已設定的 Ollama 端點（`/api/tags`）動態探索本機已安裝模型，絕不自動 pull 或刪除模型。
+- **隱私與精簡摘要**：在候選模型間選型時，僅傳送角色名稱、精簡任務摘要與候選模型特點描述，絕不將完整任務 prompt 傳送給路由器。
+- **結果驗證與安全回退**：嚴格驗證路由器回傳之選型結果、信心分數（預設 `>= 0.5`）以及已安裝白名單。若 `/v1/systemone` 端點未啟用、路由器未安裝、或回傳低信心／無效決策，系統無縫回退至原設定的靜態 fallback 路由鏈。
+- **本機隔離**：所有動態路由完全保留於本機 Ollama 內部，不影響 Codex 與 AGY 之既有遠端路由。
 
 載入舊設定時，已移除的 Grok／Claude Code backend 會遷移至該角色的新預設；Ollama 仍只使用本機已安裝的模型，不會自動下載。
 

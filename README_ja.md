@@ -50,6 +50,15 @@ Codex の `auto` は CLI の推奨モデルを使用します。AGY の `auto:ge
 ```bash
 agy models
 ```
+
+### ローカル Ollama の動的モデルルーティング
+
+ローカル Ollama の実行では、`tev1:4b` を Ollama の `/v1/systemone` endpoint 経由の判断専用ルーターとして使用します（`/api/chat` のタスク実行モデルとしては使用しません）。
+- **モデルの検出**：設定済み Ollama endpoint の `/api/tags` からインストール済みモデルを動的に検出します。モデルの pull や削除は行いません。
+- **プライバシー**：候補選択には role、短いタスク要約、候補モデルの説明のみを送信し、完全な task prompt はルーターに送信しません。
+- **検証と fallback**：選択結果、confidence、インストール済み候補の allowlist を検証します。endpoint／ルーターが利用できない場合や、結果が無効または低 confidence の場合は、設定済みの静的 route に戻ります。
+- **ローカル限定**：動的 routing は Ollama 内で完結し、Codex と AGY の route は変更しません。
+
 ## 自動 review と human review
 
 Automatic review と owner review は異なる result 名と transition を使用します。

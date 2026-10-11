@@ -554,7 +554,7 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(
     post.assert_called_once_with(
         f"{initialized_orchestrator.config['ollama_url']}/api/chat",
         json={
-            "model": "gemma2:2b",
+            "model": "qwen3.8:latest",
             "messages": [
                 {"role": "system", "content": "be brief"},
                 {"role": "user", "content": "do it"},
@@ -1142,7 +1142,7 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_middle", "ollama")
-        == "granite4.1:8b"
+        == "granite4.2:8b"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama")
@@ -1165,7 +1165,7 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama")
-        == "qwen2.5-coder:14b"
+        == "ornith:9b"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_junior", "ollama")
@@ -2158,7 +2158,7 @@ def test_manager_retries_agy_then_ollama_after_token_failure(
     assert initialized_orchestrator.call_manager("prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="manager", model="auto")
     agy.assert_called_once_with("prompt", None, role="manager", model="auto:gemini-flash-medium")
-    ollama.assert_called_once_with("manager", "prompt", None, model="qwen3:8b")
+    ollama.assert_called_once_with("manager", "prompt", None, model="qwen3.8:latest")
 
 
 def test_reviewer_retries_agy_then_ollama_after_token_failure(
@@ -2229,17 +2229,17 @@ def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
     )
 
 
-def test_qa_ollama_falls_back_to_qwen(initialized_orchestrator, monkeypatch):
-    ollama = Mock(side_effect=[RuntimeError("gemma unavailable"), "qwen fallback"])
+def test_qa_ollama_falls_back_to_gemma(initialized_orchestrator, monkeypatch):
+    ollama = Mock(side_effect=[RuntimeError("model unavailable"), "gemma fallback"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
     assert (
         initialized_orchestrator.call_agent_ollama_fallback("qa_junior", "prompt")
-        == "qwen fallback"
+        == "gemma fallback"
     )
     assert ollama.call_args_list == [
         call("prompt", None, role="qa_junior"),
-        call("prompt", None, role="qa_junior", model="qwen2.5-coder:7b"),
+        call("prompt", None, role="qa_junior", model="gemma4:latest"),
     ]
 
 
@@ -4538,3 +4538,205 @@ def test_brain_not_injected_for_vendor_backend_prompt(
 
     prompt = call_agent.call_args.args[1]
     assert "[COMPANY_MEMORY]" not in prompt
+
+
+def test_discover_installed_ollama_models_success_and_cache(
+    initialized_orchestrator, monkeypatch
+):
+    get_mock = Mock(
+        return_value=Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "models": [
+                        {"name": "tev1:4b"},
+                        {"name": "granite4.2:8b"},
+                        {"name": "gemma4:latest"},
+                    ]
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(backends.requests, "get", get_mock)
+
+    models = backends.discover_installed_ollama_models(initialized_orchestrator)
+    assert models == {"tev1:4b", "granite4.2:8b", "gemma4:latest"}
+    assert get_mock.call_count == 1
+
+    # Second call uses cache and does not repeat request
+    models_cached = backends.discover_installed_ollama_models(initialized_orchestrator)
+    assert models_cached == {"tev1:4b", "granite4.2:8b", "gemma4:latest"}
+    assert get_mock.call_count == 1
+
+
+def test_discover_installed_ollama_models_error_handling(
+    initialized_orchestrator, monkeypatch
+):
+    get_mock = Mock(side_effect=backends.requests.RequestException("connection refused"))
+    monkeypatch.setattr(backends.requests, "get", get_mock)
+
+    models = backends.discover_installed_ollama_models(initialized_orchestrator)
+    assert models == set()
+
+
+def test_route_ollama_model_with_tev1_selects_candidate(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_installed_ollama_models",
+        Mock(return_value={"tev1:4b", "granite4.2:8b", "qwen3.5:9b"}),
+    )
+
+    post_mock = Mock(
+        return_value=Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "answers": {
+                        "selected_model": {
+                            "choice": "qwen3.5:9b",
+                            "confidence": 0.88,
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(backends.requests, "post", post_mock)
+
+    chosen = backends.route_ollama_model_with_tev1(
+        initialized_orchestrator,
+        role="developer_middle",
+        candidates=["granite4.2:8b", "qwen3.5:9b"],
+        task_summary="Refactor parser module",
+    )
+    assert chosen == "qwen3.5:9b"
+
+    payload = post_mock.call_args.kwargs["json"]
+    assert payload["model"] == "tev1:4b"
+    assert "Refactor parser module" in payload["state"]
+    assert payload["questions"]["selected_model"]["criteria"] == [
+        "granite4.2:8b",
+        "qwen3.5:9b",
+    ]
+
+
+def test_route_ollama_model_with_tev1_fallback_conditions(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_installed_ollama_models",
+        Mock(return_value={"tev1:4b", "granite4.2:8b", "qwen3.5:9b"}),
+    )
+
+    # 1. Low confidence (< 0.5)
+    post_low_conf = Mock(
+        return_value=Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "answers": {
+                        "selected_model": {
+                            "choice": "qwen3.5:9b",
+                            "confidence": 0.35,
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(backends.requests, "post", post_low_conf)
+    assert (
+        backends.route_ollama_model_with_tev1(
+            initialized_orchestrator,
+            role="developer_middle",
+            candidates=["granite4.2:8b", "qwen3.5:9b"],
+        )
+        is None
+    )
+
+    # 2. Choice not in available candidates
+    post_invalid_choice = Mock(
+        return_value=Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "answers": {
+                        "selected_model": {
+                            "choice": "unauthorized-model:latest",
+                            "confidence": 0.99,
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(backends.requests, "post", post_invalid_choice)
+    assert (
+        backends.route_ollama_model_with_tev1(
+            initialized_orchestrator,
+            role="developer_middle",
+            candidates=["granite4.2:8b", "qwen3.5:9b"],
+        )
+        is None
+    )
+
+    # 3. HTTP 404 / 500 endpoint error
+    post_error = Mock(
+        return_value=Mock(status_code=404, json=Mock(return_value={}))
+    )
+    monkeypatch.setattr(backends.requests, "post", post_error)
+    assert (
+        backends.route_ollama_model_with_tev1(
+            initialized_orchestrator,
+            role="developer_middle",
+            candidates=["granite4.2:8b", "qwen3.5:9b"],
+        )
+        is None
+    )
+
+
+def test_call_ollama_strictly_rejects_tev1_as_executor(initialized_orchestrator):
+    with pytest.raises(RuntimeError, match="restricted to decision routing"):
+        backends.call_ollama(
+            initialized_orchestrator,
+            prompt="write code",
+            role="developer",
+            model="tev1:4b",
+        )
+
+
+def test_call_role_model_routes_prioritizes_tev1_decision(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.config["role_model_routes"]["developer_middle"] = [
+        ["ollama", "granite4.2:8b"],
+        ["ollama", "qwen3.5:9b"],
+        ["ollama", "llama3.1:8b"],
+    ]
+
+    monkeypatch.setattr(
+        backends,
+        "route_ollama_model_with_tev1",
+        Mock(return_value="llama3.1:8b"),
+    )
+
+    called_models = []
+
+    def mock_ollama_fallback(role, prompt, system_prompt=None, model=None, **kwargs):
+        called_models.append(model)
+        return "response from " + str(model)
+
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent_ollama_fallback",
+        mock_ollama_fallback,
+    )
+
+    res = initialized_orchestrator.call_role_model_routes(
+        "developer_middle", "A long full prompt with implementation instructions"
+    )
+    assert res == "response from llama3.1:8b"
+    assert called_models[0] == "llama3.1:8b"

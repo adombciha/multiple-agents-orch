@@ -45,6 +45,15 @@ Codex 的 `auto` 使用 CLI 当前推荐模型；AGY 的 `auto:gemini-flash-medi
 ```bash
 agy models
 ```
+
+### 本地 Ollama 动态模型路由
+
+执行本地 Ollama 任务时，`tev1:4b` 仅通过 Ollama `/v1/systemone` endpoint 作为决策路由器使用，不会通过 `/api/chat` 执行任务。
+- **模型发现**：通过已配置的 Ollama endpoint 的 `/api/tags` 动态发现已安装模型；不会自动拉取或删除模型。
+- **隐私**：路由器只接收角色、精简任务摘要和候选模型说明，不会收到完整 task prompt。
+- **验证与回退**：验证所选模型、confidence 和已安装候选 allowlist。若 endpoint 或路由器不可用，或结果无效／confidence 过低，则回退到已配置的静态路由链。
+- **本地隔离**：动态路由仅在 Ollama 本地完成，不会改变 Codex 或 AGY 路由。
+
 ## Automatic 与 human review
 
 Automatic review 与 owner review 使用不同的 result 名称和 transition。

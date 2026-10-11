@@ -722,6 +722,21 @@ class AgentOrchestrator:
         )
         return response
 
+    def _get_compact_task_summary(self, role: str, prompt: str) -> str:
+        """Extract a short, non-leaking summary of the task for Tev1 decision routing."""
+        task_id = self.state.get("active_task_id")
+        if task_id:
+            tasks = self.state.get("tasks", [])
+            for t in tasks:
+                if t.get("id") == task_id:
+                    desc = t.get("description", "")
+                    return f"{task_id}: {desc[:120].strip()}"
+        for line in prompt.splitlines():
+            line = line.strip()
+            if line and not line.startswith("<!--") and not line.startswith("["):
+                return line[:120]
+        return f"{role} task execution"
+
     def call_role_model_routes(
         self,
         role: str,
@@ -748,7 +763,35 @@ class AgentOrchestrator:
             ).setdefault(task_id, [])
         else:
             failed_routes = self.state.setdefault("failed_model_routes", [])
-        for backend, model in routes:
+
+        effective_routes = list(routes)
+        if self.config.get("ollama_router_enabled", True):
+            ollama_candidates = [
+                m
+                for b, m in routes
+                if b == "ollama" and f"ollama/{m}" not in failed_routes
+            ]
+            if ollama_candidates:
+                task_summary = self._get_compact_task_summary(role, prompt)
+                chosen_model = backends.route_ollama_model_with_tev1(
+                    self, role, ollama_candidates, task_summary
+                )
+                if chosen_model and chosen_model in ollama_candidates:
+                    other_ollama = [m for m in ollama_candidates if m != chosen_model]
+                    new_routes = []
+                    ollama_seen = False
+                    for b, m in effective_routes:
+                        if b == "ollama":
+                            if not ollama_seen:
+                                new_routes.append(["ollama", chosen_model])
+                                for om in other_ollama:
+                                    new_routes.append(["ollama", om])
+                                ollama_seen = True
+                        else:
+                            new_routes.append([b, m])
+                    effective_routes = new_routes
+
+        for backend, model in effective_routes:
             route = f"{backend}/{model}"
             if route in failed_routes:
                 log_info(f"Skipping unavailable model route: {route}")

@@ -102,6 +102,135 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
     return tiers[-1]
 
 
+OLLAMA_MODEL_DESCRIPTIONS = {
+    "gpt-oss:20b": "advanced reasoning and complex code implementation",
+    "deepseek-r1:7b": "deep reasoning, mathematical logic, and verification",
+    "granite4.2:8b": "enterprise software engineering, refactoring, and integration",
+    "qwen3.8:latest": "general programming, system devops, and complex logic",
+    "qwen3.5:9b": "fast capable coding, UI/UX, and scripting",
+    "llama3.1:8b": "general purpose language understanding and synthesis",
+    "gemma4:latest": "efficient coding, QA testing, and review",
+    "ornith-1.5:9b": "rigorous QA, test execution, and verification",
+    "ornith:9b": "automated test evaluation and verification",
+    "phi4-mini:latest": "lightweight junior coding and unit tests",
+    "nemotron-3-nano:4b": "fast lightweight junior coding",
+    "lfm2.5:latest": "documentation, changelogs, and assistant tasks",
+    "venkataparswanadh/muse-glimmer:iq2_m": "visual design and UI styling",
+}
+
+
+def discover_installed_ollama_models(orchestrator) -> set[str]:
+    """Discover installed models from Ollama /api/tags endpoint without pulling or deleting."""
+    from orchestrator.core.state import log_info
+
+    cached = getattr(orchestrator, "_installed_ollama_models_cache", None)
+    if cached and time.monotonic() - cached[0] < 60:
+        return cached[1]
+
+    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/tags"
+    try:
+        response = requests.get(url, timeout=orchestrator.config.get("ollama_router_timeout", 5))
+        if response.status_code == 200:
+            data = response.json()
+            models = {m.get("name") for m in data.get("models", []) if m.get("name")}
+            orchestrator._installed_ollama_models_cache = (time.monotonic(), models)
+            return models
+    except Exception as exc:
+        log_info(f"Could not discover Ollama installed models at {url}: {exc}")
+
+    if cached:
+        return cached[1]
+    return set()
+
+
+def route_ollama_model_with_tev1(
+    orchestrator,
+    role: str,
+    candidates: list[str],
+    task_summary: str | None = None,
+) -> str | None:
+    """Use Tev1 as a decision router via /v1/systemone to pick among installed candidates."""
+    from orchestrator.core.state import log_info, log_warning
+
+    if not orchestrator.config.get("ollama_router_enabled", True):
+        return None
+
+    installed_models = discover_installed_ollama_models(orchestrator)
+    if not installed_models:
+        return None
+
+    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+
+    def _matches(candidate: str, installed: set[str]) -> bool:
+        if candidate in installed:
+            return True
+        for m in installed:
+            if m == candidate or m.startswith(f"{candidate}:") or candidate.startswith(f"{m}:"):
+                return True
+            if candidate.endswith(":latest") and m == candidate[:-7]:
+                return True
+            if m.endswith(":latest") and candidate == m[:-7]:
+                return True
+        return False
+
+    if not _matches(router_model, installed_models):
+        log_info(f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back.")
+        return None
+
+    available_candidates = [c for c in candidates if _matches(c, installed_models)]
+    if not available_candidates:
+        return None
+    if len(available_candidates) == 1:
+        return available_candidates[0]
+
+    summary = (task_summary or f"Execution for role {role}").strip()[:120]
+    candidate_descs = "; ".join(
+        f"{c}: {OLLAMA_MODEL_DESCRIPTIONS.get(c, 'general task model')}"
+        for c in available_candidates
+    )
+    state_input = f"Role: {role}. Task: {summary}. Candidates: {candidate_descs}"
+
+    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
+    payload = {
+        "model": router_model,
+        "state": state_input,
+        "questions": {
+            "selected_model": {
+                "type": "choice",
+                "instructions": f"Select the best model for the role '{role}'.",
+                "criteria": available_candidates,
+            }
+        },
+    }
+
+    try:
+        timeout = orchestrator.config.get("ollama_router_timeout", 10)
+        response = requests.post(url, json=payload, timeout=timeout)
+        if response.status_code != 200:
+            log_info(
+                f"Ollama /v1/systemone returned status {response.status_code}; falling back to static routes."
+            )
+            return None
+        data = response.json()
+        ans = data.get("answers", {}).get("selected_model", {})
+        choice = ans.get("choice")
+        confidence = float(ans.get("confidence", 0.0))
+        min_conf = float(orchestrator.config.get("ollama_router_min_confidence", 0.5))
+
+        if choice in available_candidates and confidence >= min_conf:
+            log_info(
+                f"Tev1 router selected '{choice}' for {role} (confidence: {confidence:.2f})."
+            )
+            return choice
+        log_warning(
+            f"Tev1 router returned invalid choice '{choice}' or low confidence ({confidence:.2f}); falling back."
+        )
+        return None
+    except Exception as exc:
+        log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
+        return None
+
+
 def call_ollama(
     orchestrator,
     prompt: str,
@@ -123,6 +252,10 @@ def call_ollama(
         or orchestrator.get_active_model_for_role(role, "ollama")
         or orchestrator.config.get("ollama_model", "gemma2:2b")
     )
+    if "tev1" in model.lower():
+        raise RuntimeError(
+            f"Model '{model}' is restricted to decision routing via /v1/systemone and cannot be used as task executor."
+        )
     from orchestrator.core import gpt
 
     if role.startswith("developer") and gpt.is_gpt_oss(model):
