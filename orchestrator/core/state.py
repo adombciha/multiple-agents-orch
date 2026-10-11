@@ -868,10 +868,10 @@ class AgentOrchestrator:
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
+            if not backends.backend_available(self, backend):
+                continue
             if route in failed_routes:
                 log_info(f"Skipping unavailable model route: {route}")
-                continue
-            if not backends.backend_available(self, backend):
                 continue
             retried_developer_contract = False
             try:
@@ -953,8 +953,10 @@ class AgentOrchestrator:
                         "state"
                     ) == "IMPLEMENTING" and role.startswith("developer")
                     if implementing and validation_error:
+                        reason = validation_error.split("generated lines:", 1)[0]
+                        reason = reason.replace("\n", " ")[:300]
                         log_warning(
-                            f"agy/{model} returned an invalid Developer contract; retrying the same model once."
+                            f"agy/{model} returned an invalid Developer contract: {reason}; retrying the same model once."
                         )
                         retried_developer_contract = True
                         response = self.call_agy(
@@ -987,13 +989,15 @@ class AgentOrchestrator:
                     raise DeveloperContractRetryExhausted(
                         f"{route} still failed the Developer output contract after one corrective retry: {error}"
                     ) from error
+                exhausted = backends.quota_exhausted(error)
                 if (
                     not isinstance(error, ResponseContractError)
+                    and not exhausted
                     and route not in failed_routes
                 ):
                     failed_routes.append(route)
                     self.save_state()
-                if backends.quota_exhausted(error):
+                if exhausted:
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
         raise RuntimeError(

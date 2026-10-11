@@ -2907,9 +2907,10 @@ def test_qa_ollama_falls_back_through_installed_models(
     ]
 
 
-def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(
+def test_quota_exhausted_backend_retries_after_cooldown(
     initialized_orchestrator, monkeypatch
 ):
+    monkeypatch.setattr(backends.time, "time", Mock(return_value=1000))
     codex = Mock(side_effect=RuntimeError("429 quota exceeded"))
     agy = Mock(return_value="agy fallback")
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
@@ -2928,6 +2929,56 @@ def test_quota_exhausted_backend_is_skipped_for_the_rest_of_the_day(
         == [call("prompt", None, role="reviewer", model="Gemini 3.5 Flash (Medium)")]
         * 2
     )
+    monkeypatch.setattr(backends.time, "time", Mock(return_value=1301))
+    assert initialized_orchestrator.call_agent("reviewer", "prompt") == "agy fallback"
+    assert codex.call_count == 2
+
+
+def test_agy_retry_logs_validation_reason_without_source(
+    initialized_orchestrator, monkeypatch, capsys
+):
+    from orchestrator.core.state import ResponseContractError
+
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_senior"] = [
+        ["agy", "test-model"]
+    ]
+    agy = Mock(side_effect=["bad response", "valid response"])
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
+
+    def validate(response):
+        if response == "bad response":
+            raise ResponseContractError(
+                "Skipping edit whose result does not parse: main.py: unexpected indent; "
+                "generated lines: secret source"
+            )
+        return True
+
+    assert (
+        initialized_orchestrator.call_role_model_routes(
+            "developer_senior", "task", response_validator=validate
+        )
+        == "valid response"
+    )
+    output = capsys.readouterr().out
+    assert "main.py: unexpected indent" in output
+    assert "secret source" not in output
+    assert "Validation error:" in agy.call_args_list[1].args[0]
+
+
+def test_legacy_quota_flag_and_failed_route_are_cleared(initialized_orchestrator):
+    initialized_orchestrator.state["quota_exhausted_backends"] = {"codex": True}
+    initialized_orchestrator.state["failed_model_routes"] = ["codex/auto", "agy/auto"]
+    initialized_orchestrator.state["task_failed_model_routes"] = {
+        "T-1": ["codex/auto", "ollama/model"]
+    }
+
+    assert backends.backend_available(initialized_orchestrator, "codex") is True
+    assert initialized_orchestrator.state["quota_exhausted_backends"] == {}
+    assert initialized_orchestrator.state["failed_model_routes"] == ["agy/auto"]
+    assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == [
+        "ollama/model"
+    ]
 
 
 def test_spending_limit_is_treated_as_quota_exhausted():
@@ -4999,7 +5050,9 @@ def test_roster_snapshot_marks_ollama_staff_offline_when_unreachable(
 def test_roster_snapshot_marks_vendor_offline_when_quota_exhausted(
     initialized_orchestrator,
 ):
-    initialized_orchestrator.state["quota_exhausted_backends"] = {"codex": True}
+    initialized_orchestrator.state["quota_exhausted_backends"] = {
+        "codex": backends.time.time() + 300
+    }
 
     data = roster.snapshot(initialized_orchestrator)
 
@@ -5159,7 +5212,7 @@ def test_maybe_hire_vendor_skips_exhausted_vendor_and_hires_next(
     hired = initialized_orchestrator.maybe_hire_vendor(task)
 
     assert hired == "agy"
-    assert initialized_orchestrator.state["quota_exhausted_backends"]["codex"] is True
+    assert initialized_orchestrator.state["quota_exhausted_backends"]["codex"] > 0
     assert initialized_orchestrator.state["task_backend_overrides"]["T-1"] == "agy"
 
 

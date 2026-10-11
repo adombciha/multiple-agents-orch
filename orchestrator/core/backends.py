@@ -615,15 +615,36 @@ def quota_exhausted(error: Exception) -> bool:
 
 def backend_available(orchestrator, backend: str) -> bool:
     exhausted = orchestrator.state.setdefault("quota_exhausted_backends", {})
-    return backend not in exhausted
+    until = exhausted.get(backend)
+    if until is None:
+        return True
+    if (
+        isinstance(until, (int, float))
+        and not isinstance(until, bool)
+        and until > time.time()
+    ):
+        return False
+    exhausted.pop(backend, None)
+    prefix = f"{backend}/"
+    orchestrator.state["failed_model_routes"] = [
+        route
+        for route in orchestrator.state.get("failed_model_routes", [])
+        if not route.startswith(prefix)
+    ]
+    for routes in orchestrator.state.get("task_failed_model_routes", {}).values():
+        routes[:] = [route for route in routes if not route.startswith(prefix)]
+    orchestrator.save_state()
+    return True
 
 
 def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
     from orchestrator.core.state import log_warning
 
-    orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = True
+    orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = (
+        time.time() + 300
+    )
     orchestrator.save_state()
-    log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
+    log_warning(f"{backend} quota exhausted; retrying after 5 minutes.")
 
 
 QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
