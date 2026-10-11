@@ -448,7 +448,19 @@ def call_agy(
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
     full_prompt += prompt
 
-    cmd = ["agy", "--sandbox", "--mode", "plan"]
+    mode = (
+        "accept-edits"
+        if orchestrator.state.get("state") == "IMPLEMENTING"
+        and role.startswith("developer")
+        else "plan"
+    )
+    if mode == "accept-edits":
+        full_prompt += (
+            "\n\nDo not edit files directly or use workspace tools. "
+            "Return only the machine-readable file blocks required by the task."
+        )
+
+    cmd = ["agy", "--sandbox", "--mode", mode]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
     if model:
         model = resolve_agy_model(model)

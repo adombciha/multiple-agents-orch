@@ -502,21 +502,47 @@ def test_agy_sends_large_prompt_over_stdin(initialized_orchestrator, monkeypatch
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
     monkeypatch.setattr(backends.subprocess, "run", run)
     prompt = "x" * 140_000
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
 
     assert (
-        backends.call_agy(initialized_orchestrator, prompt, model="test-model")
+        backends.call_agy(
+            initialized_orchestrator,
+            prompt,
+            role="developer_senior",
+            model="test-model",
+        )
         == "done"
     )
 
     cmd = run.call_args.args[0]
+    assert cmd[cmd.index("--mode") + 1] == "accept-edits"
     assert cmd[-4:] == [
         "--input-format", "stream-json", "--output-format", "stream-json"
     ]
     assert prompt not in cmd
-    assert json.loads(run.call_args.kwargs["input"]) == {
-        "event": "user",
-        "message": {"content": prompt},
-    }
+    message = json.loads(run.call_args.kwargs["input"])
+    assert message["event"] == "user"
+    assert message["message"]["content"].startswith(prompt)
+    assert "Do not edit files directly or use workspace tools" in message["message"]["content"]
+
+
+def test_agy_uses_plan_mode_outside_developer_implementation(
+    initialized_orchestrator, monkeypatch
+):
+    output = '{"event":"result","result":{"status":"SUCCESS","response":"done"}}\n'
+    run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    initialized_orchestrator.state["state"] = "REVIEWING_PLAN"
+
+    backends.call_agy(
+        initialized_orchestrator,
+        "Review this plan",
+        role="architect",
+        model="test-model",
+    )
+
+    cmd = run.call_args.args[0]
+    assert cmd[cmd.index("--mode") + 1] == "plan"
 
 
 @pytest.mark.parametrize(
