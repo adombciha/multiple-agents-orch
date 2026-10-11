@@ -451,7 +451,8 @@ def test_run_command_uses_worktree_cwd_for_agent_states(
 def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkeypatch):
     worktree = initialized_orchestrator.ai_dir / "worktree"
     worktree.mkdir()
-    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    output = '{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n'
+    run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
     monkeypatch.setattr(backends.subprocess, "run", run)
 
     backends.call_agy(
@@ -485,7 +486,8 @@ def test_codex_exec_is_read_only_and_uses_file_block_output(
 def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
     initialized_orchestrator, monkeypatch
 ):
-    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    output = '{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n'
+    run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
     monkeypatch.setattr(backends.subprocess, "run", run)
 
     backends.call_agy(initialized_orchestrator, "prompt", model="gemini-3.1-pro")
@@ -493,6 +495,41 @@ def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
     assert run.call_args.args[0][0:6] == [
         "agy", "--sandbox", "--mode", "plan", "--model", "Gemini 3.1 Pro (Low)"
     ]
+
+
+def test_agy_sends_large_prompt_over_stdin(initialized_orchestrator, monkeypatch):
+    output = '{"event":"result","result":{"status":"SUCCESS","response":"done"}}\n'
+    run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    prompt = "x" * 140_000
+
+    assert (
+        backends.call_agy(initialized_orchestrator, prompt, model="test-model")
+        == "done"
+    )
+
+    cmd = run.call_args.args[0]
+    assert cmd[-4:] == [
+        "--input-format", "stream-json", "--output-format", "stream-json"
+    ]
+    assert prompt not in cmd
+    assert json.loads(run.call_args.kwargs["input"]) == {
+        "event": "user",
+        "message": {"content": prompt},
+    }
+
+
+@pytest.mark.parametrize(
+    "output", ["", '{"event":"result","result":{"status":"ERROR"}}\n']
+)
+def test_agy_rejects_missing_or_failed_result(
+    initialized_orchestrator, monkeypatch, output
+):
+    run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="agy CLI"):
+        backends.call_agy(initialized_orchestrator, "prompt", model="test-model")
 
 
 def test_run_command_use_worktree_false_runs_in_workspace(

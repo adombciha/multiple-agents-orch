@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+import json
 import re
 import shutil
 import subprocess
@@ -378,12 +379,17 @@ def call_agy(
         model = resolve_agy_model(model)
     if model:
         cmd.extend(["--model", model])
-    cmd.extend(["--print", full_prompt])
+    cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
 
-    log_info(f"Running agy: {' '.join(cmd[:-1])} ...")
+    log_info(f"Running agy: {' '.join(cmd)} ...")
     result = subprocess.run(
         cmd,
         cwd=orchestrator.agent_workspace(),
+        input=json.dumps(
+            {"event": "user", "message": {"content": full_prompt}},
+            ensure_ascii=False,
+        )
+        + "\n",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -394,7 +400,21 @@ def call_agy(
         raise RuntimeError(
             f"agy CLI failed with code {result.returncode}:\n{result.stderr}"
         )
-    return result.stdout
+    for line in reversed(result.stdout.splitlines()):
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and event.get("event") == "result":
+            final = event.get("result", {})
+            if (
+                isinstance(final, dict)
+                and final.get("status") == "SUCCESS"
+                and isinstance(final.get("response"), str)
+            ):
+                return final["response"]
+            raise RuntimeError(f"agy CLI returned unsuccessful result: {final}")
+    raise RuntimeError("agy CLI returned no result event")
 
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
