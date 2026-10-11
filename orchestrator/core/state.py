@@ -777,6 +777,19 @@ class AgentOrchestrator:
                 return str(error)
             return "Agent response failed the task output contract"
 
+        def developer_retry_prompt(response: str, error: str) -> str:
+            return (
+                prompt
+                + "\n\nRETRY: Your previous response was rejected. "
+                + f"Validation error: {error[:1200]}. "
+                + "Correct the rejected edits and return valid blocks for every declared target file. "
+                + "For FILE_EDIT blocks, OLD must match exactly once in the current file. "
+                + "For Python files, the complete result must parse. "
+                + "Do not copy example placeholder text.\n"
+                + "Previous rejected response:\n"
+                + response[-8000:]
+            )
+
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
             return None
@@ -869,14 +882,7 @@ class AgentOrchestrator:
                         log_warning(
                             f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
                         )
-                        retry_prompt = (
-                            prompt
-                            + "\n\nRETRY: Your previous response was rejected. "
-                            + f"Validation error: {validation_error[:1200]}. "
-                            + "Correct the rejected edits and return valid blocks for every declared target file. "
-                            + "For FILE_EDIT blocks, OLD must match exactly once in the current file. "
-                            + "Do not copy example placeholder text."
-                        )
+                        retry_prompt = developer_retry_prompt(response, validation_error)
                         retried_developer_contract = True
                         response = self.call_agent_ollama_fallback(
                             role,
@@ -917,6 +923,20 @@ class AgentOrchestrator:
                     )
                     self.validate_routed_response(role, response, response_schema)
                     validation_error = contract_error(response)
+                    implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith("developer")
+                    if implementing and validation_error:
+                        log_warning(
+                            f"agy/{model} returned an invalid Developer contract; retrying the same model once."
+                        )
+                        retried_developer_contract = True
+                        response = self.call_agy(
+                            developer_retry_prompt(response, validation_error),
+                            system_prompt,
+                            role=role,
+                            model=model,
+                        )
+                        self.validate_routed_response(role, response, response_schema)
+                        validation_error = contract_error(response)
                     if validation_error:
                         raise ResponseContractError(validation_error)
                     return response

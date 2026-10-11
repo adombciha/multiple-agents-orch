@@ -1363,7 +1363,7 @@ def test_invalid_architect_status_falls_back_to_next_route(
     assert initialized_orchestrator.state["failed_model_routes"] == []
 
 
-def test_output_contract_failure_falls_back_to_next_route(
+def test_agy_developer_corrects_invalid_contract_before_next_route(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
@@ -1378,16 +1378,12 @@ def test_output_contract_failure_falls_back_to_next_route(
         backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
     )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
-    monkeypatch.setattr(
-        initialized_orchestrator,
-        "call_agy",
-        Mock(return_value="[FILE_START: bad.py]\ninvalid\n[FILE_END: bad.py]"),
-    )
-    monkeypatch.setattr(
-        initialized_orchestrator,
-        "call_agent_ollama_fallback",
-        Mock(return_value="[FILE_START: good.py]\nvalid\n[FILE_END: good.py]"),
-    )
+    bad = "[FILE_START: bad.py]\ninvalid\n[FILE_END: bad.py]"
+    good = "[FILE_START: good.py]\nvalid\n[FILE_END: good.py]"
+    agy = Mock(side_effect=[bad, good])
+    ollama = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
     result = initialized_orchestrator.call_agent(
         "developer_junior",
@@ -1396,7 +1392,36 @@ def test_output_contract_failure_falls_back_to_next_route(
     )
 
     assert "good.py" in result
+    assert agy.call_count == 2
+    assert bad in agy.call_args_list[1].args[0]
+    ollama.assert_not_called()
     assert initialized_orchestrator.state["failed_model_routes"] == []
+
+
+def test_agy_developer_stops_after_failed_correction(
+    initialized_orchestrator, monkeypatch
+):
+    from orchestrator.core.state import DeveloperContractRetryExhausted
+
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
+        ["agy", "gemini-3.8-flash-medium"], ["ollama", "model-a"]
+    ]
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}}))
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"]))
+    agy = Mock(return_value="[FILE_EDIT_START: app.py]\n[OLD]\nmissing\n[NEW]\nbad\n[FILE_EDIT_END: app.py]")
+    ollama = Mock()
+    monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
+
+    with pytest.raises(DeveloperContractRetryExhausted):
+        initialized_orchestrator.call_agent(
+            "developer_junior", "prompt", response_validator=lambda response: False
+        )
+
+    assert agy.call_count == 2
+    ollama.assert_not_called()
 
 
 def test_ollama_developer_retries_invalid_contract_once(
@@ -1426,6 +1451,7 @@ def test_ollama_developer_retries_invalid_contract_once(
 
     assert "app.py" in result
     assert call.call_count == 2
+    assert "I changed it." in call.call_args_list[1].args[1]
 
 
 def test_implementing_route_failures_are_scoped_to_active_task(
