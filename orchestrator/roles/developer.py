@@ -568,8 +568,14 @@ class DeveloperAgent(BaseAgent):
         dry_run: bool = False,
         allowed_heading: str | None = None,
         allow_markdown_heading_changes: bool = False,
+        validation_errors: list[str] | None = None,
     ) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
+
+        def reject(message: str) -> None:
+            log_warning(message)
+            if validation_errors is not None:
+                validation_errors.append(message)
 
         pattern = re.compile(
             r"\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]", re.DOTALL
@@ -607,7 +613,7 @@ class DeveloperAgent(BaseAgent):
             str(Path(block[0].strip())) not in allowed
             for block in (*matches, *edits, *section_edits)
         ):
-            log_warning("Rejecting response with files outside the task contract.")
+            reject("Rejecting response with files outside the task contract.")
             return []
 
         written_files = []
@@ -615,10 +621,10 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             content = content.strip()
             if not content:
-                log_warning(f"Skipping empty file content: {filepath_str}")
+                reject(f"Skipping empty file content: {filepath_str}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
+                reject(
                     f"Skipping file not declared by task contract: {filepath_str}"
                 )
                 continue
@@ -642,14 +648,14 @@ class DeveloperAgent(BaseAgent):
             target_path = (base_dir / filepath_str).resolve()
             # Safety check: ensure it is inside base_dir
             if base_dir not in target_path.parents and target_path != base_dir:
-                log_warning(
+                reject(
                     f"Skipping file write outside target directory: {filepath_str}"
                 )
                 continue
             if target_path.suffix.lower() == ".md" and target_path.exists():
                 original = target_path.read_text(encoding="utf-8")
                 if content == original:
-                    log_warning(f"Skipping unchanged file response: {filepath_str}")
+                    reject(f"Skipping unchanged file response: {filepath_str}")
                     continue
                 headings = [
                     line
@@ -660,14 +666,14 @@ class DeveloperAgent(BaseAgent):
                     any(heading not in content for heading in headings)
                     and not allow_markdown_heading_changes
                 ):
-                    log_warning(
+                    reject(
                         f"Skipping Markdown rewrite that removes existing headings: {filepath_str}"
                     )
                     continue
 
             parse_error = _parse_error(filepath_str, content)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping file whose content does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -687,7 +693,7 @@ class DeveloperAgent(BaseAgent):
             old = old.strip("\n")
             new = new.strip("\n")
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
+                reject(
                     f"Skipping file not declared by task contract: {filepath_str}"
                 )
                 continue
@@ -698,18 +704,19 @@ class DeveloperAgent(BaseAgent):
                 base_dir = worktree
             target_path = (base_dir / filepath_str).resolve()
             if base_dir not in target_path.parents or not target_path.is_file():
-                log_warning(f"Skipping edit for missing or unsafe file: {filepath_str}")
+                reject(f"Skipping edit for missing or unsafe file: {filepath_str}")
                 continue
 
             original = target_path.read_text(encoding="utf-8")
-            if not old or original.count(old) != 1:
-                log_warning(
-                    f"Skipping edit whose OLD text is not unique: {filepath_str}"
+            old_matches = original.count(old) if old else 0
+            if old_matches != 1:
+                reject(
+                    f"Skipping edit whose OLD text is not unique: {filepath_str} (matched {old_matches} times)"
                 )
                 continue
             updated = original.replace(old, new, 1)
             if updated == original:
-                log_warning(f"Skipping unchanged edit response: {filepath_str}")
+                reject(f"Skipping unchanged edit response: {filepath_str}")
                 continue
             headings = [
                 line
@@ -717,13 +724,13 @@ class DeveloperAgent(BaseAgent):
                 if re.match(r"^#{1,6}\s+\S", line)
             ]
             if any(heading not in updated for heading in headings):
-                log_warning(
+                reject(
                     f"Skipping Markdown edit that removes existing headings: {filepath_str}"
                 )
                 continue
             parse_error = _parse_error(filepath_str, updated)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -737,12 +744,12 @@ class DeveloperAgent(BaseAgent):
             heading = heading.strip()
             content = content.strip("\n")
             if not content.strip():
-                log_warning(
+                reject(
                     f"Skipping empty section content: {filepath_str}: {heading}"
                 )
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
+                reject(
                     f"Skipping file not declared by task contract: {filepath_str}"
                 )
                 continue
@@ -750,12 +757,12 @@ class DeveloperAgent(BaseAgent):
                 if not heading:
                     heading = allowed_heading
                 else:
-                    log_warning(
+                    reject(
                         f"Skipping section not declared by task contract: {heading}"
                     )
                     continue
             if allowed_heading is None:
-                log_warning(
+                reject(
                     f"Skipping section block for a file-level task: {filepath_str}"
                 )
                 continue
@@ -766,7 +773,7 @@ class DeveloperAgent(BaseAgent):
                 base_dir = worktree
             target_path = (base_dir / filepath_str).resolve()
             if base_dir not in target_path.parents or not target_path.is_file():
-                log_warning(
+                reject(
                     f"Skipping section edit for missing or unsafe file: {filepath_str}"
                 )
                 continue
@@ -780,7 +787,7 @@ class DeveloperAgent(BaseAgent):
             ]
             heading_match = re.match(r"^(#{1,6})\s+\S", heading)
             if len(indices) != 1 or not heading_match:
-                log_warning(
+                reject(
                     f"Skipping edit whose heading is missing or ambiguous: {filepath_str}: {heading}"
                 )
                 continue
@@ -794,13 +801,13 @@ class DeveloperAgent(BaseAgent):
                     break
             original_body = "".join(lines[start:end]).strip()
             if content.strip() == original_body:
-                log_warning(
+                reject(
                     f"Skipping unchanged section response: {filepath_str}: {heading}"
                 )
                 continue
             updated = "".join(lines[:start]) + f"\n{content}\n\n" + "".join(lines[end:])
             if updated == original:
-                log_warning(
+                reject(
                     f"Skipping unchanged section response: {filepath_str}: {heading}"
                 )
                 continue
@@ -808,13 +815,13 @@ class DeveloperAgent(BaseAgent):
                 line.rstrip("\r\n") for line in lines if re.match(r"^#{1,6}\s+\S", line)
             ]
             if any(existing_heading not in updated for existing_heading in headings):
-                log_warning(
+                reject(
                     f"Skipping Markdown section edit that removes existing headings: {filepath_str}"
                 )
                 continue
             parse_error = _parse_error(filepath_str, updated)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping section edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -854,6 +861,8 @@ class DeveloperAgent(BaseAgent):
 
     def step_implementing(self):
         from orchestrator.core.state import (
+            DeveloperContractRetryExhausted,
+            ResponseContractError,
             log_header,
             log_error,
             log_success,
@@ -1239,15 +1248,25 @@ class DeveloperAgent(BaseAgent):
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
-                return set(
-                    self.parse_and_write_files(
-                        response,
-                        target_files,
-                        dry_run=True,
-                        allowed_heading=task.get("section_heading"),
-                        allow_markdown_heading_changes=allow_markdown_heading_changes,
+                validation_errors = []
+                valid_files = self.parse_and_write_files(
+                    response,
+                    target_files,
+                    dry_run=True,
+                    allowed_heading=task.get("section_heading"),
+                    allow_markdown_heading_changes=allow_markdown_heading_changes,
+                    validation_errors=validation_errors,
+                )
+                missing = set(target_files) - set(valid_files)
+                if missing:
+                    validation_errors.append(
+                        f"Missing valid edits for: {', '.join(sorted(missing))}"
                     )
-                ) == set(target_files)
+                if validation_errors:
+                    raise ResponseContractError(
+                        "; ".join(dict.fromkeys(validation_errors))[:1200]
+                    )
+                return True
 
             try:
                 dev_output = self.call_agent(
@@ -1258,14 +1277,21 @@ class DeveloperAgent(BaseAgent):
                     if backend in ["ollama", "agy", "codex"]
                     else None,
                 )
+            except DeveloperContractRetryExhausted as error:
+                self.orchestrator.pause_for_human_review(
+                    "Developer", str(error), "IMPLEMENTING", "IMPLEMENTING"
+                )
+                return
             except RuntimeError as error:
                 self.retry_task_or_pause(task, str(error))
                 return
 
             if backend in ["ollama", "agy", "codex"]:
-                if not valid_file_response(dev_output):
+                try:
+                    valid_file_response(dev_output)
+                except ResponseContractError as error:
                     self.retry_task_or_pause(
-                        task, f"Task {task['id']} omitted or invalidated target files."
+                        task, f"Task {task['id']} omitted or invalidated target files: {error}"
                     )
                     return
                 written = self.parse_and_write_files(
@@ -1274,16 +1300,16 @@ class DeveloperAgent(BaseAgent):
                     allowed_heading=task.get("section_heading"),
                     allow_markdown_heading_changes=allow_markdown_heading_changes,
                 )
-                if written:
+                if set(written) == set(target_files):
                     log_success(
                         f"Successfully processed files written by Developer: {', '.join(written)}"
                     )
                 else:
                     log_warning(
-                        "No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks."
+                        "Developer response did not update every declared target file."
                     )
                     self.retry_task_or_pause(
-                        task, f"Task {task['id']} produced no permitted file changes."
+                        task, f"Task {task['id']} produced incomplete file changes."
                     )
                     return
             developer_logs.append(

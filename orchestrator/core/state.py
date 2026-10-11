@@ -20,6 +20,10 @@ class ResponseContractError(RuntimeError):
     """The provider responded, but not in the format required by this call."""
 
 
+class DeveloperContractRetryExhausted(ResponseContractError):
+    """A Developer response still failed validation after a corrective retry."""
+
+
 class Colors:
     HEADER = "\033[95m"
     BLUE = "\033[94m"
@@ -766,6 +770,16 @@ class AgentOrchestrator:
     ) -> str | None:
         from orchestrator.core import backends
 
+        def contract_error(response: str) -> str | None:
+            if response_validator is None:
+                return None
+            try:
+                if response_validator(response):
+                    return None
+            except ResponseContractError as error:
+                return str(error)
+            return "Agent response failed the task output contract"
+
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
             return None
@@ -828,6 +842,7 @@ class AgentOrchestrator:
                 continue
             if not backends.backend_available(self, backend):
                 continue
+            retried_developer_contract = False
             try:
                 log_info(
                     f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})..."
@@ -851,17 +866,24 @@ class AgentOrchestrator:
                             "[SECTION_EDIT_START:",
                         )
                     )
-                    contract_ok = response_validator is None or response_validator(
-                        response
-                    )
-                    if implementing and (not has_blocks or not contract_ok):
+                    validation_error = contract_error(response)
+                    if implementing and (not has_blocks or validation_error):
+                        if not has_blocks:
+                            validation_error = (
+                                f"{validation_error}; " if validation_error else ""
+                            ) + "Developer response omitted required file blocks"
                         log_warning(
                             f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
                         )
                         retry_prompt = (
                             prompt
-                            + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
+                            + "\n\nRETRY: Your previous response was rejected. "
+                            + f"Validation error: {validation_error[:1200]}. "
+                            + "Correct the rejected edits and return valid blocks for every declared target file. "
+                            + "For FILE_EDIT blocks, OLD must match exactly once in the current file. "
+                            + "Do not copy example placeholder text."
                         )
+                        retried_developer_contract = True
                         response = self.call_agent_ollama_fallback(
                             role,
                             retry_prompt,
@@ -877,42 +899,32 @@ class AgentOrchestrator:
                                 "[SECTION_EDIT_START:",
                             )
                         )
-                        contract_ok = response_validator is None or response_validator(
-                            response
-                        )
-                    if implementing and not has_blocks and response_validator is None:
+                        validation_error = contract_error(response)
+                    if implementing and not has_blocks:
                         raise ResponseContractError(
                             "Developer response omitted required file blocks"
                         )
                     self.validate_routed_response(role, response, response_schema)
-                    if not contract_ok:
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
+                    if validation_error:
+                        raise ResponseContractError(validation_error)
                     return response
                 if backend == "codex":
                     response = self.call_codex(
                         prompt, system_prompt, role=role, model=model
                     )
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
+                    validation_error = contract_error(response)
+                    if validation_error:
+                        raise ResponseContractError(validation_error)
                     return response
                 if backend == "agy":
                     response = self.call_agy(
                         prompt, system_prompt, role=role, model=model
                     )
                     self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
+                    validation_error = contract_error(response)
+                    if validation_error:
+                        raise ResponseContractError(validation_error)
                     return response
                 raise ValueError(f"Unsupported backend in route: {backend}")
             except Exception as error:
@@ -926,6 +938,12 @@ class AgentOrchestrator:
                     )
                     raise RuntimeError(
                         f"Strict JSON contract failed for {role}: {error}"
+                    ) from error
+                if retried_developer_contract and isinstance(
+                    error, ResponseContractError
+                ):
+                    raise DeveloperContractRetryExhausted(
+                        f"{route} still failed the Developer output contract after one corrective retry: {error}"
                     ) from error
                 if (
                     not isinstance(error, ResponseContractError)

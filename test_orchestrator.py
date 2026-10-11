@@ -1892,6 +1892,57 @@ def test_existing_multi_file_task_uses_edit_blocks_for_every_target(
     )
 
 
+def test_repeated_invalid_edits_pause_with_specific_feedback(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["use_worktree"] = False
+    app.config["role_model_routes"]["developer_senior"] = [
+        ["ollama", "model-a"],
+        ["agy", "gemini-3.8-flash-medium"],
+    ]
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    app.plan_path.write_text("plan", encoding="utf-8")
+    app.state["state"] = "IMPLEMENTING"
+    app.state["tasks"] = [
+        {
+            "id": "T2",
+            "description": "update two modules",
+            "target_files": ["one.py", "two.py"],
+            "output_contract": {"format": "file_edits"},
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    app.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    (app.workspace / "one.py").write_text("value = 1\nvalue = 1\n", encoding="utf-8")
+    (app.workspace / "two.py").write_text("value = 1\n", encoding="utf-8")
+    response = "".join(
+        f"[FILE_EDIT_START: {name}]\n[OLD]\nvalue = 1\n[NEW]\nvalue = 2\n[FILE_EDIT_END: {name}]\n"
+        for name in ("one.py", "two.py")
+    )
+    ollama_call = Mock(return_value=response)
+    agy_call = Mock()
+    monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}}))
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value="model-a"))
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    monkeypatch.setattr(app, "call_agent_ollama_fallback", ollama_call)
+    monkeypatch.setattr(app, "call_agy", agy_call)
+
+    app.step_implementing()
+
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert app.state["tasks"][0]["status"] == "pending"
+    assert ollama_call.call_count == 2
+    assert "one.py (matched 2 times)" in ollama_call.call_args_list[1].args[1]
+    assert "Missing valid edits for: one.py" in ollama_call.call_args_list[1].args[1]
+    assert "one.py (matched 2 times)" in app.state["human_review_details"]
+    agy_call.assert_not_called()
+    assert (app.workspace / "one.py").read_text(encoding="utf-8") == "value = 1\nvalue = 1\n"
+    assert (app.workspace / "two.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_implementing_skips_read_only_inventory_tasks(
     initialized_orchestrator, monkeypatch
 ):
@@ -2181,6 +2232,22 @@ def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
 
     assert initialized_orchestrator.parse_and_write_files(output, ["README.md"]) == []
     assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
+
+
+def test_invalid_python_edit_reports_parse_error_without_writing(initialized_orchestrator):
+    target = initialized_orchestrator.workspace / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    output = (
+        "[FILE_EDIT_START: app.py]\n[OLD]\nvalue = 1\n"
+        "[NEW]\ndef broken():\n[FILE_EDIT_END: app.py]"
+    )
+    errors = []
+
+    assert initialized_orchestrator.developer.parse_and_write_files(
+        output, ["app.py"], dry_run=True, validation_errors=errors
+    ) == []
+    assert "Skipping edit whose result does not parse: app.py" in errors[0]
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
 def test_markdown_section_blocks_replace_only_named_section(initialized_orchestrator):
