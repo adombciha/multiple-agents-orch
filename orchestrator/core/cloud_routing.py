@@ -47,6 +47,12 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
     if key in cache:
         return cache[key]
     models = discover_codex_models()
+    if role.startswith("developer"):
+        models = {
+            slug: entry for slug, entry in models.items() if slug.endswith("-luna")
+        }
+        if not models:
+            raise RuntimeError("No available Luna model for Developer Codex route")
     if not models:
         return "auto", fallback_effort
     descriptions = {
@@ -62,7 +68,10 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
         require_installed=False,
     )
     if not ranked:
-        return "auto", fallback_effort
+        if role.startswith("developer"):
+            ranked = list(models)
+        else:
+            return "auto", fallback_effort
     model = ranked[0]
     efforts = {
         level["effort"]: level.get("description")

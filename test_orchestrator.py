@@ -297,12 +297,12 @@ def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monke
                 for effort in ("low", "medium", "high")
             ],
         }
-        for name in ("gpt-6.1-sol", "gpt-6-luna")
+        for name in ("gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-luna")
     }
     monkeypatch.setattr(
         cloud_routing, "discover_codex_models", Mock(return_value=models)
     )
-    rank = Mock(side_effect=[["gpt-6.1-sol", "gpt-6-luna"], ["high", "medium", "low"]])
+    rank = Mock(side_effect=[["gpt-6-luna", "gpt-5.6-luna"], ["high", "medium", "low"]])
     monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
     run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
     monkeypatch.setattr(backends.subprocess, "run", run)
@@ -317,12 +317,49 @@ def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monke
         == "ok"
     )
     command = run.call_args.args[0]
-    assert command[command.index("-m") + 1] == "gpt-6.1-sol"
+    assert command[command.index("-m") + 1] == "gpt-6-luna"
     assert "model_reasoning_effort='high'" in command
     assert rank.call_count == 2
+    assert rank.call_args_list[0].args[2] == ["gpt-6-luna", "gpt-5.6-luna"]
     assert all(
         call.kwargs["require_installed"] is False for call in rank.call_args_list
     )
+
+
+def test_developer_codex_auto_requires_live_luna(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(
+        cloud_routing,
+        "discover_codex_models",
+        Mock(return_value={"gpt-6.1-sol": {"description": "Sol"}}),
+    )
+    run = Mock()
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="No available Luna model"):
+        backends.call_codex(
+            initialized_orchestrator, "task", role="developer_senior", model="auto"
+        )
+    run.assert_not_called()
+
+
+def test_non_developer_codex_auto_keeps_sol_candidate(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        cloud_routing,
+        "discover_codex_models",
+        Mock(return_value={"gpt-6.1-sol": {"description": "Sol"}}),
+    )
+    monkeypatch.setattr(
+        backends,
+        "route_ollama_model_with_tev1",
+        Mock(return_value=["gpt-6.1-sol"]),
+    )
+
+    model, _ = cloud_routing.select_codex_model(
+        initialized_orchestrator, "reviewer", "review task"
+    )
+    assert model == "gpt-6.1-sol"
 
 
 def test_explicit_codex_model_bypasses_runtime_scoring(
@@ -339,6 +376,20 @@ def test_explicit_codex_model_bypasses_runtime_scoring(
     )
     select.assert_not_called()
     assert "gpt-6-luna" in run.call_args.args[0]
+
+
+def test_developer_codex_rejects_explicit_sol(initialized_orchestrator, monkeypatch):
+    run = Mock()
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="requires a Luna model"):
+        backends.call_codex(
+            initialized_orchestrator,
+            "task",
+            role="developer_senior",
+            model="gpt-6.1-sol",
+        )
+    run.assert_not_called()
 
 
 def test_agy_auto_scores_available_efforts_once(initialized_orchestrator, monkeypatch):
@@ -446,8 +497,8 @@ def test_cloud_auto_keeps_original_selection_when_router_is_unavailable(
     )
 
     assert cloud_routing.select_codex_model(
-        initialized_orchestrator, "developer_senior", "task"
-    ) == ("auto", "low")
+        initialized_orchestrator, "reviewer", "task"
+    ) == ("auto", "medium")
 
 
 def test_cloud_usage_records_resolved_model(initialized_orchestrator, monkeypatch):
@@ -701,6 +752,14 @@ def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkey
 def test_codex_exec_is_read_only_and_uses_file_block_output(
     initialized_orchestrator, monkeypatch
 ):
+    monkeypatch.setattr(
+        cloud_routing,
+        "discover_codex_models",
+        Mock(return_value={"gpt-6-luna": {"supported_reasoning_levels": []}}),
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["gpt-6-luna"])
+    )
     run = Mock(
         return_value=Mock(
             returncode=0,
@@ -720,7 +779,7 @@ def test_codex_exec_is_read_only_and_uses_file_block_output(
         "read-only",
         "--skip-git-repo-check",
     ]
-    assert "-m" not in run.call_args.args[0]
+    assert run.call_args.args[0][-3:-1] == ["-m", "gpt-6-luna"]
 
 
 def test_agy_maps_legacy_model_ids_to_supported_gemini_names(

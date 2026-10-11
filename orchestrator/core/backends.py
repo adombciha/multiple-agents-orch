@@ -457,6 +457,8 @@ def call_codex(
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
+    if role.startswith("developer") and model != "auto" and not model.endswith("-luna"):
+        raise RuntimeError("Developer Codex route requires a Luna model")
     effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if model == "auto":
         from orchestrator.core.cloud_routing import select_codex_model
