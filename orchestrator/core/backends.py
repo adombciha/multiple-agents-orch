@@ -25,7 +25,7 @@ def resolve_agy_model(model: str) -> str:
         return AGY_MODEL_ALIASES.get(model, model)
 
     global _agy_models_cache
-    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 3600:
+    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 300:
         result = subprocess.run(
             ["agy", "models"], capture_output=True, text=True, timeout=60, check=False
         )
@@ -239,8 +239,11 @@ def route_ollama_model_with_tev1(
     role: str,
     candidates: list[str],
     task_summary: str | None = None,
+    *,
+    criteria: dict[str, str | None] | None = None,
+    require_installed: bool = True,
 ) -> list[str] | None:
-    """Rank installed candidates using Tev1 choice probabilities."""
+    """Rank runtime candidates using Tev1 choice probabilities."""
     from orchestrator.core.state import log_info, log_warning
 
     if not orchestrator.config.get("ollama_router_enabled", True):
@@ -267,7 +270,10 @@ def route_ollama_model_with_tev1(
         dict.fromkeys(
             candidate
             for candidate in candidates
-            if _ollama_model_matches(candidate, installed_models)
+            if (
+                not require_installed
+                or _ollama_model_matches(candidate, installed_models)
+            )
             and not _ollama_model_matches(candidate, {router_model})
         )
     )
@@ -290,7 +296,10 @@ def route_ollama_model_with_tev1(
             "selected_model": {
                 "type": "choice",
                 "instructions": f"Select the best model for the role '{role}'.",
-                "criteria": {candidate: None for candidate in available_candidates},
+                "criteria": {
+                    candidate: criteria.get(candidate) if criteria else None
+                    for candidate in available_candidates
+                },
             }
         },
     }
@@ -346,7 +355,7 @@ def route_ollama_model_with_tev1(
         )
         qualifier = "low confidence; " if confidence < min_conf else ""
         log_info(
-            f"Tev1 ranked {role} models ({qualifier}confidence {confidence:.2f}): {scores}"
+            f"Tev1 ranked {role} options ({qualifier}confidence {confidence:.2f}): {scores}"
         )
         return ranked
     except Exception as exc:
@@ -448,9 +457,14 @@ def call_codex(
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
+    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
+    if model == "auto":
+        from orchestrator.core.cloud_routing import select_codex_model
+
+        model, effort = select_codex_model(orchestrator, role, prompt)
+    orchestrator._resolved_cloud_model = model
     if model and model != "auto":
         cmd.extend(["-m", model])
-    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if effort:
         cmd.extend(["-c", f"model_reasoning_effort={effort!r}"])
     cmd.append("-")
@@ -511,8 +525,13 @@ def call_agy(
 
     cmd = ["agy", "--sandbox", "--mode", mode]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
+    if model and model.startswith("auto:"):
+        from orchestrator.core.cloud_routing import select_agy_model
+
+        model = select_agy_model(orchestrator, role, prompt, model)
     if model:
         model = resolve_agy_model(model)
+    orchestrator._resolved_cloud_model = model
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json"])

@@ -13,7 +13,7 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.core import backends, gpt, scoring, roster, brain
+from orchestrator.core import backends, cloud_routing, gpt, scoring, roster, brain
 from orchestrator.core.telemetry import record_call, summary_markdown
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.roles.base_agent import is_json_response
@@ -251,6 +251,222 @@ def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(monkeypa
     )
     assert backends.resolve_agy_model("gemini-3.8-flash-low") == "gemini-3.8-flash-low"
     run.assert_called_once()
+
+
+def test_codex_catalog_filters_hidden_models(monkeypatch):
+    monkeypatch.setattr(cloud_routing, "_codex_catalog_cache", (0.0, {}))
+    run = Mock(
+        return_value=Mock(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "models": [
+                        {
+                            "slug": "gpt-6.1-sol",
+                            "visibility": "list",
+                            "supported_in_api": True,
+                        },
+                        {
+                            "slug": "gpt-reserve",
+                            "visibility": "hide",
+                            "supported_in_api": True,
+                        },
+                    ]
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(cloud_routing.subprocess, "run", run)
+
+    assert list(cloud_routing.discover_codex_models()) == ["gpt-6.1-sol"]
+    run.assert_called_once_with(
+        ["codex", "debug", "models"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monkeypatch):
+    models = {
+        name: {
+            "description": name,
+            "supported_reasoning_levels": [
+                {"effort": effort, "description": effort}
+                for effort in ("low", "medium", "high")
+            ],
+        }
+        for name in ("gpt-6.1-sol", "gpt-6-luna")
+    }
+    monkeypatch.setattr(
+        cloud_routing, "discover_codex_models", Mock(return_value=models)
+    )
+    rank = Mock(side_effect=[["gpt-6.1-sol", "gpt-6-luna"], ["high", "medium", "low"]])
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
+    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    assert (
+        backends.call_codex(
+            initialized_orchestrator,
+            "complex task",
+            role="developer_senior",
+            model="auto",
+        )
+        == "ok"
+    )
+    command = run.call_args.args[0]
+    assert command[command.index("-m") + 1] == "gpt-6.1-sol"
+    assert "model_reasoning_effort='high'" in command
+    assert rank.call_count == 2
+    assert all(
+        call.kwargs["require_installed"] is False for call in rank.call_args_list
+    )
+
+
+def test_explicit_codex_model_bypasses_runtime_scoring(
+    initialized_orchestrator, monkeypatch
+):
+    select = Mock()
+    monkeypatch.setattr(cloud_routing, "select_codex_model", select)
+    run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+
+    assert (
+        backends.call_codex(initialized_orchestrator, "task", model="gpt-6-luna")
+        == "ok"
+    )
+    select.assert_not_called()
+    assert "gpt-6-luna" in run.call_args.args[0]
+
+
+def test_agy_auto_scores_available_efforts_once(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(
+        backends,
+        "resolve_agy_model",
+        lambda selector: selector.replace("auto:gemini-flash-", "gemini-3.8-flash-"),
+    )
+    rank = Mock(
+        return_value=[
+            "gemini-3.8-flash-high",
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-low",
+        ]
+    )
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
+
+    selected = cloud_routing.select_agy_model(
+        initialized_orchestrator,
+        "developer_senior",
+        "implement task",
+        "auto:gemini-flash-medium",
+    )
+    repeated = cloud_routing.select_agy_model(
+        initialized_orchestrator,
+        "developer_senior",
+        "implement task",
+        "auto:gemini-flash-medium",
+    )
+
+    assert selected == repeated == "gemini-3.8-flash-high"
+    assert rank.call_count == 1
+    assert rank.call_args.kwargs["require_installed"] is False
+
+
+def test_tev1_can_choose_agy_before_codex_for_configured_role(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["role_model_routes"]["manager"] = [
+        ["codex", "auto"],
+        ["agy", "auto:gemini-flash-medium"],
+    ]
+    rank = Mock(return_value=["agy", "codex"])
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    agy = Mock(return_value="manager response")
+    codex = Mock()
+    monkeypatch.setattr(app, "call_agy", agy)
+    monkeypatch.setattr(app, "call_codex", codex)
+
+    assert app.call_role_model_routes("manager", "plan this task") == "manager response"
+    agy.assert_called_once()
+    codex.assert_not_called()
+    assert rank.call_args.kwargs["require_installed"] is False
+
+
+def test_tev1_can_choose_local_before_cloud_for_configured_role(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["role_model_routes"]["manager"] = [
+        ["codex", "auto"],
+        ["agy", "auto:gemini-flash-medium"],
+        ["ollama", "auto"],
+    ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"local-model": {}})
+    )
+    rank = Mock(
+        side_effect=lambda _app, _role, choices, *_args, **_kwargs: (
+            ["local-model"]
+            if choices == ["local-model"]
+            else ["ollama", "agy", "codex"]
+        )
+    )
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    local = Mock(return_value="local response")
+    monkeypatch.setattr(app, "call_agent_ollama_fallback", local)
+    codex = Mock()
+    agy = Mock()
+    monkeypatch.setattr(app, "call_codex", codex)
+    monkeypatch.setattr(app, "call_agy", agy)
+
+    assert app.call_role_model_routes("manager", "small local task") == "local response"
+    local.assert_called_once()
+    codex.assert_not_called()
+    agy.assert_not_called()
+
+
+def test_cloud_auto_keeps_original_selection_when_router_is_unavailable(
+    initialized_orchestrator, monkeypatch
+):
+    models = {
+        "gpt-6.1-sol": {
+            "supported_reasoning_levels": [{"effort": "medium"}],
+        }
+    }
+    monkeypatch.setattr(
+        cloud_routing, "discover_codex_models", Mock(return_value=models)
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=None)
+    )
+
+    assert cloud_routing.select_codex_model(
+        initialized_orchestrator, "developer_senior", "task"
+    ) == ("auto", "low")
+
+
+def test_cloud_usage_records_resolved_model(initialized_orchestrator, monkeypatch):
+    def call_cloud(app, prompt, system_prompt, role, model):
+        app._resolved_cloud_model = "gpt-6.1-sol"
+        return "response"
+
+    monkeypatch.setattr(backends, "call_codex", call_cloud)
+
+    assert (
+        initialized_orchestrator.call_codex("task", role="manager", model="auto")
+        == "response"
+    )
+    record = json.loads(
+        (initialized_orchestrator.ai_dir / "llm_usage.jsonl").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["model"] == "gpt-6.1-sol"
 
 
 def test_legacy_config_migrates_removed_backends_but_keeps_manual_agy_model(

@@ -717,6 +717,8 @@ class AgentOrchestrator:
         from orchestrator.core.telemetry import record_call
 
         started = time.monotonic()
+        if backend in {"codex", "agy"}:
+            self._resolved_cloud_model = None
         try:
             response = callback()
         except Exception as error:
@@ -724,7 +726,7 @@ class AgentOrchestrator:
                 self,
                 role=role,
                 backend=backend,
-                model=model,
+                model=getattr(self, "_resolved_cloud_model", None) or model,
                 prompt=prompt,
                 system_prompt=system_prompt,
                 output=None,
@@ -737,7 +739,7 @@ class AgentOrchestrator:
             self,
             role=role,
             backend=backend,
-            model=model,
+            model=getattr(self, "_resolved_cloud_model", None) or model,
             prompt=prompt,
             system_prompt=system_prompt,
             output=response,
@@ -842,6 +844,27 @@ class AgentOrchestrator:
                     "No installed Ollama chat-capable models were discovered."
                 )
                 effective_routes = [route for route in routes if route[0] != "ollama"]
+
+        available_backends = list(dict.fromkeys(route[0] for route in effective_routes))
+        if (
+            self.config.get("ollama_router_enabled", True)
+            and len(available_backends) > 1
+        ):
+            descriptions = {
+                "codex": "Cloud coding agent with selectable models and reasoning effort",
+                "agy": "Cloud agent with selectable model and reasoning effort",
+                "ollama": "Locally installed chat models; limited by host hardware",
+            }
+            ranked_backends = backends.route_ollama_model_with_tev1(
+                self,
+                role,
+                available_backends,
+                self._get_compact_task_summary(role, prompt),
+                criteria={name: descriptions.get(name) for name in available_backends},
+                require_installed=False,
+            )
+            if ranked_backends and set(ranked_backends) == set(available_backends):
+                effective_routes.sort(key=lambda route: ranked_backends.index(route[0]))
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
