@@ -22,16 +22,16 @@ To run an AI workflow, install and authenticate each selected CLI backend (`code
 
 ## Workflow and files
 
-`start` stores the request and resets the state to `PLANNING`. The normal state flow is:
+`start` stores the request and resets the state to `PLANNING`. It refuses to replace an active or undelivered run. The normal state flow is:
 
 ```text
 PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
 → TESTING → REVIEWING_CODE → COMPLETED
 ```
 
-The PM analyzes requirements and staffs optional specialists. Their findings are passed to the Architect for plan review. RD implements the tasks, QA runs the configured test command and reports results, Reviewer evaluates the requirements, plan, tests, specialist findings, and Git diff, and Assistant creates `CHANGELOG.md` when complete.
+The PM analyzes requirements and staffs optional specialists. Their findings are passed to the Architect for plan review. RD implements the tasks, QA runs the configured test command and reports results, Reviewer evaluates the requirements, plan, tests, specialist findings, and Git diff, and Assistant creates `CHANGELOG.md` when complete. In delivery mode, completion prepares a Git preview but does not merge it; confirm the preview with `deliver --confirm <token>`. Research mode finishes without a Git delivery step.
 
-`init` creates `.ai-company/`, including `config.json`, `state.json`, `request.md`, `requirements.json`, the generated human-readable `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.json`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`. Machine-to-machine artifacts use JSON where possible; human-facing output uses Markdown.
+`init` creates `.ai-company/`, including `config.json`, `state.json`, `status.json`, `request.md`, `requirements.json`, the generated human-readable `requirements.md`, `implementation_plan.md`, `action_items.json`, agent outputs, `test_results.txt`, `qa_report.md`, `reviewer_output.json`, `reviewer_output.md`, `specialist_reviews.md`, `human_report.md`, and `final_report.md`. `status.json` is an atomic status snapshot; `pause_request.json` records a pending step-boundary pause, while `delivery_preview.md` stores the last displayed Git preview. Machine-to-machine artifacts use JSON where possible; human-facing output uses Markdown.
 
 ## Configuration
 
@@ -44,6 +44,7 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 | `backends` | Backend assigned to roles. |
 | `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing. |
 | `use_ponytail`, `use_worktree` | Minimalist prompting and Git-worktree isolation; both default to `false` and `true` respectively. |
+| `require_delivery_confirmation`, `gui_port` | Require explicit delivery confirmation (default `true`) and set the local GUI port (default `8765`). |
 | `backend_escalation_path`, `staffing_limits` | Backend escalation and RD/QA staffing limits. |
 | `telemetry_enabled`, `llm_usage_log` | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
 
@@ -97,7 +98,7 @@ In `WAITING_FOR_OWNER`, use `approve` or `review`:
 Human review '<decision>' recorded; workflow moved to <STATE>.
 ```
 
-Use `python3 orchestrator.py status` to see the current state and revision counts. `--run` continues the loop only when the selected decision leaves a runnable workflow; it does not run after `reject`.
+Use `python3 orchestrator.py status` to see the persisted state snapshot, lock owner, pause request, and next actions. `--run` continues the loop only when the selected decision leaves a runnable workflow; it does not deliver or merge changes.
 
 ## CLI reference
 
@@ -107,11 +108,14 @@ Run `python3 orchestrator.py --help` for the current command list. Every command
 | --- | --- | --- | --- | --- |
 | Help | `python3 orchestrator.py --help` | None | `-h`, `--help` | Prints commands and exits. `python3 orchestrator.py --help` |
 | `init` | `python3 orchestrator.py init` | None | None | Creates `.ai-company/config.json` and state files. `python3 orchestrator.py init` |
-| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | Initializes, saves the request, resets to `PLANNING`; it does not run agents. `python3 orchestrator.py start "Add a command and tests"` |
+| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | Initializes and saves the request; refuses to overwrite an active or undelivered run. It does not run agents. `python3 orchestrator.py start "Add a command and tests"` |
 | `step` | `python3 orchestrator.py step` | None | None | Runs one state-machine step; selected AI CLIs, Ollama, and Git worktree support may be needed. `python3 orchestrator.py step` |
-| `run` | `python3 orchestrator.py run` | None | None | Runs until `COMPLETED`, `WAITING_FOR_OWNER`, or `FAILED`. `python3 orchestrator.py run` |
-| `continue` | `python3 orchestrator.py continue` | None | None | Auto-resumes without you having to pick a command: if paused (`WAITING_FOR_OWNER`), infers `approve` (Developer pause) or `revise` (Architect/Manager/Reviewer/QA verdict, auto-clearing the revision counter if it's at the ceiling) then keeps running to completion; if not paused, just runs; no-ops with a message on `COMPLETED`/`FAILED`. `python3 orchestrator.py continue` |
-| `status` | `python3 orchestrator.py status` | None | None | Prints state, revision counters, selected backends, test command, and action items. `python3 orchestrator.py status` |
+| `run` | `python3 orchestrator.py run` | None | None | Runs until the next decision point or completion preview; never bypasses delivery confirmation. `python3 orchestrator.py run` |
+| `continue` | `python3 orchestrator.py continue` | None | None | Auto-resumes using the existing approve/revise decision; for a completed but undelivered run, prints the preview without merging. `python3 orchestrator.py continue` |
+| `pause` | `python3 orchestrator.py pause [--cancel]` | None | `--cancel`: cancel a pending pause request | Requests a pause after the current workflow step; does not interrupt an active model call. `python3 orchestrator.py pause` |
+| `deliver` | `python3 orchestrator.py deliver [--confirm TOKEN]` | None | `--confirm TOKEN`: confirm a previously displayed preview | Without a token, displays and saves the current Git preview. With the displayed token, rechecks freshness and merges; changed content requires a new preview and confirmation. `python3 orchestrator.py deliver --confirm 0123456789ab` |
+| `gui` | `python3 orchestrator.py gui [--port PORT]` | None | `--port`: defaults to `gui_port` | Starts a token-protected dashboard bound only to `127.0.0.1`. `python3 orchestrator.py gui` |
+| `status` | `python3 orchestrator.py status` | None | None | Reads the status snapshot without reloading worker state; prints lock owner, pause status, and next actions. `python3 orchestrator.py status` |
 | `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: continue after approval; default off | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run` |
 | `review` | `python3 orchestrator.py review {pass,revise,reject} [--run] [--reset-revisions]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off. `--reset-revisions`: with `revise`, clear the code/plan revision counter first so the auto-revise loop gets a fresh `max_revisions` budget instead of immediately re-pausing; keeps the current worktree and tasks, unlike `reset` | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. Note this `reject` decision marks the run `FAILED` (terminal) -- it's a different action from the top-level `reject` command below. `python3 orchestrator.py review revise --run --reset-revisions` |
 | `reject` | `python3 orchestrator.py reject [--run]` | None | `--run`: continue after rejecting; default off | Sends the whole project back to `PLANNING` but **keeps the saved request prompt**, so it gets re-planned from the same ask -- nothing has to be re-typed. Works from any state, not just `WAITING_FOR_OWNER`. `python3 orchestrator.py reject --run` |

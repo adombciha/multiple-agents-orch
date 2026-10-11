@@ -13,7 +13,8 @@ stateDiagram-v2
     IMPLEMENTING --> TESTING
     TESTING --> REVIEWING_CODE: QA_STATUS: PASSED
     TESTING --> IMPLEMENTING: QA_STATUS: FAILED
-    REVIEWING_CODE --> COMPLETED: approved
+    REVIEWING_CODE --> COMPLETED: approved; delivery pending
+    COMPLETED --> COMPLETED: deliver confirmed and merged
     REVIEWING_CODE --> IMPLEMENTING: revise
     REVIEWING_CODE --> WAITING_FOR_OWNER: rejected; retries exhausted
 
@@ -29,3 +30,6 @@ Rules:
 - Only IMPLEMENTING requires file-marker blocks.
 - Manager tasks must modify project files; planning and inspection are not implementation tasks.
 - A rejected plan never enters IMPLEMENTING automatically.
+- Reviewer approval does not merge changes. A Git preview must be explicitly confirmed with `deliver --confirm <token>`; a changed preview requires a new confirmation.
+- `run` and `continue` never bypass delivery confirmation. Research workflows complete without a Git delivery step.
+- State snapshots are written atomically; CLI writers are serialized by the shared run lock, while `pause` is recorded separately and consumed at a step boundary.

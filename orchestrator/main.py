@@ -3,6 +3,9 @@ import re
 import sys
 import argparse
 import json
+import uuid
+import tempfile
+from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.request import urlopen
 from pathlib import Path
@@ -230,7 +233,40 @@ def configure_ollama(orchestrator: AgentOrchestrator):
         orchestrator.save_state()
 
 
-def main():
+def set_pause_request(
+    orchestrator: AgentOrchestrator, cancel: bool = False, source: str = "cli"
+) -> None:
+    path = orchestrator.pause_request_path
+    if cancel:
+        if path.exists():
+            path.unlink()
+            log_success("Pending pause request cancelled.")
+        else:
+            log_info("No pending pause request to cancel.")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=path.parent, delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            json.dump(
+                {
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                    "source": source,
+                },
+                handle,
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+    os.replace(temporary, path)
+    log_success("Pause requested; the workflow will stop after its current step.")
+
+
+def _run_cli(orchestrator: AgentOrchestrator | None = None):
     parser = argparse.ArgumentParser(description="Multi-Agent Orchestrator CLI")
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
@@ -256,6 +292,20 @@ def main():
 
     subparsers.add_parser("step", help="Run the next step in the state machine")
     subparsers.add_parser("run", help="Run the agent loop to completion")
+    pause_parser = subparsers.add_parser(
+        "pause",
+        help="Pause after the current step; use --cancel to cancel a pending pause",
+    )
+    pause_parser.add_argument("--cancel", action="store_true")
+    pause_parser.add_argument(
+        "--source", choices=("cli", "gui"), default="cli", help=argparse.SUPPRESS
+    )
+    deliver_parser = subparsers.add_parser(
+        "deliver", help="Preview or confirm delivery of a completed workflow"
+    )
+    deliver_parser.add_argument("--confirm", help="Previously displayed delivery token")
+    gui_parser = subparsers.add_parser("gui", help="Open the local workflow dashboard")
+    gui_parser.add_argument("--port", type=int, help="HTTP port (defaults to config)")
     subparsers.add_parser(
         "continue",
         help="Auto-resume from wherever the project is: picks approve or revise "
@@ -379,15 +429,44 @@ def main():
     args = parser.parse_args()
 
     workspace = Path(os.getcwd())
-    orchestrator = AgentOrchestrator(workspace)
+    orchestrator = orchestrator or AgentOrchestrator(workspace)
 
     if args.command == "init":
-        orchestrator.init_project()
+        try:
+            orchestrator.init_project()
+        except RuntimeError as error:
+            log_error(str(error))
+            return 1
         orchestrator.load_config_and_state()
         configure_ollama(orchestrator)
     elif args.command == "start":
-        orchestrator.clear_run_artifacts()
-        orchestrator.init_project()
+        if orchestrator.state_path.exists():
+            try:
+                orchestrator.load_config_and_state()
+            except (FileNotFoundError, json.JSONDecodeError) as error:
+                log_error(f"Cannot safely start a new run: {error}")
+                return 1
+            state = orchestrator.state.get("state")
+            delivery = orchestrator.state.get("delivery", {})
+            if (
+                state not in {"COMPLETED", "FAILED"}
+                and orchestrator.request_path.exists()
+            ):
+                log_error(
+                    f"A workflow is already active in state {state}; continue or review it before starting another task."
+                )
+                return 1
+            if state == "COMPLETED" and not delivery.get("delivered", False):
+                log_error(
+                    "The completed workflow still has undelivered work; deliver or reject it before starting another task."
+                )
+                return 1
+        try:
+            orchestrator.clear_run_artifacts()
+            orchestrator.init_project()
+        except RuntimeError as error:
+            log_error(str(error))
+            return 1
         orchestrator.load_config_and_state()
         configure_ollama(orchestrator)
         ollama_reachable = orchestrator.state.get("ollama_reachable", True)
@@ -441,6 +520,7 @@ def main():
             "workflow_mode": "research" if args.research else "delivery",
             "research_roles": ["sales", "ra"] if args.research else [],
             "ollama_reachable": ollama_reachable,
+            "run_id": uuid.uuid4().hex,
         }
         orchestrator.save_state()
         log_success(
@@ -450,46 +530,83 @@ def main():
         orchestrator.step()
     elif args.command == "run":
         orchestrator.run_to_end()
-    elif args.command == "status":
+    elif args.command == "pause":
+        set_pause_request(orchestrator, args.cancel, args.source)
+    elif args.command == "deliver":
         try:
             orchestrator.load_config_and_state()
+            from orchestrator.core.delivery import deliver
+
+            if args.confirm is not None and not deliver(orchestrator, args.confirm):
+                return 1
+        except (FileNotFoundError, json.JSONDecodeError) as error:
+            log_error(f"Project is not ready for delivery: {error}")
+            return 1
+    elif args.command == "gui":
+        port = args.port
+        if port is None and orchestrator.config_path.exists():
+            try:
+                config = json.loads(
+                    orchestrator.config_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                log_error(f"Cannot read GUI configuration: {error}")
+                return 1
+            port = config.get("gui_port", 8765)
+        from orchestrator.gui import serve
+
+        try:
+            serve(orchestrator, 8765 if port is None else port)
+        except ValueError as error:
+            log_error(str(error))
+            return 1
+    elif args.command == "status":
+        try:
+            from orchestrator.core.runlock import RunLock
+            from orchestrator.core.status import read_snapshot
+
+            snapshot = read_snapshot(orchestrator.status_path)
             log_header("ORCHESTRATOR STATUS")
             print(
-                f"{'Current State:':<20}{Colors.BOLD}{orchestrator.state['state']}{Colors.ENDC}"
+                f"{'Current State:':<20}{Colors.BOLD}{snapshot.get('state', 'unknown')}{Colors.ENDC}"
             )
             print(
-                f"{'Plan Revisions:':<20}{orchestrator.state['plan_revisions']}/{orchestrator.config['max_revisions']}"
+                f"{'Plan Revisions:':<20}{snapshot.get('plan_revisions', 0)}/{snapshot.get('max_revisions', 0)}"
             )
             print(
-                f"{'Code Revisions:':<20}{orchestrator.state['code_revisions']}/{orchestrator.config['max_revisions']}"
+                f"{'Code Revisions:':<20}{snapshot.get('code_revisions', 0)}/{snapshot.get('max_revisions', 0)}"
             )
-            print(f"Ollama Model:       {orchestrator.config['ollama_model']}")
-            print(
-                f"{'Developer Backend:':<20}{orchestrator.config['backends']['developer']}"
-            )
-            print(
-                f"{'Reviewer Backend:':<20}{orchestrator.config['backends']['reviewer']}"
-            )
-            print(
-                f"{'QA Backend:':<20}{orchestrator.config['backends'].get('qa', 'ollama')}"
-            )
-            print(f"{'Test Command:':<20}{orchestrator.config['test_command']}")
-
-            tasks = orchestrator.state.get("tasks", [])
+            tasks = snapshot.get("tasks", [])
             if tasks:
                 print(f"\n{'Action Items'} ({len(tasks)} total):")
                 for t in tasks:
                     status_color = (
-                        Colors.GREEN if t["status"] == "completed" else Colors.WARNING
+                        Colors.GREEN
+                        if t.get("status") == "completed"
+                        else Colors.WARNING
                     )
                     print(
-                        f" - [{status_color}{t['status']}{Colors.ENDC}] {t['id']}: {t['description']}"
+                        f" - [{status_color}{t.get('status')}{Colors.ENDC}] {t.get('id')}: {t.get('description', '')}"
                     )
             else:
                 print(f"\n{'No tasks parsed yet.'}")
-        except FileNotFoundError:
+            holder = RunLock.read_holder(orchestrator.ai_dir)
+            print(
+                f"\nRunning command: {holder.get('command')} (PID {holder.get('pid')})"
+                if holder
+                else "\nRunning command: none"
+            )
+            pause_pending = orchestrator.pause_request_path.exists()
+            print(f"Pause request: {'pending' if pause_pending else 'none'}")
+            print("Next actions:")
+            for action in snapshot.get("next_actions", []):
+                print(f" - {action['command']}: {action['description']}")
+            delivery_preview = snapshot.get("delivery", {}).get("preview")
+            if delivery_preview:
+                print(f"\n{delivery_preview}")
+        except (FileNotFoundError, json.JSONDecodeError):
             log_error(
-                "Project not initialized. Please run 'python3 orchestrator.py init' first."
+                "No valid status snapshot. Run 'python3 orchestrator.py init' first."
             )
     elif args.command == "approve":
         try:
@@ -526,7 +643,10 @@ def main():
             orchestrator.load_config_and_state()
             state = orchestrator.state.get("state")
             if state == "COMPLETED":
-                log_success("Project already completed; nothing to continue.")
+                if orchestrator.state.get("delivery", {}).get("delivered"):
+                    log_success("Project already delivered; nothing to continue.")
+                else:
+                    orchestrator.step()
                 return
             if state == "FAILED":
                 log_error(
@@ -690,6 +810,49 @@ def main():
             log_error("Specify a brain subcommand: search or prune.")
     else:
         parser.print_help()
+
+
+_LOCKED_COMMANDS = {
+    "init",
+    "start",
+    "step",
+    "run",
+    "continue",
+    "approve",
+    "review",
+    "reject",
+    "reset",
+    "deliver",
+    "set-backend",
+    "set-ollama-url",
+}
+
+
+def main():
+    from orchestrator.core.runlock import RunLock, RunLockBusy
+
+    command = sys.argv[1] if len(sys.argv) > 1 else None
+    locked = (
+        command in _LOCKED_COMMANDS
+        or (command == "weights" and len(sys.argv) > 2 and sys.argv[2] == "set")
+        or (command == "brain" and len(sys.argv) > 2 and sys.argv[2] == "prune")
+    )
+    if not locked:
+        return _run_cli()
+
+    orchestrator = AgentOrchestrator(Path(os.getcwd()))
+    try:
+        with RunLock(orchestrator.ai_dir, command):
+            return _run_cli(orchestrator)
+    except RunLockBusy as error:
+        holder = error.holder_info
+        pid = holder.get("pid", "?")
+        started = holder.get("started_at", "unknown time")
+        active_command = holder.get("command", "unknown command")
+        log_error(
+            f"Another command is running: {active_command} (PID {pid}, started {started})."
+        )
+        return 1
 
 
 if __name__ == "__main__":

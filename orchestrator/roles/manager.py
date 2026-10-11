@@ -1,6 +1,8 @@
 from __future__ import annotations
 import sys
 import json
+import hashlib
+from datetime import datetime, timezone
 from orchestrator.roles.base_agent import (
     BaseAgent,
     extract_json_response,
@@ -212,12 +214,29 @@ class ManagerAgent(BaseAgent):
             log_success,
             log_info,
             log_warning,
+            log_error,
         )
 
         log_header("7. GENERATING SUMMARY (Ollama Manager)")
 
         if self.orchestrator.state.get("workflow_mode") == "research":
             log_success("Research-only workflow finished.")
+            return
+
+        delivery = self.orchestrator.state.setdefault(
+            "delivery", {"delivered": False, "report_done": False}
+        )
+        if delivery.get("delivered"):
+            log_success("Project already delivered; no further work is needed.")
+            return
+        require_confirmation = self.orchestrator.config.get(
+            "require_delivery_confirmation", True
+        )
+        if delivery.get("report_done"):
+            if require_confirmation:
+                self._show_delivery_preview(delivery)
+            else:
+                self._merge_delivery(delivery)
             return
 
         with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
@@ -261,62 +280,124 @@ class ManagerAgent(BaseAgent):
         if usage:
             summary = f"{summary.rstrip()}\n\n{usage}\n"
 
-        with open(self.orchestrator.final_report_path, "w", encoding="utf-8") as f:
-            f.write(summary)
+        if not delivery.get("report_done"):
+            self.orchestrator.final_report_path.write_text(summary, encoding="utf-8")
+            log_success(
+                f"Final project report generated at {self.orchestrator.final_report_path}"
+            )
 
-        log_success(
-            f"Final project report generated at {self.orchestrator.final_report_path}"
+            qa_report = (
+                self.orchestrator.qa_report_path.read_text(encoding="utf-8")
+                if self.orchestrator.qa_report_path.exists()
+                else "No QA report available."
+            )
+            review = (
+                self.orchestrator.reviewer_output_path.read_text(encoding="utf-8")
+                if self.orchestrator.reviewer_output_path.exists()
+                else "No code review available."
+            )
+            meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
+                request,
+                summary,
+                self.orchestrator.state.get("tasks", []),
+                qa_report,
+                review,
+                diff_stat,
+            )
+            self.orchestrator.meeting_memory_path.write_text(
+                meeting_memory, encoding="utf-8"
+            )
+            log_success(
+                f"Meeting memory saved at {self.orchestrator.meeting_memory_path}"
+            )
+            brain.remember(
+                self.orchestrator,
+                "meeting",
+                f"Request: {request[:500]}\n\n{meeting_memory}",
+            )
+
+            log_info("Asking Assistant to generate CHANGELOG.md...")
+            changelog = self.orchestrator.assistant.generate_changelog(
+                summary, diff_patch
+            ).strip()
+            run_id = self.orchestrator.state.setdefault(
+                "run_id",
+                hashlib.sha256((request + requirements).encode("utf-8")).hexdigest()[
+                    :16
+                ],
+            )
+            marker = f"<!-- ai-company-run: {run_id} -->"
+            changelog_workspace = (
+                self.orchestrator.ai_dir / "worktree"
+                if self.orchestrator.has_git
+                and self.orchestrator.config.get("use_worktree", True)
+                else self.orchestrator.agent_workspace()
+            )
+            changelog_path = changelog_workspace / "CHANGELOG.md"
+            existing_changelog = (
+                changelog_path.read_text(encoding="utf-8")
+                if changelog_path.exists()
+                else ""
+            )
+            if changelog and marker not in existing_changelog:
+                with open(changelog_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n\n{marker}\n{changelog}\n")
+                log_success("CHANGELOG.md updated successfully!")
+
+            self._review_worker_weights(usage)
+            delivery["report_done"] = True
+            self.orchestrator.save_state()
+
+        delivery["report_done"] = True
+        self.orchestrator.save_state()
+        if require_confirmation:
+            self._show_delivery_preview(delivery)
+        else:
+            self._merge_delivery(delivery)
+
+    def _show_delivery_preview(self, delivery: dict) -> None:
+        from orchestrator.core.delivery import DeliveryError, delivery_preview, save_preview
+        from orchestrator.core.state import log_error, log_info
+
+        try:
+            preview_data = delivery_preview(self.orchestrator)
+        except (DeliveryError, OSError) as error:
+            delivery["preview_error"] = str(error)
+            self.orchestrator.save_state()
+            log_error(f"Could not prepare safe delivery: {error}")
+            return
+        preview = save_preview(self.orchestrator, preview_data)
+        print(preview)
+        log_info(
+            "Review the preview, then confirm with: "
+            f"python3 orchestrator.py deliver --confirm {preview_data['token']}"
         )
 
-        qa_report = (
-            self.orchestrator.qa_report_path.read_text(encoding="utf-8")
-            if self.orchestrator.qa_report_path.exists()
-            else "No QA report available."
-        )
-        review = (
-            self.orchestrator.reviewer_output_path.read_text(encoding="utf-8")
-            if self.orchestrator.reviewer_output_path.exists()
-            else "No code review available."
-        )
-        meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
-            request,
-            summary,
-            self.orchestrator.state.get("tasks", []),
-            qa_report,
-            review,
-            diff_stat,
-        )
-        self.orchestrator.meeting_memory_path.write_text(
-            meeting_memory, encoding="utf-8"
-        )
-        log_success(f"Meeting memory saved at {self.orchestrator.meeting_memory_path}")
-        brain.remember(
-            self.orchestrator,
-            "meeting",
-            f"Request: {request[:500]}\n\n{meeting_memory}",
-        )
+    def _merge_delivery(self, delivery: dict) -> None:
+        from orchestrator.core.state import log_success, log_warning
 
-        # Assistant generates CHANGELOG
-        log_info("Asking Assistant to generate CHANGELOG.md...")
-        changelog = self.orchestrator.assistant.generate_changelog(summary, diff_patch)
-
-        with open(
-            self.orchestrator.workspace / "CHANGELOG.md", "a", encoding="utf-8"
-        ) as f:
-            f.write("\n\n" + changelog)
-
-        log_success("CHANGELOG.md updated successfully!")
-
-        self._review_worker_weights(usage)
-
-        # Merge and clean up isolated worktree
         if self.orchestrator.cleanup_worktree(merge=True) is False:
+            self.orchestrator.merge_failure_path.write_text(
+                str(
+                    self.orchestrator.state.get(
+                        "worktree_merge_error", "Git merge failed."
+                    )
+                ),
+                encoding="utf-8",
+            )
+            delivery["token"] = None
+            delivery["preview"] = ""
+            self.orchestrator.save_state()
             task = self.orchestrator.queue_worktree_repair_task()
             log_warning(
                 f"PM queued RD repair task {task['id']} for the worktree merge failure."
             )
             return
 
+        delivery["delivered"] = True
+        delivery["delivered_at"] = datetime.now(timezone.utc).isoformat()
+        delivery.pop("token", None)
+        self.orchestrator.save_state()
         log_success("Multi-agent workflow process has finished successfully!")
 
     def _review_worker_weights(self, telemetry: str) -> None:

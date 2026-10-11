@@ -42,6 +42,8 @@ DEFAULT_CONFIG = {
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,  # Enforces isolated git worktrees for agent roles
+    "require_delivery_confirmation": True,
+    "gui_port": 8765,
     "backend_escalation_path": ["ollama", "agy", "codex"],
     "vendor_quota_check_enabled": False,  # Probe vendor CLIs' interactive /usage screen (via tmux) before hiring; off by default (slow, needs tmux)
     "vendor_quota_check_threshold_pct": 95,
