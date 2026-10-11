@@ -939,8 +939,15 @@ class DeveloperAgent(BaseAgent):
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 section_base = worktree
+            existing_targets = all(
+                (section_base / path).is_file() for path in target_files
+            )
+            has_existing_target = any(
+                (section_base / path).is_file() for path in target_files
+            )
             if (
                 not is_fix
+                and not (has_existing_target and not existing_targets)
                 and sum(
                     (section_base / path).stat().st_size
                     for path in target_files

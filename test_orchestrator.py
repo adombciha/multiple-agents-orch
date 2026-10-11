@@ -2566,6 +2566,53 @@ def test_multi_file_fix_task_splits_and_keeps_route_state(
     assert call_agent.call_count == 2
 
 
+def test_multi_file_task_with_new_target_splits_contracts(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    (initialized_orchestrator.workspace / "orchestrator").mkdir()
+    (initialized_orchestrator.workspace / "orchestrator/main.py").write_text(
+        "value = 1\n", encoding="utf-8"
+    )
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T4",
+            "description": "add the local web GUI",
+            "target_files": ["orchestrator/gui.py", "orchestrator/main.py"],
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "junior",
+        }
+    ]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1},
+        "qa": {"junior": 1},
+    }
+    monkeypatch.setattr(
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            side_effect=[
+                "[FILE_START: orchestrator/gui.py]\ncode\n[FILE_END: orchestrator/gui.py]",
+                "[FILE_EDIT_START: orchestrator/main.py]\n[OLD]\nvalue = 1\n[NEW]\nvalue = 2\n[FILE_EDIT_END: orchestrator/main.py]",
+            ]
+        ),
+    )
+
+    initialized_orchestrator.step_implementing()
+
+    tasks = initialized_orchestrator.state["tasks"]
+    assert [task["target_files"] for task in tasks] == [
+        ["orchestrator/gui.py"],
+        ["orchestrator/main.py"],
+    ]
+    assert tasks[0]["output_contract"]["format"] == "file_blocks"
+    assert tasks[1]["output_contract"]["format"] == "file_edits"
+
+
 def test_implementing_pauses_when_all_model_routes_fail(
     initialized_orchestrator, monkeypatch
 ):
