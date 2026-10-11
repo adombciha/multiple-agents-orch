@@ -258,18 +258,7 @@ def route_ollama_model_with_tev1(
         return available_candidates[0]
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
-    model_metadata = getattr(orchestrator, "_ollama_chat_models_cache", None)
-    metadata = model_metadata[2] if model_metadata else {}
-
-    def _describe(candidate: str) -> str:
-        facts = metadata.get(candidate, {})
-        description = ", ".join(f"{key}={value}" for key, value in facts.items())
-        return description or "installed chat model"
-
-    candidate_descs = "; ".join(
-        f"{candidate}: {_describe(candidate)}" for candidate in available_candidates
-    )
-    state_input = f"Role: {role}. Task: {summary}. Candidates: {candidate_descs}"
+    state_input = f"Role: {role}. Task: {summary}"
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
     payload = {
@@ -279,10 +268,7 @@ def route_ollama_model_with_tev1(
             "selected_model": {
                 "type": "choice",
                 "instructions": f"Select the best model for the role '{role}'.",
-                "criteria": {
-                    candidate: _describe(candidate)
-                    for candidate in available_candidates
-                },
+                "criteria": {candidate: None for candidate in available_candidates},
             }
         },
     }
@@ -291,8 +277,12 @@ def route_ollama_model_with_tev1(
         timeout = orchestrator.config.get("ollama_router_timeout", 10)
         response = requests.post(url, json=payload, timeout=timeout)
         if response.status_code != 200:
+            detail = getattr(response, "text", "")
+            detail = " ".join(detail.split())[:300] if isinstance(detail, str) else ""
+            detail_text = f" Response: {detail}" if detail else ""
             log_info(
-                f"Ollama /v1/systemone returned status {response.status_code}; falling back to static routes."
+                f"Ollama /v1/systemone returned status {response.status_code}.{detail_text} "
+                "Falling back to available local candidates."
             )
             return None
         data = response.json()

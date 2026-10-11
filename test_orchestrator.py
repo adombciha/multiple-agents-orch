@@ -4958,11 +4958,44 @@ def test_route_ollama_model_with_tev1_selects_candidate(
 
     payload = post_mock.call_args.kwargs["json"]
     assert payload["model"] == "tev1:4b"
-    assert "Refactor parser module" in payload["state"]
+    assert payload["state"] == "Role: developer_middle. Task: Refactor parser module"
     assert payload["questions"]["selected_model"]["criteria"] == {
-        "granite4.2:8b": "installed chat model",
-        "qwen3.5:9b": "installed chat model",
+        "granite4.2:8b": None,
+        "qwen3.5:9b": None,
     }
+
+
+def test_route_ollama_model_logs_bounded_http_error_details(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_installed_ollama_models",
+        Mock(return_value={"tev1:4b", "model-a", "model-b"}),
+    )
+    monkeypatch.setattr(
+        backends.requests,
+        "post",
+        Mock(return_value=Mock(status_code=400, text="bad request " * 100)),
+    )
+    from orchestrator.core import state
+
+    log = Mock()
+    monkeypatch.setattr(state, "log_info", log)
+
+    assert (
+        backends.route_ollama_model_with_tev1(
+            initialized_orchestrator,
+            role="developer_middle",
+            candidates=["model-a", "model-b"],
+        )
+        is None
+    )
+
+    message = log.call_args.args[0]
+    assert "status 400" in message
+    assert "bad request" in message
+    assert len(message) < 500
 
 
 def test_route_ollama_model_with_tev1_fallback_conditions(
