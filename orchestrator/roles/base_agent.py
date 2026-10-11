@@ -75,6 +75,7 @@ def inject_ponytail_prompt(
 
 
 class BaseAgent:
+
     def __init__(self, orchestrator):
         self.orchestrator = orchestrator
 

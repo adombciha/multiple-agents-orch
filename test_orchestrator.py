@@ -225,42 +225,59 @@ def test_write_ai_company_overrides_do_not_mutate_default_config(tmp_path):
 
 def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(monkeypatch):
     monkeypatch.setattr(backends, "_agy_models_cache", (0.0, ()))
-    run = Mock(return_value=Mock(
-        returncode=0,
-        stdout=(
-            "gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)\n"
-            "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
-            "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
-            "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
-            "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n"
-        ),
-    ))
+    run = Mock(
+        return_value=Mock(
+            returncode=0,
+            stdout=(
+                "gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)\n"
+                "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+                "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+                "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+                "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n"
+            ),
+        )
+    )
     monkeypatch.setattr(backends.subprocess, "run", run)
 
-    assert backends.resolve_agy_model("auto:gemini-flash-medium") == "gemini-3.8-flash-medium"
+    assert (
+        backends.resolve_agy_model("auto:gemini-flash-medium")
+        == "gemini-3.8-flash-medium"
+    )
     assert backends.resolve_agy_model("auto:gemini-flash-low") == "gemini-3.8-flash-low"
     assert backends.resolve_agy_model("auto:gemini-pro-low") == "gemini-3.1-pro-low"
-    assert backends.resolve_agy_model("auto:claude-sonnet-medium") == "claude-sonnet-5-5-medium"
+    assert (
+        backends.resolve_agy_model("auto:claude-sonnet-medium")
+        == "claude-sonnet-5-5-medium"
+    )
     assert backends.resolve_agy_model("gemini-3.8-flash-low") == "gemini-3.8-flash-low"
     run.assert_called_once()
 
 
-def test_legacy_config_migrates_removed_backends_but_keeps_manual_agy_model(tmp_path, no_git):
+def test_legacy_config_migrates_removed_backends_but_keeps_manual_agy_model(
+    tmp_path, no_git
+):
     config, _ = write_ai_company(tmp_path)
     config["backends"]["ra"] = "grok"
     config["role_model_backends"]["ra"] = "grok"
     config["role_models"]["ra"] = "grok-4.5"
     config["role_model_routes"]["ra"] = [["grok", "grok-4.5"], ["ollama", "qwen3:8b"]]
     config["role_models"]["sales"] = "claude-sonnet-5-5-medium"
-    (tmp_path / ".ai-company" / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    (tmp_path / ".ai-company" / "config.json").write_text(
+        json.dumps(config), encoding="utf-8"
+    )
 
     app = AgentOrchestrator(tmp_path)
     app.load_config_and_state()
 
     assert app.config["backends"]["ra"] == "agy"
-    assert app.config["role_model_routes"]["ra"][0] == ["agy", "auto:gemini-flash-medium"]
+    assert app.config["role_model_routes"]["ra"][0] == [
+        "agy",
+        "auto:gemini-flash-medium",
+    ]
     assert app.config["role_models"]["sales"] == "claude-sonnet-5-5-medium"
-    assert "grok" not in (tmp_path / ".ai-company" / "config.json").read_text(encoding="utf-8")
+    assert "grok" not in (tmp_path / ".ai-company" / "config.json").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_git):
@@ -396,7 +413,10 @@ def test_init_rejects_corrupt_state_without_clearing_artifacts(
         initialized_orchestrator.init_project()
 
     clear.assert_not_called()
-    assert initialized_orchestrator.request_path.read_text(encoding="utf-8") == "keep request"
+    assert (
+        initialized_orchestrator.request_path.read_text(encoding="utf-8")
+        == "keep request"
+    )
     assert initialized_orchestrator.state_path.read_text(encoding="utf-8") == "{"
 
 
@@ -478,7 +498,11 @@ def test_codex_exec_is_read_only_and_uses_file_block_output(
 
     assert result.startswith("[FILE_START: app.py]")
     assert run.call_args.args[0][:5] == [
-        "codex", "exec", "--sandbox", "read-only", "--skip-git-repo-check"
+        "codex",
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
     ]
     assert "-m" not in run.call_args.args[0]
 
@@ -493,7 +517,12 @@ def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
     backends.call_agy(initialized_orchestrator, "prompt", model="gemini-3.1-pro")
 
     assert run.call_args.args[0][0:6] == [
-        "agy", "--sandbox", "--mode", "plan", "--model", "Gemini 3.1 Pro (Low)"
+        "agy",
+        "--sandbox",
+        "--mode",
+        "plan",
+        "--model",
+        "Gemini 3.1 Pro (Low)",
     ]
 
 
@@ -517,13 +546,19 @@ def test_agy_sends_large_prompt_over_stdin(initialized_orchestrator, monkeypatch
     cmd = run.call_args.args[0]
     assert cmd[cmd.index("--mode") + 1] == "accept-edits"
     assert cmd[-4:] == [
-        "--input-format", "stream-json", "--output-format", "stream-json"
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
     ]
     assert prompt not in cmd
     message = json.loads(run.call_args.kwargs["input"])
     assert message["event"] == "user"
     assert message["message"]["content"].startswith(prompt)
-    assert "Do not edit files directly or use workspace tools" in message["message"]["content"]
+    assert (
+        "Do not edit files directly or use workspace tools"
+        in message["message"]["content"]
+    )
 
 
 def test_agy_uses_plan_mode_outside_developer_implementation(
@@ -1267,7 +1302,8 @@ def test_role_models_select_the_configured_seniority_model(
         == "auto"
     )
     assert (
-        initialized_orchestrator.get_active_model_for_role("ra", "agy") == "auto:gemini-flash-medium"
+        initialized_orchestrator.get_active_model_for_role("ra", "agy")
+        == "auto:gemini-flash-medium"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("sales", "agy")
@@ -1405,12 +1441,19 @@ def test_agy_developer_stops_after_failed_correction(
 
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
-        ["agy", "gemini-3.8-flash-medium"], ["ollama", "model-a"]
+        ["agy", "gemini-3.8-flash-medium"],
+        ["ollama", "model-a"],
     ]
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
-    monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}}))
-    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"]))
-    agy = Mock(return_value="[FILE_EDIT_START: app.py]\n[OLD]\nmissing\n[NEW]\nbad\n[FILE_EDIT_END: app.py]")
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"])
+    )
+    agy = Mock(
+        return_value="[FILE_EDIT_START: app.py]\n[OLD]\nmissing\n[NEW]\nbad\n[FILE_EDIT_END: app.py]"
+    )
     ollama = Mock()
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
@@ -1855,17 +1898,27 @@ def test_incomplete_or_extra_file_response_does_not_write_or_complete(
     initialized_orchestrator, monkeypatch, output
 ):
     initialized_orchestrator.config["use_worktree"] = False
-    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    initialized_orchestrator.state["tasks"] = [{
-        "id": "T-1", "description": "update two files",
-        "target_files": ["one.py", "two.py"], "status": "pending",
-        "rd_level": "senior", "qa_level": "senior",
-    }]
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T-1",
+            "description": "update two files",
+            "target_files": ["one.py", "two.py"],
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
     initialized_orchestrator.state["staffing"] = {
-        "rd": {"senior": 1}, "qa": {"senior": 1},
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
     }
-    monkeypatch.setattr(initialized_orchestrator, "call_agent", Mock(return_value=output))
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent", Mock(return_value=output)
+    )
 
     initialized_orchestrator.step_implementing()
 
@@ -1879,16 +1932,24 @@ def test_existing_multi_file_task_uses_edit_blocks_for_every_target(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.config["use_worktree"] = False
-    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.requirements_path.write_text(
+        "requirements", encoding="utf-8"
+    )
     initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    initialized_orchestrator.state["tasks"] = [{
-        "id": "T2", "description": "update two modules",
-        "target_files": ["one.py", "two.py"],
-        "output_contract": {"format": "file_blocks"}, "status": "pending",
-        "rd_level": "senior", "qa_level": "senior",
-    }]
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "T2",
+            "description": "update two modules",
+            "target_files": ["one.py", "two.py"],
+            "output_contract": {"format": "file_blocks"},
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
     initialized_orchestrator.state["staffing"] = {
-        "rd": {"senior": 1}, "qa": {"senior": 1},
+        "rd": {"senior": 1},
+        "qa": {"senior": 1},
     }
     for name in ("one.py", "two.py"):
         (initialized_orchestrator.workspace / name).write_text(
@@ -1916,6 +1977,47 @@ def test_existing_multi_file_task_uses_edit_blocks_for_every_target(
         == "value = 2\n"
         for name in ("one.py", "two.py")
     )
+
+
+def test_large_multi_file_task_splits_before_prompting_models(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.config["use_worktree"] = False
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    app.plan_path.write_text("plan", encoding="utf-8")
+    app.state["tasks"] = [
+        {
+            "id": "T3",
+            "description": "update both modules",
+            "target_files": ["one.py", "two.py"],
+            "status": "pending",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
+    app.state["staffing"] = {"rd": {"senior": 1}, "qa": {"senior": 1}}
+    (app.workspace / "one.py").write_text(
+        "value = 1\n" + "# padding\n" * 5000, encoding="utf-8"
+    )
+    (app.workspace / "two.py").write_text("value = 1\n", encoding="utf-8")
+    call_agent = Mock(
+        side_effect=[
+            "[FILE_EDIT_START: one.py]\n[OLD]\nvalue = 1\n[NEW]\nvalue = 2\n[FILE_EDIT_END: one.py]",
+            "[FILE_EDIT_START: two.py]\n[OLD]\nvalue = 1\n[NEW]\nvalue = 2\n[FILE_EDIT_END: two.py]",
+        ]
+    )
+    monkeypatch.setattr(app, "call_agent", call_agent)
+
+    app.step_implementing()
+
+    assert [task["id"] for task in app.state["tasks"]] == ["T3-1", "T3-2"]
+    assert all(task["status"] == "completed" for task in app.state["tasks"])
+    assert all(
+        task["output_contract"]["format"] == "file_edits" for task in app.state["tasks"]
+    )
+    assert "[CURRENT_FILE: two.py]" not in call_agent.call_args_list[0].args[1]
+    assert "[CURRENT_FILE: one.py]" not in call_agent.call_args_list[1].args[1]
 
 
 def test_repeated_invalid_edits_pause_with_specific_feedback(
@@ -1950,8 +2052,12 @@ def test_repeated_invalid_edits_pause_with_specific_feedback(
     )
     ollama_call = Mock(return_value=response)
     agy_call = Mock()
-    monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}}))
-    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"]))
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"])
+    )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(app, "call_agent_ollama_fallback", ollama_call)
     monkeypatch.setattr(app, "call_agy", agy_call)
@@ -1965,7 +2071,9 @@ def test_repeated_invalid_edits_pause_with_specific_feedback(
     assert "Missing valid edits for: one.py" in ollama_call.call_args_list[1].args[1]
     assert "one.py (matched 2 times)" in app.state["human_review_details"]
     agy_call.assert_not_called()
-    assert (app.workspace / "one.py").read_text(encoding="utf-8") == "value = 1\nvalue = 1\n"
+    assert (app.workspace / "one.py").read_text(
+        encoding="utf-8"
+    ) == "value = 1\nvalue = 1\n"
     assert (app.workspace / "two.py").read_text(encoding="utf-8") == "value = 1\n"
 
 
@@ -2215,7 +2323,9 @@ def test_relevant_target_files_prefers_files_named_by_test_output(
     initialized_orchestrator.state["tasks"] = [
         {"target_files": ["tests/test_smoke.py", "README.md", "backend/api.py"]}
     ]
-    test_output = 'ERROR collecting tests/test_smoke.py\nFile "tests/test_smoke.py", line 90'
+    test_output = (
+        'ERROR collecting tests/test_smoke.py\nFile "tests/test_smoke.py", line 90'
+    )
     qa_report = "| README.md | PASSED |\n| backend/api.py | PASSED |\n"
 
     assert initialized_orchestrator.relevant_target_files(
@@ -2260,7 +2370,9 @@ def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
     assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
 
 
-def test_invalid_python_edit_reports_parse_error_without_writing(initialized_orchestrator):
+def test_invalid_python_edit_reports_parse_error_without_writing(
+    initialized_orchestrator,
+):
     target = initialized_orchestrator.workspace / "app.py"
     target.write_text("value = 1\n", encoding="utf-8")
     output = (
@@ -2269,9 +2381,12 @@ def test_invalid_python_edit_reports_parse_error_without_writing(initialized_orc
     )
     errors = []
 
-    assert initialized_orchestrator.developer.parse_and_write_files(
-        output, ["app.py"], dry_run=True, validation_errors=errors
-    ) == []
+    assert (
+        initialized_orchestrator.developer.parse_and_write_files(
+            output, ["app.py"], dry_run=True, validation_errors=errors
+        )
+        == []
+    )
     assert "Skipping edit whose result does not parse: app.py" in errors[0]
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
@@ -2440,7 +2555,9 @@ def test_manager_retries_agy_then_ollama_after_token_failure(
 
     assert initialized_orchestrator.call_manager("prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="manager", model="auto")
-    agy.assert_called_once_with("prompt", None, role="manager", model="auto:gemini-flash-medium")
+    agy.assert_called_once_with(
+        "prompt", None, role="manager", model="auto:gemini-flash-medium"
+    )
     ollama.assert_called_once_with("manager", "prompt", None, model="new-manager")
 
 
@@ -2462,7 +2579,9 @@ def test_reviewer_retries_agy_then_ollama_after_token_failure(
 
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="reviewer", model="auto")
-    agy.assert_called_once_with("prompt", None, role="reviewer", model="auto:gemini-flash-medium")
+    agy.assert_called_once_with(
+        "prompt", None, role="reviewer", model="auto:gemini-flash-medium"
+    )
     ollama.assert_called_once_with("reviewer", "prompt", None, model="new-reviewer")
 
 
@@ -2497,8 +2616,7 @@ def test_token_fallback_promotes_manager_only_for_token_errors(
         == "auto:gemini-flash-medium"
     )
     assert (
-        initialized_orchestrator.get_active_model_for_role("manager", "codex")
-        == "auto"
+        initialized_orchestrator.get_active_model_for_role("manager", "codex") == "auto"
     )
     assert (
         initialized_orchestrator.token_fallback_model(
@@ -2508,7 +2626,9 @@ def test_token_fallback_promotes_manager_only_for_token_errors(
     )
 
 
-def test_qa_senior_uses_tev1_selected_installed_model(initialized_orchestrator, monkeypatch):
+def test_qa_senior_uses_tev1_selected_installed_model(
+    initialized_orchestrator, monkeypatch
+):
     monkeypatch.setattr(
         backends,
         "discover_ollama_chat_models",
@@ -2535,7 +2655,9 @@ def test_qa_ollama_falls_back_through_installed_models(
         Mock(return_value={"model-a": {}, "model-b": {}}),
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a", "model-b"])
+        backends,
+        "route_ollama_model_with_tev1",
+        Mock(return_value=["model-a", "model-b"]),
     )
     ollama = Mock(side_effect=[RuntimeError("model unavailable"), "second model"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
@@ -2975,8 +3097,9 @@ def test_developing_plan_covers_non_markdown_requested_file(
     assert "- `verify_alignment.py`" in initialized_orchestrator.plan_path.read_text(
         encoding="utf-8"
     )
-    assert "Run the configured test command" in initialized_orchestrator.plan_path.read_text(
-        encoding="utf-8"
+    assert (
+        "Run the configured test command"
+        in initialized_orchestrator.plan_path.read_text(encoding="utf-8")
     )
 
 
@@ -3386,14 +3509,16 @@ def test_step_testing_reviews_untracked_markdown_without_project_tests(
     target = initialized_orchestrator.workspace / "docs" / "plan.md"
     target.parent.mkdir()
     target.write_text("# Plan\n\nOriginal content\n", encoding="utf-8")
-    initialized_orchestrator.state["tasks"] = [{
-        "id": "DOC-1",
-        "description": "Write a plan",
-        "target_files": ["docs/plan.md"],
-        "status": "completed",
-        "rd_level": "senior",
-        "qa_level": "senior",
-    }]
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "DOC-1",
+            "description": "Write a plan",
+            "target_files": ["docs/plan.md"],
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
     command = Mock()
     qa = Mock(return_value="QA_STATUS: PASSED\nDocument checked")
     monkeypatch.setattr(initialized_orchestrator, "run_command", command)
@@ -3405,20 +3530,25 @@ def test_step_testing_reviews_untracked_markdown_without_project_tests(
     assert "Original content" in qa.call_args.args[1]
     assert "Markdown Target Contents" in qa.call_args.args[1]
     assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
-    assert "Document-scope Markdown review" in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
+    assert (
+        "Document-scope Markdown review"
+        in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
+    )
 
 
 def test_step_testing_missing_markdown_cannot_pass(
     initialized_orchestrator, monkeypatch
 ):
-    initialized_orchestrator.state["tasks"] = [{
-        "id": "DOC-1",
-        "description": "Write a plan",
-        "target_files": ["docs/missing.md"],
-        "status": "completed",
-        "rd_level": "senior",
-        "qa_level": "senior",
-    }]
+    initialized_orchestrator.state["tasks"] = [
+        {
+            "id": "DOC-1",
+            "description": "Write a plan",
+            "target_files": ["docs/missing.md"],
+            "status": "completed",
+            "rd_level": "senior",
+            "qa_level": "senior",
+        }
+    ]
     monkeypatch.setattr(initialized_orchestrator, "run_command", Mock())
     monkeypatch.setattr(
         initialized_orchestrator, "call_agent", Mock(return_value="QA_STATUS: PASSED")
@@ -3427,7 +3557,10 @@ def test_step_testing_missing_markdown_cannot_pass(
     initialized_orchestrator.step_testing()
 
     assert initialized_orchestrator.state["state"] != "REVIEWING_CODE"
-    assert "Missing or invalid Markdown target" in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
+    assert (
+        "Missing or invalid Markdown target"
+        in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
+    )
 
 
 def test_step_testing_captures_qa_test_command_suggestion(
@@ -4108,7 +4241,9 @@ def test_setup_worktree_cleans_up_before_git_worktree_add(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     events = []
     monkeypatch.setattr(
-        initialized_orchestrator, "cleanup_worktree", lambda: events.append("cleanup") or True
+        initialized_orchestrator,
+        "cleanup_worktree",
+        lambda: events.append("cleanup") or True,
     )
     monkeypatch.setattr(
         initialized_orchestrator,
@@ -4172,13 +4307,21 @@ def test_cleanup_worktree_merge_false_removes_listed_worktree_and_deletes_branch
 ):
     initialized_orchestrator.has_git = True
     worktree = initialized_orchestrator.ai_dir / "worktree"
-    run = Mock(return_value=(0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"))
+    run = Mock(
+        return_value=(
+            0,
+            f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n",
+        )
+    )
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     initialized_orchestrator.cleanup_worktree(merge=False)
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
+        call(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=initialized_orchestrator.workspace,
+        ),
         call(
             ["git", "worktree", "remove", str(worktree)],
             cwd=initialized_orchestrator.workspace,
@@ -4194,13 +4337,21 @@ def test_cleanup_worktree_skips_remove_when_worktree_list_has_no_worktree(
     initialized_orchestrator, monkeypatch
 ):
     initialized_orchestrator.has_git = True
-    run = Mock(return_value=(0, "stdout:\nworktree /repo\nbranch refs/heads/master\n\nstderr:\n"))
+    run = Mock(
+        return_value=(
+            0,
+            "stdout:\nworktree /repo\nbranch refs/heads/master\n\nstderr:\n",
+        )
+    )
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     initialized_orchestrator.cleanup_worktree()
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
+        call(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=initialized_orchestrator.workspace,
+        ),
     ]
 
 
@@ -4212,9 +4363,12 @@ def test_cleanup_worktree_preserves_path_owned_by_another_branch(
     worktree.mkdir()
     sentinel = worktree / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
-    run = Mock(return_value=(
-        0, f"stdout:\nworktree {worktree}\nbranch refs/heads/user-branch\n\nstderr:\n"
-    ))
+    run = Mock(
+        return_value=(
+            0,
+            f"stdout:\nworktree {worktree}\nbranch refs/heads/user-branch\n\nstderr:\n",
+        )
+    )
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     assert initialized_orchestrator.cleanup_worktree() is False
@@ -4228,10 +4382,15 @@ def test_cleanup_worktree_preserves_path_owned_by_another_branch(
 def test_cleanup_worktree_stops_if_remove_fails(initialized_orchestrator, monkeypatch):
     initialized_orchestrator.has_git = True
     worktree = initialized_orchestrator.ai_dir / "worktree"
-    run = Mock(side_effect=[
-        (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
-        (1, "dirty worktree"),
-    ])
+    run = Mock(
+        side_effect=[
+            (
+                0,
+                f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n",
+            ),
+            (1, "dirty worktree"),
+        ]
+    )
     monkeypatch.setattr(initialized_orchestrator, "run_command", run)
 
     assert initialized_orchestrator.cleanup_worktree() is False
@@ -4247,7 +4406,9 @@ def test_reset_keeps_state_when_worktree_cleanup_fails(
 ):
     initialized_orchestrator.state["tasks"] = [{"id": "T-1"}]
     before = copy.deepcopy(initialized_orchestrator.state)
-    monkeypatch.setattr(initialized_orchestrator, "cleanup_worktree", Mock(return_value=False))
+    monkeypatch.setattr(
+        initialized_orchestrator, "cleanup_worktree", Mock(return_value=False)
+    )
 
     with pytest.raises(RuntimeError, match="run state was preserved"):
         orchestrator_main.clear_run_state(initialized_orchestrator, "PLANNING")
@@ -4262,7 +4423,10 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     run = Mock(
         side_effect=[
-            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
+            (
+                0,
+                f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n",
+            ),
             (0, ""),
             (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
@@ -4277,7 +4441,10 @@ def test_cleanup_worktree_merge_success_runs_merge_then_cleanup(
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
+        call(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=initialized_orchestrator.workspace,
+        ),
         call(
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
@@ -4307,7 +4474,10 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(
     worktree = initialized_orchestrator.ai_dir / "worktree"
     run = Mock(
         side_effect=[
-            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
+            (
+                0,
+                f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n",
+            ),
             (0, ""),
             (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
@@ -4322,7 +4492,10 @@ def test_cleanup_worktree_merge_failure_stops_before_cleanup(
     initialized_orchestrator.cleanup_worktree(merge=True)
 
     assert run.call_args_list == [
-        call(["git", "worktree", "list", "--porcelain"], cwd=initialized_orchestrator.workspace),
+        call(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=initialized_orchestrator.workspace,
+        ),
         call(
             ["git", "show-ref", "--verify", "--quiet", "refs/heads/ai-feature-branch"],
             cwd=initialized_orchestrator.workspace,
@@ -4350,7 +4523,10 @@ def test_cleanup_worktree_merge_failure_aborts_and_records_conflict(
     merge_output = "stdout:\nCONFLICT (add/add): Merge conflict in docs/litellm-telemetry.md\nstderr:\n"
     run = Mock(
         side_effect=[
-            (0, f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n"),
+            (
+                0,
+                f"stdout:\nworktree {worktree}\nbranch refs/heads/ai-feature-branch\n\nstderr:\n",
+            ),
             (0, ""),
             (0, "stdout:\n M app.py\nstderr:\n"),
             (0, ""),
@@ -4936,7 +5112,9 @@ def test_discover_installed_ollama_models_success_and_cache(
 def test_discover_installed_ollama_models_error_handling(
     initialized_orchestrator, monkeypatch
 ):
-    get_mock = Mock(side_effect=backends.requests.RequestException("connection refused"))
+    get_mock = Mock(
+        side_effect=backends.requests.RequestException("connection refused")
+    )
     monkeypatch.setattr(backends.requests, "get", get_mock)
 
     models = backends.discover_installed_ollama_models(initialized_orchestrator)
@@ -5023,9 +5201,7 @@ def test_discover_ollama_chat_models_refreshes_after_model_changes(
         Mock(
             side_effect=lambda *args, **kwargs: Mock(
                 status_code=200,
-                json=Mock(
-                    return_value={"capabilities": ["completion"], "details": {}}
-                ),
+                json=Mock(return_value={"capabilities": ["completion"], "details": {}}),
             )
         ),
     )
@@ -5059,7 +5235,10 @@ def test_route_ollama_model_with_tev1_selects_candidate(
                         "selected_model": {
                             "choice": "qwen3.5:9b",
                             "confidence": 0.88,
-                            "probabilities": {"granite4.2:8b": 0.12, "qwen3.5:9b": 0.88},
+                            "probabilities": {
+                                "granite4.2:8b": 0.12,
+                                "qwen3.5:9b": 0.88,
+                            },
                         }
                     }
                 }
@@ -5096,13 +5275,26 @@ def test_route_ollama_model_with_tev1_ranks_all_candidates(
     monkeypatch.setattr(
         backends.requests,
         "post",
-        Mock(return_value=Mock(status_code=200, json=Mock(return_value={
-            "answers": {"selected_model": {
-                "choice": "model-b",
-                "confidence": 0.30,
-                "probabilities": {"model-a": 0.20, "model-b": 0.50, "model-c": 0.30},
-            }}
-        }))),
+        Mock(
+            return_value=Mock(
+                status_code=200,
+                json=Mock(
+                    return_value={
+                        "answers": {
+                            "selected_model": {
+                                "choice": "model-b",
+                                "confidence": 0.30,
+                                "probabilities": {
+                                    "model-a": 0.20,
+                                    "model-b": 0.50,
+                                    "model-c": 0.30,
+                                },
+                            }
+                        }
+                    }
+                ),
+            )
+        ),
     )
 
     assert backends.route_ollama_model_with_tev1(
@@ -5162,7 +5354,10 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
                         "selected_model": {
                             "choice": "qwen3.5:9b",
                             "confidence": 0.35,
-                            "probabilities": {"granite4.2:8b": 0.35, "qwen3.5:9b": 0.65},
+                            "probabilities": {
+                                "granite4.2:8b": 0.35,
+                                "qwen3.5:9b": 0.65,
+                            },
                         }
                     }
                 }
@@ -5170,14 +5365,11 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
         )
     )
     monkeypatch.setattr(backends.requests, "post", post_low_conf)
-    assert (
-        backends.route_ollama_model_with_tev1(
-            initialized_orchestrator,
-            role="developer_middle",
-            candidates=["granite4.2:8b", "qwen3.5:9b"],
-        )
-        == ["qwen3.5:9b", "granite4.2:8b"]
-    )
+    assert backends.route_ollama_model_with_tev1(
+        initialized_orchestrator,
+        role="developer_middle",
+        candidates=["granite4.2:8b", "qwen3.5:9b"],
+    ) == ["qwen3.5:9b", "granite4.2:8b"]
 
     # 2. Choice not in available candidates
     post_invalid_choice = Mock(
@@ -5206,9 +5398,7 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
     )
 
     # 3. HTTP 404 / 500 endpoint error
-    post_error = Mock(
-        return_value=Mock(status_code=404, json=Mock(return_value={}))
-    )
+    post_error = Mock(return_value=Mock(status_code=404, json=Mock(return_value={})))
     monkeypatch.setattr(backends.requests, "post", post_error)
     assert (
         backends.route_ollama_model_with_tev1(
@@ -5276,18 +5466,14 @@ def test_role_routes_skip_stale_local_models_when_inventory_is_empty(
     initialized_orchestrator.config["role_model_routes"]["developer_middle"] = [
         ["ollama", "removed-model:latest"]
     ]
-    monkeypatch.setattr(
-        backends, "discover_ollama_chat_models", Mock(return_value={})
-    )
+    monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={}))
     call_ollama = Mock()
     monkeypatch.setattr(
         initialized_orchestrator, "call_agent_ollama_fallback", call_ollama
     )
 
     with pytest.raises(RuntimeError, match="No installed Ollama chat-capable models"):
-        initialized_orchestrator.call_role_model_routes(
-            "developer_middle", "prompt"
-        )
+        initialized_orchestrator.call_role_model_routes("developer_middle", "prompt")
 
     call_ollama.assert_not_called()
 

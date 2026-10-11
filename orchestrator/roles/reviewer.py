@@ -32,6 +32,7 @@ def render_code_review(data: dict) -> str:
 
 
 class ReviewerAgent(BaseAgent):
+
     def step_reviewing_code(self):
         from orchestrator.core.state import (
             log_header,

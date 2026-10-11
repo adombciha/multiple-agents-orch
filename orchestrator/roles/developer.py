@@ -33,9 +33,18 @@ def _parse_error(filepath: str, content: str) -> str | None:
             ast.parse(content)
         elif suffix == ".json":
             json.loads(content)
-    except (SyntaxError, ValueError) as error:
+    except SyntaxError as error:
+        lines = content.splitlines()
+        start = max((error.lineno or 1) - 3, 0)
+        end = min((error.lineno or 1) + 2, len(lines))
+        excerpt = " | ".join(
+            f"{index + 1}: {lines[index]}" for index in range(start, end)
+        )
+        return f"{error}; generated lines: {excerpt[:500]}"
+    except ValueError as error:
         return str(error)
     return None
+
 
 TASK_PLAN_SCHEMA = {
     "type": "object",
@@ -58,6 +67,7 @@ def is_task_plan_response(response: str) -> bool:
 
 
 class DeveloperAgent(BaseAgent):
+
     def _markdown_headings(self, base_dir: Path, filepath: str) -> list[str]:
         path = base_dir / filepath
         if path.suffix.lower() != ".md" or not path.is_file():
@@ -102,7 +112,7 @@ class DeveloperAgent(BaseAgent):
                 "response_must_start_with": "[SECTION_EDIT_START:",
                 "allow_prose": False,
             }
-        if Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file():
+        if (base_dir / filepath).is_file():
             return {
                 "format": "file_edits",
                 "response_must_start_with": "[FILE_EDIT_START:",
@@ -624,9 +634,7 @@ class DeveloperAgent(BaseAgent):
                 reject(f"Skipping empty file content: {filepath_str}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                reject(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
 
             # Strip potential leading/trailing markdown code block wrappers
@@ -648,9 +656,7 @@ class DeveloperAgent(BaseAgent):
             target_path = (base_dir / filepath_str).resolve()
             # Safety check: ensure it is inside base_dir
             if base_dir not in target_path.parents and target_path != base_dir:
-                reject(
-                    f"Skipping file write outside target directory: {filepath_str}"
-                )
+                reject(f"Skipping file write outside target directory: {filepath_str}")
                 continue
             if target_path.suffix.lower() == ".md" and target_path.exists():
                 original = target_path.read_text(encoding="utf-8")
@@ -693,9 +699,7 @@ class DeveloperAgent(BaseAgent):
             old = old.strip("\n")
             new = new.strip("\n")
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                reject(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
 
             base_dir = self.orchestrator.workspace
@@ -744,27 +748,19 @@ class DeveloperAgent(BaseAgent):
             heading = heading.strip()
             content = content.strip("\n")
             if not content.strip():
-                reject(
-                    f"Skipping empty section content: {filepath_str}: {heading}"
-                )
+                reject(f"Skipping empty section content: {filepath_str}: {heading}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                reject(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
             if allowed_heading and heading != allowed_heading:
                 if not heading:
                     heading = allowed_heading
                 else:
-                    reject(
-                        f"Skipping section not declared by task contract: {heading}"
-                    )
+                    reject(f"Skipping section not declared by task contract: {heading}")
                     continue
             if allowed_heading is None:
-                reject(
-                    f"Skipping section block for a file-level task: {filepath_str}"
-                )
+                reject(f"Skipping section block for a file-level task: {filepath_str}")
                 continue
 
             base_dir = self.orchestrator.workspace
@@ -910,25 +906,38 @@ class DeveloperAgent(BaseAgent):
                 )
                 break
         for task in list(tasks):
-            if task.get("status") != "pending" or not str(
-                task.get("id", "")
-            ).startswith("FIX-"):
+            if task.get("status") != "pending":
                 continue
-            target_files = task.get("target_files") or list(
-                dict.fromkeys(
-                    path
-                    for existing_task in tasks
-                    for path in existing_task.get("target_files", [])
+            is_fix = str(task.get("id", "")).startswith("FIX-")
+            target_files = task.get("target_files") or (
+                list(
+                    dict.fromkeys(
+                        path
+                        for existing_task in tasks
+                        for path in existing_task.get("target_files", [])
+                    )
                 )
+                if is_fix
+                else []
             )
             if len(target_files) <= 1:
                 continue
-            task_index = tasks.index(task)
-            task_id = task["id"]
             section_base = self.orchestrator.workspace
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 section_base = worktree
+            if (
+                not is_fix
+                and sum(
+                    (section_base / path).stat().st_size
+                    for path in target_files
+                    if (section_base / path).is_file()
+                )
+                <= 40_000
+            ):
+                continue
+            task_index = tasks.index(task)
+            task_id = task["id"]
             reference_headings = self._reference_headings_for_fix_task(
                 tasks, task, section_base
             )
@@ -961,7 +970,7 @@ class DeveloperAgent(BaseAgent):
             if self.orchestrator.state.get("active_task_id") == task_id:
                 self.orchestrator.state.pop("active_task_id")
             log_info(
-                f"Split multi-file revision {task_id} into {len(split_tasks)} file-scoped tasks."
+                f"Split multi-file task {task_id} into {len(split_tasks)} file-scoped tasks."
             )
             self.orchestrator.save_state()
             with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
@@ -1291,7 +1300,8 @@ class DeveloperAgent(BaseAgent):
                     valid_file_response(dev_output)
                 except ResponseContractError as error:
                     self.retry_task_or_pause(
-                        task, f"Task {task['id']} omitted or invalidated target files: {error}"
+                        task,
+                        f"Task {task['id']} omitted or invalidated target files: {error}",
                     )
                     return
                 written = self.parse_and_write_files(

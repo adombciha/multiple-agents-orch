@@ -16,7 +16,6 @@ from orchestrator.core.state import (
 )
 from orchestrator.core import scoring
 
-
 REFERENCE_BLOCK_START = (
     "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
 )

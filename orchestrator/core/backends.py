@@ -33,19 +33,29 @@ def resolve_agy_model(model: str) -> str:
             raise RuntimeError(f"Cannot list AGY models: {result.stderr.strip()}")
         _agy_models_cache = (
             time.monotonic(),
-            tuple(line.split("\t", 1)[0] for line in result.stdout.splitlines() if "\t" in line),
+            tuple(
+                line.split("\t", 1)[0]
+                for line in result.stdout.splitlines()
+                if "\t" in line
+            ),
         )
 
     family, effort = model.removeprefix("auto:").rsplit("-", 1)
     prefix, _, variant = family.partition("-")
-    pattern = re.compile(
-        rf"^{re.escape(prefix)}-(\d+(?:\.\d+)*)-{re.escape(variant)}-{re.escape(effort)}$"
-    ) if prefix == "gemini" else re.compile(
-        rf"^{re.escape(prefix)}-{re.escape(variant)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+    pattern = (
+        re.compile(
+            rf"^{re.escape(prefix)}-(\d+(?:\.\d+)*)-{re.escape(variant)}-{re.escape(effort)}$"
+        )
+        if prefix == "gemini"
+        else re.compile(
+            rf"^{re.escape(prefix)}-{re.escape(variant)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+        )
     )
-    matches = ((tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
-               for name in _agy_models_cache[1]
-               if (match := pattern.fullmatch(name)))
+    matches = (
+        (tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
+        for name in _agy_models_cache[1]
+        if (match := pattern.fullmatch(name))
+    )
     try:
         return max(matches)[1]
     except ValueError as exc:
@@ -81,7 +91,9 @@ def get_backend(orchestrator, role: str) -> str:
 
 def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | None:
     if backend == "ollama":
-        candidates = sorted(discover_ollama_chat_models(orchestrator, force_refresh=True))
+        candidates = sorted(
+            discover_ollama_chat_models(orchestrator, force_refresh=True)
+        )
         if not candidates:
             return None
         ranked = route_ollama_model_with_tev1(
@@ -138,7 +150,9 @@ def discover_installed_ollama_models(
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/tags"
     try:
-        response = requests.get(url, timeout=orchestrator.config.get("ollama_router_timeout", 5))
+        response = requests.get(
+            url, timeout=orchestrator.config.get("ollama_router_timeout", 5)
+        )
         if response.status_code == 200:
             data = response.json()
             models = {m.get("name") for m in data.get("models", []) if m.get("name")}
@@ -244,15 +258,19 @@ def route_ollama_model_with_tev1(
     router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
 
     if not _ollama_model_matches(router_model, installed_models):
-        log_info(f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back.")
+        log_info(
+            f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back."
+        )
         return None
 
-    available_candidates = list(dict.fromkeys(
-        candidate
-        for candidate in candidates
-        if _ollama_model_matches(candidate, installed_models)
-        and not _ollama_model_matches(candidate, {router_model})
-    ))
+    available_candidates = list(
+        dict.fromkeys(
+            candidate
+            for candidate in candidates
+            if _ollama_model_matches(candidate, installed_models)
+            and not _ollama_model_matches(candidate, {router_model})
+        )
+    )
     if not available_candidates:
         return None
     if len(available_candidates) == 1:
@@ -313,17 +331,23 @@ def route_ollama_model_with_tev1(
             or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=0.01)
             or probabilities[choice] < max(probabilities.values()) - 0.001
         ):
-            log_warning("Tev1 returned an invalid model probability distribution; using static local model order.")
+            log_warning(
+                "Tev1 returned an invalid model probability distribution; using static local model order."
+            )
             return None
 
         ranked = sorted(
-            available_candidates, key=lambda candidate: probabilities[candidate], reverse=True
+            available_candidates,
+            key=lambda candidate: probabilities[candidate],
+            reverse=True,
         )
         scores = ", ".join(
             f"{candidate}={probabilities[candidate]:.3f}" for candidate in ranked
         )
         qualifier = "low confidence; " if confidence < min_conf else ""
-        log_info(f"Tev1 ranked {role} models ({qualifier}confidence {confidence:.2f}): {scores}")
+        log_info(
+            f"Tev1 ranked {role} models ({qualifier}confidence {confidence:.2f}): {scores}"
+        )
         return ranked
     except Exception as exc:
         log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
@@ -872,9 +896,9 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
         if check_vendor_quota(orchestrator, hired_backend) is False:
             mark_backend_quota_exhausted(orchestrator, hired_backend)
             continue
-        orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = (
-            hired_backend
-        )
+        orchestrator.state.setdefault("task_backend_overrides", {})[
+            task_id
+        ] = hired_backend
         orchestrator.save_state()
         log_warning(
             f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight."

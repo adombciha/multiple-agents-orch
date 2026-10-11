@@ -31,6 +31,7 @@ def render_architect_review(data: dict) -> str:
 
 
 class ArchitectAgent(BaseAgent):
+
     def step_reviewing_plan(self):
         from orchestrator.core.state import (
             log_header,

@@ -114,6 +114,7 @@ def render_requirements(data: dict) -> str:
 
 
 class ManagerAgent(BaseAgent):
+
     def step_planning(self):
         from orchestrator.core.state import log_header, log_error, log_success, log_info
 

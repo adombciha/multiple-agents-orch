@@ -55,6 +55,7 @@ def log_header(msg: str):
 
 
 class AgentOrchestrator:
+
     def __init__(self, workspace: Path):
         self.workspace = workspace
 
@@ -205,7 +206,9 @@ class AgentOrchestrator:
             else None
         )
         if not self.cleanup_worktree(merge=False):
-            raise RuntimeError("Could not clear the worktree; run artifacts were preserved.")
+            raise RuntimeError(
+                "Could not clear the worktree; run artifacts were preserved."
+            )
         shutil.rmtree(self.ai_dir, ignore_errors=True)
         if self.has_git:
             self.run_command(["git", "worktree", "prune"], cwd=self.workspace)
@@ -336,7 +339,9 @@ class AgentOrchestrator:
         self.state.setdefault("task_backend_overrides", {})
         for task_id, backend in list(self.state["task_backend_overrides"].items()):
             if backend in {"claude", "grok"}:
-                self.state["task_backend_overrides"][task_id] = self.config["backends"]["developer_senior"]
+                self.state["task_backend_overrides"][task_id] = self.config["backends"][
+                    "developer_senior"
+                ]
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -808,9 +813,7 @@ class AgentOrchestrator:
 
         effective_routes = list(routes)
         if any(backend == "ollama" for backend, _ in routes):
-            chat_models = backends.discover_ollama_chat_models(
-                self, force_refresh=True
-            )
+            chat_models = backends.discover_ollama_chat_models(self, force_refresh=True)
             ollama_candidates = sorted(chat_models)
             if ollama_candidates:
                 ranked_models = None
@@ -838,9 +841,7 @@ class AgentOrchestrator:
                 errors.append(
                     "No installed Ollama chat-capable models were discovered."
                 )
-                effective_routes = [
-                    route for route in routes if route[0] != "ollama"
-                ]
+                effective_routes = [route for route in routes if route[0] != "ollama"]
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
@@ -882,7 +883,9 @@ class AgentOrchestrator:
                         log_warning(
                             f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
                         )
-                        retry_prompt = developer_retry_prompt(response, validation_error)
+                        retry_prompt = developer_retry_prompt(
+                            response, validation_error
+                        )
                         retried_developer_contract = True
                         response = self.call_agent_ollama_fallback(
                             role,
@@ -923,7 +926,9 @@ class AgentOrchestrator:
                     )
                     self.validate_routed_response(role, response, response_schema)
                     validation_error = contract_error(response)
-                    implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith("developer")
+                    implementing = self.state.get(
+                        "state"
+                    ) == "IMPLEMENTING" and role.startswith("developer")
                     if implementing and validation_error:
                         log_warning(
                             f"agy/{model} returned an invalid Developer contract; retrying the same model once."
@@ -1085,7 +1090,9 @@ class AgentOrchestrator:
 
         wt_path = self.ai_dir / "worktree"
         if not self.cleanup_worktree():
-            raise RuntimeError("Git worktree cleanup failed; existing work was preserved.")
+            raise RuntimeError(
+                "Git worktree cleanup failed; existing work was preserved."
+            )
 
         log_info(
             f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'..."
@@ -1146,7 +1153,9 @@ class AgentOrchestrator:
                 if code != 0:
                     log_error(f"Failed to inspect feature worktree: {status}")
                     return False
-                changes = status.partition("stdout:\n")[2].partition("\nstderr:")[0].strip()
+                changes = (
+                    status.partition("stdout:\n")[2].partition("\nstderr:")[0].strip()
+                )
                 if changes:
                     code, output = self.run_command(["git", "add", "."], cwd=wt_path)
                     if code != 0:

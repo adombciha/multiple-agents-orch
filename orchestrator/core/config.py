@@ -217,19 +217,29 @@ def migrate_legacy_config(values: dict) -> dict:
 
     for role, model in migrated.get("role_models", {}).items():
         if model in old_models:
-            migrated["role_models"][role] = DEFAULT_CONFIG["role_models"].get(role, model)
+            migrated["role_models"][role] = DEFAULT_CONFIG["role_models"].get(
+                role, model
+            )
 
     for role, models in migrated.get("role_model_tiers", {}).items():
         migrated["role_model_tiers"][role] = [
-            "auto:gemini-flash-medium" if model.startswith("Gemini") and model in old_models
-            else "auto" if model in old_models else model
+            "auto:gemini-flash-medium"
+            if model.startswith("Gemini") and model in old_models
+            else "auto"
+            if model in old_models
+            else model
             for model in models
         ]
 
     for role, routes in migrated.get("role_model_routes", {}).items():
         routes = [route for route in routes if route[0] not in removed]
         routes = [
-            [backend, DEFAULT_CONFIG["model_tiers"].get(backend, [model])[0] if model in old_models else model]
+            [
+                backend,
+                DEFAULT_CONFIG["model_tiers"].get(backend, [model])[0]
+                if model in old_models
+                else model,
+            ]
             for backend, model in routes
         ]
         preferred = DEFAULT_CONFIG["role_model_routes"].get(role, [None])[0]
@@ -241,12 +251,17 @@ def migrate_legacy_config(values: dict) -> dict:
         migrated.get("model_tiers", {}).pop(backend, None)
     for backend, models in migrated.get("model_tiers", {}).items():
         migrated["model_tiers"][backend] = [
-            "auto:gemini-flash-medium" if model == "Gemini 3.5 Flash (Medium)"
-            else "auto" if model == "gpt-5.6-luna" else model
+            "auto:gemini-flash-medium"
+            if model == "Gemini 3.5 Flash (Medium)"
+            else "auto"
+            if model == "gpt-5.6-luna"
+            else model
             for model in models
         ]
     if "backend_escalation_path" in migrated:
         migrated["backend_escalation_path"] = [
-            backend for backend in migrated["backend_escalation_path"] if backend not in removed
+            backend
+            for backend in migrated["backend_escalation_path"]
+            if backend not in removed
         ]
     return migrated
