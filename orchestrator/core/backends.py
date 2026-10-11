@@ -199,7 +199,12 @@ def route_ollama_model_with_tev1(
             "selected_model": {
                 "type": "choice",
                 "instructions": f"Select the best model for the role '{role}'.",
-                "criteria": available_candidates,
+                "criteria": {
+                    candidate: OLLAMA_MODEL_DESCRIPTIONS.get(
+                        candidate, "general task model"
+                    )
+                    for candidate in available_candidates
+                },
             }
         },
     }

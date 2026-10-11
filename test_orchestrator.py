@@ -4711,10 +4711,10 @@ def test_route_ollama_model_with_tev1_selects_candidate(
     payload = post_mock.call_args.kwargs["json"]
     assert payload["model"] == "tev1:4b"
     assert "Refactor parser module" in payload["state"]
-    assert payload["questions"]["selected_model"]["criteria"] == [
-        "granite4.2:8b",
-        "qwen3.5:9b",
-    ]
+    assert payload["questions"]["selected_model"]["criteria"] == {
+        "granite4.2:8b": backends.OLLAMA_MODEL_DESCRIPTIONS["granite4.2:8b"],
+        "qwen3.5:9b": backends.OLLAMA_MODEL_DESCRIPTIONS["qwen3.5:9b"],
+    }
 
 
 def test_route_ollama_model_with_tev1_fallback_conditions(

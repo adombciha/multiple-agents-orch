@@ -29,13 +29,16 @@
     "selected_model": {
       "type": "choice",
       "instructions": "Select the best model for the role 'developer_middle'.",
-      "criteria": ["granite4.2:8b", "qwen3.5:9b"]
+      "criteria": {
+        "granite4.2:8b": "enterprise software engineering, refactoring, and integration",
+        "qwen3.5:9b": "fast capable coding, UI/UX, and scripting"
+      }
     }
   }
 }
 ```
 
-Task 摘要最多 120 字元；不傳送完整任務 prompt。實際 endpoint 對 `state`、`questions`、`type` 與 `criteria` 的解讀尚未獲服務端文件或真實服務確認。
+Task 摘要最多 120 字元；不傳送完整任務 prompt。`choice.criteria` 必須是選項名稱對應說明文字的物件，符合 [Ollama System One API](https://github.com/ollama/ollama/blob/main/docs/openapi.yaml)；真實 Windows 服務相容性仍待核准後驗證。
 
 ### 回應與錯誤處理
 
@@ -54,7 +57,7 @@ Task 摘要最多 120 字元；不傳送完整任務 prompt。實際 endpoint �
 
 - 只有 `choice` 屬於已安裝候選，且 `confidence >= ollama_router_min_confidence`（預設 `0.5`）時，才接受選擇。
 - 非 200（包含 HTTP 404）、JSON 解碼錯誤、回應欄位缺漏或型別不符等例外，皆應由路由器函式捕捉並回傳未選定。低 confidence 或候選外選擇亦回傳未選定。
-- 既有執行紀錄顯示 `/v1/systemone` 曾回 HTTP 400 並退回靜態路由；未保存錯誤 body，故無法判定是 payload schema 還是服務版本造成，真實相容性仍屬阻塞項。
+- 既有執行紀錄顯示 `/v1/systemone` 曾回 HTTP 400 並退回靜態路由；當時 `choice.criteria` 為陣列，不符官方要求的物件形狀，是高度可信的原因。由於未保存錯誤 body，也未獲准進行 Windows smoke test，真實服務相容性仍未確認。
 - 呼叫端收到未選定時應沿用原設定的靜態路由順序。整合層是否在所有路由器失敗情況均維持此順序，需由提案案例驗證。
 - `/api/chat` 使用 Ollama chat 請求；Tev1 模型會在發送 chat 請求前被拒絕。既有測試驗證該限制。
 - `/api/version` 回應 schema、`/api/tags` 的完整官方 schema，以及 `/api/chat` 的成功／錯誤回應細節，尚未由本次唯讀程式核對確認，列為待查證假設。
@@ -131,4 +134,4 @@ Task 摘要最多 120 字元；不傳送完整任務 prompt。實際 endpoint �
 
 ## 調查限制
 
-本次確認來源為工作樹程式、既有測試、README 說明及既有執行紀錄；沒有查證 Ollama 官方／部署版本文件，也沒有在本次調查中連線 Windows Ollama。因此 endpoint 版本相容性、服務端錯誤 schema 與真實延遲均未確認。此次僅提供提案文件內容，等待 owner 核准後再進行任何服務 smoke test。
+本次確認來源為工作樹程式、既有測試、README 說明、既有執行紀錄及 Ollama 官方 System One API 規格；沒有在本次調查中連線 Windows Ollama。因此部署版本的相容性、服務端錯誤 schema 與真實延遲均未確認，等待 owner 核准後再進行任何服務 smoke test。
