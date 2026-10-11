@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import re
+from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent
 from orchestrator.core import scoring, brain
 
@@ -58,12 +59,40 @@ class QAAgent(BaseAgent):
         )
 
         log_header("5. TESTING & VERIFICATION (QA Agent)")
-        test_cmd = self.orchestrator.config.get("test_command", "git diff --stat")
-        log_info(f"Running test command: {test_cmd}")
-
-        code, output = self.orchestrator.run_command(
-            ["bash", "-c", test_cmd], timeout=600, capture=True
+        target_files = list(dict.fromkeys(
+            path
+            for task in self.orchestrator.state.get("tasks", [])
+            for path in task.get("target_files", [])
+        ))
+        docs_only = bool(target_files) and all(
+            Path(path).suffix.lower() == ".md" for path in target_files
         )
+        document_contents = []
+        if docs_only:
+            test_cmd = "Document-scope Markdown review"
+            errors = []
+            workspace = self.orchestrator.agent_workspace().resolve()
+            for target in target_files:
+                path = (workspace / target).resolve()
+                if not path.is_relative_to(workspace) or not path.is_file():
+                    errors.append(f"Missing or invalid Markdown target: {target}")
+                    continue
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError) as exc:
+                    errors.append(f"Cannot read Markdown target {target}: {exc}")
+                    continue
+                if not content.strip():
+                    errors.append(f"Empty Markdown target: {target}")
+                document_contents.append(f"### {target}\n{content}")
+            code = 1 if errors else 0
+            output = "\n".join(errors) if errors else f"Read {len(target_files)} Markdown target(s)."
+        else:
+            test_cmd = self.orchestrator.config.get("test_command", "git diff --stat")
+            log_info(f"Running test command: {test_cmd}")
+            code, output = self.orchestrator.run_command(
+                ["bash", "-c", test_cmd], timeout=600, capture=True
+            )
 
         with open(self.orchestrator.test_results_path, "w", encoding="utf-8") as f:
             f.write(f"Command: {test_cmd}\nExit Code: {code}\nOutput:\n{output}")
@@ -86,7 +115,9 @@ class QAAgent(BaseAgent):
             self.orchestrator.read_agent_context(), ensure_ascii=False
         )
 
-        if self.orchestrator.has_git:
+        if docs_only:
+            git_diff = "\n\n".join(document_contents)
+        elif self.orchestrator.has_git:
             _, git_diff = self.orchestrator.run_command(
                 ["git", "diff", self.orchestrator.base_branch], capture=True
             )
@@ -117,7 +148,18 @@ class QAAgent(BaseAgent):
             ]
             if not assigned_tasks:
                 continue
-            qa_prompt = f"""Analyze the test execution results for your assigned changes.\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\nGit Diff:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\nMandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command.\n\nAlso mandatory: if any failure or skip is caused by a missing OS-level/environment dependency (an interpreter, package, browser binary, service, etc. that must be installed on the machine, not something a code change can fix), you MUST add a line `DEPENDENCY_INSTALL_NEEDED: <exact shell command(s) a human should run>`. Do not mark this PASSED and do not describe it as something the Developer should work around in code -- a human has to install it."""
+            review_intro = (
+                "Review the complete Markdown targets for accuracy, structure, links, and code fences. No project test command was run."
+                if docs_only
+                else "Analyze the test execution results for your assigned changes."
+            )
+            evidence_label = "Markdown Target Contents" if docs_only else "Git Diff"
+            diagnostic_instruction = (
+                ""
+                if docs_only
+                else "Mandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command."
+            )
+            qa_prompt = f"""{review_intro}\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\n{evidence_label}:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\n{diagnostic_instruction}\n\nAlso mandatory: if any failure or skip is caused by a missing OS-level/environment dependency (an interpreter, package, browser binary, service, etc. that must be installed on the machine, not something a code change can fix), you MUST add a line `DEPENDENCY_INSTALL_NEEDED: <exact shell command(s) a human should run>`. Do not mark this PASSED and do not describe it as something the Developer should work around in code -- a human has to install it."""
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"

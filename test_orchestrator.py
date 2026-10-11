@@ -2219,13 +2219,14 @@ def test_token_fallback_promotes_manager_only_for_token_errors(
     )
 
 
-def test_qa_senior_uses_local_qwen(initialized_orchestrator, monkeypatch):
-    ollama = Mock(return_value="qwen response")
+def test_qa_senior_uses_configured_ollama_model(initialized_orchestrator, monkeypatch):
+    ollama = Mock(return_value="qa response")
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
-    assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qwen response"
+    assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qa response"
     ollama.assert_called_once_with(
-        "prompt", None, role="qa_senior", model="gemma4:latest"
+        "prompt", None, role="qa_senior",
+        model=initialized_orchestrator.config["role_models"]["qa_senior"],
     )
 
 
@@ -3071,6 +3072,56 @@ def test_step_testing_passed_moves_to_reviewing_code(
     initialized_orchestrator.step_testing()
 
     assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
+
+
+def test_step_testing_reviews_untracked_markdown_without_project_tests(
+    initialized_orchestrator, monkeypatch
+):
+    target = initialized_orchestrator.workspace / "docs" / "plan.md"
+    target.parent.mkdir()
+    target.write_text("# Plan\n\nOriginal content\n", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "DOC-1",
+        "description": "Write a plan",
+        "target_files": ["docs/plan.md"],
+        "status": "completed",
+        "rd_level": "senior",
+        "qa_level": "senior",
+    }]
+    command = Mock()
+    qa = Mock(return_value="QA_STATUS: PASSED\nDocument checked")
+    monkeypatch.setattr(initialized_orchestrator, "run_command", command)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", qa)
+
+    initialized_orchestrator.step_testing()
+
+    command.assert_not_called()
+    assert "Original content" in qa.call_args.args[1]
+    assert "Markdown Target Contents" in qa.call_args.args[1]
+    assert initialized_orchestrator.state["state"] == "REVIEWING_CODE"
+    assert "Document-scope Markdown review" in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
+
+
+def test_step_testing_missing_markdown_cannot_pass(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "DOC-1",
+        "description": "Write a plan",
+        "target_files": ["docs/missing.md"],
+        "status": "completed",
+        "rd_level": "senior",
+        "qa_level": "senior",
+    }]
+    monkeypatch.setattr(initialized_orchestrator, "run_command", Mock())
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent", Mock(return_value="QA_STATUS: PASSED")
+    )
+
+    initialized_orchestrator.step_testing()
+
+    assert initialized_orchestrator.state["state"] != "REVIEWING_CODE"
+    assert "Missing or invalid Markdown target" in initialized_orchestrator.test_results_path.read_text(encoding="utf-8")
 
 
 def test_step_testing_captures_qa_test_command_suggestion(
