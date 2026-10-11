@@ -661,14 +661,7 @@ class AgentOrchestrator:
                 "[FILE_END: path/to/file.ext]\n\n"
                 "Any modifications outside this format will be ignored. Write only complete file contents inside the blocks."
             )
-        try:
-            if model is None:
-                return self.call_ollama(
-                    prompt,
-                    system_prompt,
-                    role=role,
-                    **({"image_paths": image_paths} if image_paths else {}),
-                )
+        if model:
             return self.call_ollama(
                 prompt,
                 system_prompt,
@@ -676,16 +669,41 @@ class AgentOrchestrator:
                 model=model,
                 **({"image_paths": image_paths} if image_paths else {}),
             )
-        except Exception:
-            if role.startswith("qa") and model is None:
+
+        from orchestrator.core import backends
+
+        candidates = sorted(
+            backends.discover_ollama_chat_models(self, force_refresh=True)
+        )
+        if not candidates:
+            raise RuntimeError("No installed Ollama chat-capable model is available.")
+        chosen = None
+        if self.config.get("ollama_router_enabled", True):
+            chosen = backends.route_ollama_model_with_tev1(
+                self,
+                role,
+                candidates,
+                self._get_compact_task_summary(role, prompt),
+            )
+        ordered_models = ([chosen] if chosen in candidates else [])
+        ordered_models.extend(
+            candidate for candidate in candidates if candidate not in ordered_models
+        )
+        errors = []
+        for candidate in ordered_models:
+            try:
                 return self.call_ollama(
                     prompt,
                     system_prompt,
                     role=role,
-                    model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:7b"),
+                    model=candidate,
                     **({"image_paths": image_paths} if image_paths else {}),
                 )
-            raise
+            except Exception as error:
+                errors.append(f"{candidate}: {error}")
+        raise RuntimeError(
+            f"All installed Ollama chat-capable models failed for {role}: {'; '.join(errors)}"
+        )
 
     def _call_with_usage(
         self, role, backend, model, prompt, system_prompt, callback, image_paths=None
@@ -765,31 +783,43 @@ class AgentOrchestrator:
             failed_routes = self.state.setdefault("failed_model_routes", [])
 
         effective_routes = list(routes)
-        if self.config.get("ollama_router_enabled", True):
-            ollama_candidates = [
-                m
-                for b, m in routes
-                if b == "ollama" and f"ollama/{m}" not in failed_routes
-            ]
+        if any(backend == "ollama" for backend, _ in routes):
+            chat_models = backends.discover_ollama_chat_models(
+                self, force_refresh=True
+            )
+            ollama_candidates = sorted(chat_models)
             if ollama_candidates:
-                task_summary = self._get_compact_task_summary(role, prompt)
-                chosen_model = backends.route_ollama_model_with_tev1(
-                    self, role, ollama_candidates, task_summary
+                chosen_model = None
+                if self.config.get("ollama_router_enabled", True):
+                    task_summary = self._get_compact_task_summary(role, prompt)
+                    chosen_model = backends.route_ollama_model_with_tev1(
+                        self, role, ollama_candidates, task_summary
+                    )
+                ordered_models = ([chosen_model] if chosen_model in ollama_candidates else [])
+                ordered_models.extend(
+                    model for model in ollama_candidates if model not in ordered_models
                 )
-                if chosen_model and chosen_model in ollama_candidates:
-                    other_ollama = [m for m in ollama_candidates if m != chosen_model]
-                    new_routes = []
-                    ollama_seen = False
-                    for b, m in effective_routes:
-                        if b == "ollama":
-                            if not ollama_seen:
-                                new_routes.append(["ollama", chosen_model])
-                                for om in other_ollama:
-                                    new_routes.append(["ollama", om])
-                                ollama_seen = True
-                        else:
-                            new_routes.append([b, m])
-                    effective_routes = new_routes
+                effective_routes = []
+                ollama_inserted = False
+                for backend, model in routes:
+                    if backend == "ollama":
+                        if not ollama_inserted:
+                            effective_routes.extend(
+                                ["ollama", candidate] for candidate in ordered_models
+                            )
+                            ollama_inserted = True
+                    else:
+                        effective_routes.append([backend, model])
+            else:
+                log_warning(
+                    "No installed Ollama chat-capable models were discovered; skipping local routes."
+                )
+                errors.append(
+                    "No installed Ollama chat-capable models were discovered."
+                )
+                effective_routes = [
+                    route for route in routes if route[0] != "ollama"
+                ]
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"

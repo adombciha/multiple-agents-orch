@@ -577,7 +577,16 @@ def test_run_command_subprocess_exception_returns_error_tuple(
 def test_call_ollama_posts_chat_payload_and_returns_message_content(
     initialized_orchestrator, monkeypatch
 ):
-    initialized_orchestrator.state["model_tier_indices"]["reviewer"] = 1
+    monkeypatch.setattr(
+        backends,
+        "discover_ollama_chat_models",
+        Mock(return_value={"qwen3.8:latest": {}}),
+    )
+    monkeypatch.setattr(
+        backends,
+        "route_ollama_model_with_tev1",
+        Mock(return_value="qwen3.8:latest"),
+    )
     response = Mock()
     response.json.return_value = {"message": {"content": "agent answer"}}
     post = Mock(return_value=response)
@@ -772,12 +781,14 @@ def test_gpt_oss_retries_truncated_json_with_larger_output_limit(
     assert post.call_args_list[1].kwargs["json"]["options"]["num_predict"] == 16384
 
 
-def test_call_ollama_falls_back_to_configured_model(
+def test_call_ollama_uses_dynamically_selected_model(
     initialized_orchestrator, monkeypatch
 ):
-    initialized_orchestrator.config["ollama_model"] = "fallback-model"
+    initialized_orchestrator.config["ollama_model"] = "removed-model"
     monkeypatch.setattr(
-        initialized_orchestrator, "get_active_model_for_role", Mock(return_value=None)
+        initialized_orchestrator,
+        "get_active_model_for_role",
+        Mock(return_value="dynamic-model"),
     )
     response = Mock()
     response.json.return_value = {"message": {"content": "fallback answer"}}
@@ -787,7 +798,22 @@ def test_call_ollama_falls_back_to_configured_model(
     result = initialized_orchestrator.call_ollama("do it")
 
     assert result == "fallback answer"
-    assert post.call_args.kwargs["json"]["model"] == "fallback-model"
+    assert post.call_args.kwargs["json"]["model"] == "dynamic-model"
+
+
+def test_call_ollama_does_not_use_stale_default_without_installed_models(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        initialized_orchestrator, "get_active_model_for_role", Mock(return_value=None)
+    )
+    post = Mock()
+    monkeypatch.setattr(backends.requests, "post", post)
+
+    with pytest.raises(RuntimeError, match="No installed Ollama chat-capable model"):
+        backends.call_ollama(initialized_orchestrator, "prompt")
+
+    post.assert_not_called()
 
 
 def test_configure_ollama_uses_detected_windows_endpoint(
@@ -1117,7 +1143,9 @@ def test_call_ollama_encodes_local_image(
     post = Mock(return_value=response)
     monkeypatch.setattr(orchestrator.requests, "post", post)
 
-    initialized_orchestrator.call_ollama("review", image_paths=[str(image)])
+    initialized_orchestrator.call_ollama(
+        "review", model="test-model", image_paths=[str(image)]
+    )
 
     assert post.call_args.kwargs["json"]["messages"][-1]["images"] == ["aW1hZ2U="]
 
@@ -1132,7 +1160,7 @@ def test_call_ollama_request_exception_raises_runtime_error(
     )
 
     with pytest.raises(RuntimeError, match="Ollama connection failed: down"):
-        initialized_orchestrator.call_ollama("hello")
+        initialized_orchestrator.call_ollama("hello", model="test-model")
 
 
 def test_task_plan_validator_requires_tasks_array():
@@ -1188,18 +1216,25 @@ def test_staffing_is_capped_by_configured_capacity(initialized_orchestrator):
     }
 
 
-def test_role_models_select_the_configured_seniority_model(initialized_orchestrator):
+def test_role_models_select_the_configured_seniority_model(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_ollama_chat_models",
+        Mock(return_value={"dynamic-local": {}}),
+    )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_senior", "codex")
         == "auto"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_middle", "ollama")
-        == "granite4.2:8b"
+        == "dynamic-local"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_junior", "ollama")
-        == "gemma4:latest"
+        == "dynamic-local"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("architect", "codex")
@@ -1214,15 +1249,15 @@ def test_role_models_select_the_configured_seniority_model(initialized_orchestra
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_senior", "ollama")
-        == "deepseek-r1:7b"
+        == "dynamic-local"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_middle", "ollama")
-        == "ornith:9b"
+        == "dynamic-local"
     )
     assert (
         initialized_orchestrator.get_active_model_for_role("qa_junior", "ollama")
-        == "gemma4:latest"
+        == "dynamic-local"
     )
 
 
@@ -1244,10 +1279,19 @@ def test_load_config_migrates_new_role_defaults(tmp_path, no_git):
     assert app.config["ollama_keep_alive"] == 0
 
 
-def test_role_model_is_not_used_for_an_ollama_fallback(initialized_orchestrator):
+def test_role_model_is_not_used_for_an_ollama_fallback(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+    )
+
     assert (
         initialized_orchestrator.get_active_model_for_role("manager", "ollama")
-        == "gemma4:latest"
+        == "new-model"
     )
 
 
@@ -1273,6 +1317,12 @@ def test_invalid_architect_status_falls_back_to_next_route(
         ["agy", "gemini-3.8-flash-medium"],
         ["ollama", "qwen3:8b"],
     ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+    )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(initialized_orchestrator, "call_agy", Mock(return_value="..."))
     monkeypatch.setattr(
@@ -1295,6 +1345,12 @@ def test_output_contract_failure_falls_back_to_next_route(
         ["agy", "gemini-3.8-flash-medium"],
         ["ollama", "qwen3:8b"],
     ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+    )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(
         initialized_orchestrator,
@@ -1324,6 +1380,12 @@ def test_ollama_developer_retries_invalid_contract_once(
     initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
         ["ollama", "gemma4:latest"]
     ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+    )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     call = Mock(
         side_effect=["I changed it.", "[FILE_START: app.py]\nok\n[FILE_END: app.py]"]
@@ -2247,6 +2309,12 @@ def test_manager_retries_agy_then_ollama_after_token_failure(
     agy = Mock(side_effect=RuntimeError("maximum context length"))
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-manager": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-manager")
+    )
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
@@ -2254,7 +2322,7 @@ def test_manager_retries_agy_then_ollama_after_token_failure(
     assert initialized_orchestrator.call_manager("prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="manager", model="auto")
     agy.assert_called_once_with("prompt", None, role="manager", model="auto:gemini-flash-medium")
-    ollama.assert_called_once_with("manager", "prompt", None, model="qwen3.8:latest")
+    ollama.assert_called_once_with("manager", "prompt", None, model="new-manager")
 
 
 def test_reviewer_retries_agy_then_ollama_after_token_failure(
@@ -2263,6 +2331,12 @@ def test_reviewer_retries_agy_then_ollama_after_token_failure(
     agy = Mock(side_effect=RuntimeError("maximum context length"))
     codex = Mock(side_effect=RuntimeError("maximum context length"))
     ollama = Mock(return_value="fallback")
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-reviewer": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="new-reviewer")
+    )
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
@@ -2270,7 +2344,7 @@ def test_reviewer_retries_agy_then_ollama_after_token_failure(
     assert initialized_orchestrator.call_agent("reviewer", "prompt") == "fallback"
     codex.assert_called_once_with("prompt", None, role="reviewer", model="auto")
     agy.assert_called_once_with("prompt", None, role="reviewer", model="auto:gemini-flash-medium")
-    ollama.assert_called_once_with("reviewer", "prompt", None, model="gemma4:latest")
+    ollama.assert_called_once_with("reviewer", "prompt", None, model="new-reviewer")
 
 
 def test_allocate_workers_persists_round_robin_assignments(initialized_orchestrator):
@@ -2315,28 +2389,45 @@ def test_token_fallback_promotes_manager_only_for_token_errors(
     )
 
 
-def test_qa_senior_uses_configured_ollama_model(initialized_orchestrator, monkeypatch):
+def test_qa_senior_uses_tev1_selected_installed_model(initialized_orchestrator, monkeypatch):
+    monkeypatch.setattr(
+        backends,
+        "discover_ollama_chat_models",
+        Mock(return_value={"new-qa-model": {}}),
+    )
+    select = Mock(return_value="new-qa-model")
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", select)
     ollama = Mock(return_value="qa response")
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
     assert initialized_orchestrator.call_agent("qa_senior", "prompt") == "qa response"
     ollama.assert_called_once_with(
-        "prompt", None, role="qa_senior",
-        model=initialized_orchestrator.config["role_models"]["qa_senior"],
+        "prompt", None, role="qa_senior", model="new-qa-model"
     )
+    select.assert_called_once()
 
 
-def test_qa_ollama_falls_back_to_gemma(initialized_orchestrator, monkeypatch):
-    ollama = Mock(side_effect=[RuntimeError("model unavailable"), "gemma fallback"])
+def test_qa_ollama_falls_back_through_installed_models(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_ollama_chat_models",
+        Mock(return_value={"model-a": {}, "model-b": {}}),
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value="model-a")
+    )
+    ollama = Mock(side_effect=[RuntimeError("model unavailable"), "second model"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
     assert (
         initialized_orchestrator.call_agent_ollama_fallback("qa_junior", "prompt")
-        == "gemma fallback"
+        == "second model"
     )
     assert ollama.call_args_list == [
-        call("prompt", None, role="qa_junior"),
-        call("prompt", None, role="qa_junior", model="gemma4:latest"),
+        call("prompt", None, role="qa_junior", model="model-a"),
+        call("prompt", None, role="qa_junior", model="model-b"),
     ]
 
 
@@ -4733,6 +4824,104 @@ def test_discover_installed_ollama_models_error_handling(
     assert models == set()
 
 
+def test_discover_ollama_chat_models_tracks_installed_models_and_excludes_router(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends.requests,
+        "get",
+        Mock(
+            return_value=Mock(
+                status_code=200,
+                json=Mock(
+                    return_value={
+                        "models": [
+                            {"name": "tev1:4b"},
+                            {"name": "embeddinggemma:latest"},
+                            {"name": "new-coder:latest"},
+                        ]
+                    }
+                ),
+            )
+        ),
+    )
+    shown = []
+
+    def show_model(url, json, timeout):
+        shown.append(json["model"])
+        capabilities = (
+            ["embedding"]
+            if json["model"].startswith("embedding")
+            else ["completion", "tools"]
+        )
+        return Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "capabilities": capabilities,
+                    "details": {"family": "test", "parameter_size": "7B"},
+                    "model_info": {"test.context_length": 32768},
+                }
+            ),
+        )
+
+    monkeypatch.setattr(backends.requests, "post", show_model)
+
+    models = backends.discover_ollama_chat_models(
+        initialized_orchestrator, force_refresh=True
+    )
+
+    assert list(models) == ["new-coder:latest"]
+    assert models["new-coder:latest"] == {
+        "family": "test",
+        "parameter_size": "7B",
+        "context_length": 32768,
+        "capabilities": ["completion", "tools"],
+    }
+    assert shown == ["embeddinggemma:latest", "new-coder:latest"]
+
+
+def test_discover_ollama_chat_models_refreshes_after_model_changes(
+    initialized_orchestrator, monkeypatch
+):
+    installed_lists = [
+        {"models": [{"name": "tev1:4b"}, {"name": "old-model"}]},
+        {"models": [{"name": "tev1:4b"}, {"name": "new-model"}]},
+    ]
+    monkeypatch.setattr(
+        backends.requests,
+        "get",
+        Mock(
+            side_effect=[
+                Mock(status_code=200, json=Mock(return_value=models))
+                for models in installed_lists
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        backends.requests,
+        "post",
+        Mock(
+            side_effect=lambda *args, **kwargs: Mock(
+                status_code=200,
+                json=Mock(
+                    return_value={"capabilities": ["completion"], "details": {}}
+                ),
+            )
+        ),
+    )
+
+    first = backends.discover_ollama_chat_models(
+        initialized_orchestrator, force_refresh=True
+    )
+    second = backends.discover_ollama_chat_models(
+        initialized_orchestrator, force_refresh=True
+    )
+
+    assert list(first) == ["old-model"]
+    assert list(second) == ["new-model"]
+
+
 def test_route_ollama_model_with_tev1_selects_candidate(
     initialized_orchestrator, monkeypatch
 ):
@@ -4771,8 +4960,8 @@ def test_route_ollama_model_with_tev1_selects_candidate(
     assert payload["model"] == "tev1:4b"
     assert "Refactor parser module" in payload["state"]
     assert payload["questions"]["selected_model"]["criteria"] == {
-        "granite4.2:8b": backends.OLLAMA_MODEL_DESCRIPTIONS["granite4.2:8b"],
-        "qwen3.5:9b": backends.OLLAMA_MODEL_DESCRIPTIONS["qwen3.5:9b"],
+        "granite4.2:8b": "installed chat model",
+        "qwen3.5:9b": "installed chat model",
     }
 
 
@@ -4871,10 +5060,15 @@ def test_call_role_model_routes_prioritizes_tev1_decision(
         ["ollama", "llama3.1:8b"],
     ]
 
+    candidates = {"llama3.1:8b": {}, "new-coder:latest": {}}
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value=candidates)
+    )
+    route_decision = Mock(return_value="llama3.1:8b")
     monkeypatch.setattr(
         backends,
         "route_ollama_model_with_tev1",
-        Mock(return_value="llama3.1:8b"),
+        route_decision,
     )
 
     called_models = []
@@ -4894,3 +5088,31 @@ def test_call_role_model_routes_prioritizes_tev1_decision(
     )
     assert res == "response from llama3.1:8b"
     assert called_models[0] == "llama3.1:8b"
+    assert route_decision.call_args.args[2] == sorted(candidates)
+
+
+def test_role_routes_skip_stale_local_models_when_inventory_is_empty(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.config["role_model_routes"]["developer_middle"] = [
+        ["ollama", "removed-model:latest"]
+    ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={})
+    )
+    call_ollama = Mock()
+    monkeypatch.setattr(
+        initialized_orchestrator, "call_agent_ollama_fallback", call_ollama
+    )
+
+    with pytest.raises(RuntimeError, match="No installed Ollama chat-capable models"):
+        initialized_orchestrator.call_role_model_routes(
+            "developer_middle", "prompt"
+        )
+
+    call_ollama.assert_not_called()
+
+
+def test_default_role_routes_use_dynamic_ollama_slots(initialized_orchestrator):
+    for routes in initialized_orchestrator.config["role_model_routes"].values():
+        assert all(model == "auto" for backend, model in routes if backend == "ollama")

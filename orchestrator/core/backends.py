@@ -79,6 +79,15 @@ def get_backend(orchestrator, role: str) -> str:
 
 
 def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | None:
+    if backend == "ollama":
+        candidates = sorted(discover_ollama_chat_models(orchestrator, force_refresh=True))
+        if not candidates:
+            return None
+        chosen = route_ollama_model_with_tev1(
+            orchestrator, role, candidates, f"Execution for role {role}"
+        )
+        return chosen if chosen in candidates else candidates[0]
+
     expected_backend = orchestrator.config.get("role_model_backends", {}).get(role)
     if backend == expected_backend:
         role_tiers = orchestrator.config.get("role_model_tiers", {}).get(role, [])
@@ -103,29 +112,27 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
     return tiers[-1]
 
 
-OLLAMA_MODEL_DESCRIPTIONS = {
-    "gpt-oss:20b": "advanced reasoning and complex code implementation",
-    "deepseek-r1:7b": "deep reasoning, mathematical logic, and verification",
-    "granite4.2:8b": "enterprise software engineering, refactoring, and integration",
-    "qwen3.8:latest": "general programming, system devops, and complex logic",
-    "qwen3.5:9b": "fast capable coding, UI/UX, and scripting",
-    "llama3.1:8b": "general purpose language understanding and synthesis",
-    "gemma4:latest": "efficient coding, QA testing, and review",
-    "ornith-1.5:9b": "rigorous QA, test execution, and verification",
-    "ornith:9b": "automated test evaluation and verification",
-    "phi4-mini:latest": "lightweight junior coding and unit tests",
-    "nemotron-3-nano:4b": "fast lightweight junior coding",
-    "lfm2.5:latest": "documentation, changelogs, and assistant tasks",
-    "venkataparswanadh/muse-glimmer:iq2_m": "visual design and UI styling",
-}
+def _ollama_model_matches(candidate: str, installed: set[str]) -> bool:
+    if candidate in installed:
+        return True
+    for model in installed:
+        if model.startswith(f"{candidate}:") or candidate.startswith(f"{model}:"):
+            return True
+        if candidate.endswith(":latest") and model == candidate[:-7]:
+            return True
+        if model.endswith(":latest") and candidate == model[:-7]:
+            return True
+    return False
 
 
-def discover_installed_ollama_models(orchestrator) -> set[str]:
+def discover_installed_ollama_models(
+    orchestrator, force_refresh: bool = False
+) -> set[str]:
     """Discover installed models from Ollama /api/tags endpoint without pulling or deleting."""
     from orchestrator.core.state import log_info
 
     cached = getattr(orchestrator, "_installed_ollama_models_cache", None)
-    if cached and time.monotonic() - cached[0] < 60:
+    if cached and not force_refresh and time.monotonic() - cached[0] < 60:
         return cached[1]
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/tags"
@@ -139,9 +146,77 @@ def discover_installed_ollama_models(orchestrator) -> set[str]:
     except Exception as exc:
         log_info(f"Could not discover Ollama installed models at {url}: {exc}")
 
-    if cached:
+    if cached and not force_refresh:
         return cached[1]
     return set()
+
+
+def discover_ollama_chat_models(
+    orchestrator, force_refresh: bool = False
+) -> dict[str, dict[str, object]]:
+    """Return installed models that Ollama reports as supporting completion."""
+    from orchestrator.core.state import log_info
+
+    installed = discover_installed_ollama_models(orchestrator, force_refresh)
+    if not installed:
+        return {}
+
+    cached = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    if (
+        cached
+        and cached[1] == frozenset(installed)
+        and time.monotonic() - cached[0] < 60
+    ):
+        return cached[2]
+
+    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/show"
+    chat_models = {}
+    for model in sorted(installed):
+        if _ollama_model_matches(router_model, {model}):
+            continue
+        try:
+            response = requests.post(
+                url,
+                json={"model": model},
+                timeout=orchestrator.config.get("ollama_router_timeout", 5),
+            )
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            capabilities = data.get("capabilities", [])
+            if "completion" not in capabilities:
+                continue
+            details = data.get("details", {})
+            model_info = data.get("model_info", {})
+            context_length = next(
+                (
+                    value
+                    for key, value in model_info.items()
+                    if key.endswith(".context_length")
+                ),
+                None,
+            )
+            chat_models[model] = {
+                key: value
+                for key, value in {
+                    "family": details.get("family"),
+                    "parameter_size": details.get("parameter_size"),
+                    "quantization_level": details.get("quantization_level"),
+                    "context_length": context_length,
+                    "capabilities": sorted(capabilities),
+                }.items()
+                if value is not None
+            }
+        except Exception as exc:
+            log_info(f"Could not inspect Ollama model '{model}': {exc}")
+
+    orchestrator._ollama_chat_models_cache = (
+        time.monotonic(),
+        frozenset(installed),
+        chat_models,
+    )
+    return chat_models
 
 
 def route_ollama_model_with_tev1(
@@ -156,38 +231,43 @@ def route_ollama_model_with_tev1(
     if not orchestrator.config.get("ollama_router_enabled", True):
         return None
 
-    installed_models = discover_installed_ollama_models(orchestrator)
+    chat_model_cache = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    installed_models = (
+        set(chat_model_cache[1])
+        if chat_model_cache
+        else discover_installed_ollama_models(orchestrator)
+    )
     if not installed_models:
         return None
 
     router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
 
-    def _matches(candidate: str, installed: set[str]) -> bool:
-        if candidate in installed:
-            return True
-        for m in installed:
-            if m == candidate or m.startswith(f"{candidate}:") or candidate.startswith(f"{m}:"):
-                return True
-            if candidate.endswith(":latest") and m == candidate[:-7]:
-                return True
-            if m.endswith(":latest") and candidate == m[:-7]:
-                return True
-        return False
-
-    if not _matches(router_model, installed_models):
+    if not _ollama_model_matches(router_model, installed_models):
         log_info(f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back.")
         return None
 
-    available_candidates = [c for c in candidates if _matches(c, installed_models)]
+    available_candidates = [
+        candidate
+        for candidate in candidates
+        if _ollama_model_matches(candidate, installed_models)
+        and not _ollama_model_matches(candidate, {router_model})
+    ]
     if not available_candidates:
         return None
     if len(available_candidates) == 1:
         return available_candidates[0]
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
+    model_metadata = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    metadata = model_metadata[2] if model_metadata else {}
+
+    def _describe(candidate: str) -> str:
+        facts = metadata.get(candidate, {})
+        description = ", ".join(f"{key}={value}" for key, value in facts.items())
+        return description or "installed chat model"
+
     candidate_descs = "; ".join(
-        f"{c}: {OLLAMA_MODEL_DESCRIPTIONS.get(c, 'general task model')}"
-        for c in available_candidates
+        f"{candidate}: {_describe(candidate)}" for candidate in available_candidates
     )
     state_input = f"Role: {role}. Task: {summary}. Candidates: {candidate_descs}"
 
@@ -200,9 +280,7 @@ def route_ollama_model_with_tev1(
                 "type": "choice",
                 "instructions": f"Select the best model for the role '{role}'.",
                 "criteria": {
-                    candidate: OLLAMA_MODEL_DESCRIPTIONS.get(
-                        candidate, "general task model"
-                    )
+                    candidate: _describe(candidate)
                     for candidate in available_candidates
                 },
             }
@@ -253,11 +331,9 @@ def call_ollama(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    model = (
-        model
-        or orchestrator.get_active_model_for_role(role, "ollama")
-        or orchestrator.config.get("ollama_model", "gemma2:2b")
-    )
+    model = model or orchestrator.get_active_model_for_role(role, "ollama")
+    if not model:
+        raise RuntimeError("No installed Ollama chat-capable model is available.")
     if "tev1" in model.lower():
         raise RuntimeError(
             f"Model '{model}' is restricted to decision routing via /v1/systemone and cannot be used as task executor."
