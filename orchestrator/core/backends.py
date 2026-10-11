@@ -287,7 +287,7 @@ def call_ollama(
         response = requests.post(url, json=payload, timeout=timeout)
         if payload.get("think") and response.status_code == 400:
             log_info(
-                f"Ollama model {model} does not accept think={think}; retrying without thinking."
+                f"Ollama returned HTTP 400 with think={think} for {model}; retrying without thinking."
             )
             no_think_models.add(model)
             orchestrator._ollama_no_think_models = no_think_models
@@ -297,9 +297,13 @@ def call_ollama(
         response.raise_for_status()
         return response.json()["message"]["content"]
     except requests.exceptions.RequestException as e:
+        error_response = getattr(e, "response", None)
+        detail = ""
+        if error_response is not None and error_response.status_code == 400:
+            detail = f": {error_response.text.strip()[:500]}"
         log_error(f"Failed to communicate with Ollama at {url}.")
-        log_error(f"Error detail: {e}")
-        raise RuntimeError(f"Ollama connection failed: {e}")
+        log_error(f"Error detail: {e}{detail}")
+        raise RuntimeError(f"Ollama connection failed: {e}{detail}") from e
 
 
 def call_codex(

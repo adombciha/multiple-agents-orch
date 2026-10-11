@@ -1071,6 +1071,18 @@ class DeveloperAgent(BaseAgent):
                 }
                 if task.get("section_heading"):
                     machine_contract["section_heading"] = task["section_heading"]
+            if (
+                not use_section_blocks
+                and len(target_files) > 1
+                and task.get("output_contract", {}).get("format") == "file_blocks"
+                and all((base_dir / filepath).is_file() for filepath in target_files)
+            ):
+                task["output_contract"] = {
+                    "format": "file_edits",
+                    "response_must_start_with": "[FILE_EDIT_START:",
+                    "allow_prose": False,
+                }
+                machine_contract["output_contract"] = task["output_contract"]
             use_file_edits = (
                 task.get("output_contract", {}).get("format") == "file_edits"
             )
@@ -1167,14 +1179,17 @@ class DeveloperAgent(BaseAgent):
                         "other files, analysis, Markdown fences, or explanations."
                     )
                 elif use_file_edits:
-                    filepath = target_files[0]
                     prompt += (
-                        "Return only exact file edit blocks for the declared target file. "
+                        "Return exact file edit blocks for every declared target file. "
                         "Put the complete existing text to replace in [OLD] and the complete replacement text in [NEW]. "
                         "[OLD] must be copied verbatim from the current file contents above and must appear there exactly once; "
-                        "repeat the whole block once per independent change, and leave every other part of the file untouched. "
+                        "include at least one block per target file, repeat the block for independent changes, "
+                        "and leave every other part of each file untouched. "
                         "Do not return the complete file, other files, analysis, Markdown fences, or explanations.\n"
-                        f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
+                        + "\n".join(
+                            f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
+                            for filepath in target_files
+                        )
                     )
                 else:
                     prompt += (
@@ -1217,6 +1232,8 @@ class DeveloperAgent(BaseAgent):
             if backend in ["ollama", "agy", "codex"]:
                 if use_section_blocks:
                     system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."
+                elif use_file_edits:
+                    system_prompt += " Respond only with [FILE_EDIT_START: path], [OLD], [NEW], and [FILE_EDIT_END: path] blocks; never provide prose."
                 else:
                     system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
             self.orchestrator.state["last_developer_role"] = agent_role

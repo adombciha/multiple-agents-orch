@@ -622,6 +622,22 @@ def test_call_ollama_retries_without_thinking_when_model_rejects_it(
     assert "plain-model" in initialized_orchestrator._ollama_no_think_models
 
 
+def test_call_ollama_reports_400_response_after_retry(
+    initialized_orchestrator, monkeypatch
+):
+    rejected = Mock(status_code=400, text='{"error":"prompt too long"}')
+    rejected.raise_for_status.side_effect = backends.requests.HTTPError(
+        "400 Client Error", response=rejected
+    )
+    post = Mock(return_value=rejected)
+    monkeypatch.setattr(backends.requests, "post", post)
+
+    with pytest.raises(RuntimeError, match="prompt too long"):
+        initialized_orchestrator.call_ollama("do it", model="granite4.2:8b")
+
+    assert post.call_count == 2
+
+
 def test_gpt_oss_developer_uses_json_files_and_returns_file_blocks(
     initialized_orchestrator, monkeypatch
 ):
@@ -1743,6 +1759,49 @@ def test_incomplete_or_extra_file_response_does_not_write_or_complete(
     assert not (initialized_orchestrator.workspace / "one.py").exists()
     assert not (initialized_orchestrator.workspace / "two.py").exists()
     assert not (initialized_orchestrator.workspace / "extra.py").exists()
+
+
+def test_existing_multi_file_task_uses_edit_blocks_for_every_target(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.config["use_worktree"] = False
+    initialized_orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    initialized_orchestrator.plan_path.write_text("plan", encoding="utf-8")
+    initialized_orchestrator.state["tasks"] = [{
+        "id": "T2", "description": "update two modules",
+        "target_files": ["one.py", "two.py"],
+        "output_contract": {"format": "file_blocks"}, "status": "pending",
+        "rd_level": "senior", "qa_level": "senior",
+    }]
+    initialized_orchestrator.state["staffing"] = {
+        "rd": {"senior": 1}, "qa": {"senior": 1},
+    }
+    for name in ("one.py", "two.py"):
+        (initialized_orchestrator.workspace / name).write_text(
+            "value = 1\n", encoding="utf-8"
+        )
+    response = "".join(
+        f"[FILE_EDIT_START: {name}]\n[OLD]\nvalue = 1\n[NEW]\nvalue = 2\n[FILE_EDIT_END: {name}]\n"
+        for name in ("one.py", "two.py")
+    )
+    call_agent = Mock(return_value=response)
+    monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
+
+    initialized_orchestrator.step_implementing()
+
+    task = initialized_orchestrator.state["tasks"][0]
+    assert task["output_contract"]["format"] == "file_edits"
+    assert task["status"] == "completed"
+    prompt, system_prompt = call_agent.call_args.args[1:3]
+    assert all(f"[FILE_EDIT_START: {name}]" in prompt for name in ("one.py", "two.py"))
+    assert '"format": "file_edits"' in prompt
+    assert "[FILE_EDIT_START:" in system_prompt
+    assert "[FILE_START:" not in system_prompt
+    assert all(
+        (initialized_orchestrator.workspace / name).read_text(encoding="utf-8")
+        == "value = 2\n"
+        for name in ("one.py", "two.py")
+    )
 
 
 def test_implementing_skips_read_only_inventory_tasks(
