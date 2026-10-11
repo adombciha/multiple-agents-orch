@@ -898,7 +898,14 @@ class AgentOrchestrator:
                         )
                     )
                     validation_error = contract_error(response)
-                    if implementing and (not has_blocks or validation_error):
+                    retryable_contract = not validation_error or (
+                        "outside the task contract" not in validation_error
+                    )
+                    if (
+                        implementing
+                        and (not has_blocks or validation_error)
+                        and retryable_contract
+                    ):
                         if not has_blocks:
                             validation_error = (
                                 f"{validation_error}; " if validation_error else ""
@@ -952,7 +959,10 @@ class AgentOrchestrator:
                     implementing = self.state.get(
                         "state"
                     ) == "IMPLEMENTING" and role.startswith("developer")
-                    if implementing and validation_error:
+                    retryable_contract = "outside the task contract" not in (
+                        validation_error or ""
+                    )
+                    if implementing and validation_error and retryable_contract:
                         reason = validation_error.split("generated lines:", 1)[0]
                         reason = reason.replace("\n", " ")[:300]
                         log_warning(

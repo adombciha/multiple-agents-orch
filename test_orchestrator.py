@@ -1782,6 +1782,37 @@ def test_ollama_developer_retries_invalid_contract_once(
     assert "I changed it." in call.call_args_list[1].args[1]
 
 
+def test_ollama_developer_does_not_retry_out_of_scope_contract(
+    initialized_orchestrator, monkeypatch
+):
+    from orchestrator.core.state import ResponseContractError
+
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_junior"] = [
+        ["ollama", "gemma4:latest"]
+    ]
+    monkeypatch.setattr(
+        backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
+    )
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
+    )
+    monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
+    call = Mock(return_value="[FILE_START: other.py]\nok\n[FILE_END: other.py]")
+    monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", call)
+
+    def reject(_response):
+        raise ResponseContractError(
+            "Rejecting response with files outside the task contract."
+        )
+
+    with pytest.raises(RuntimeError, match="outside the task contract"):
+        initialized_orchestrator.call_agent(
+            "developer_junior", "prompt", response_validator=reject
+        )
+    assert call.call_count == 1
+
+
 def test_implementing_route_failures_are_scoped_to_active_task(
     initialized_orchestrator, monkeypatch
 ):
