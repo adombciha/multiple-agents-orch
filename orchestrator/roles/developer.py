@@ -506,7 +506,17 @@ class DeveloperAgent(BaseAgent):
             plan += "\n## Implementation Steps\n" + "".join(
                 f"- {task['description']}\n" for task in tasks
             )
-            plan += "\n## Verification\n- Run the configured test command.\n- Run `git diff --check`.\n"
+            markdown_only = all(
+                Path(path).suffix.lower() == ".md"
+                for task in tasks
+                for path in task["target_files"]
+            )
+            verification = (
+                "- Check Markdown structure, links, and code fences in the changed documentation.\n"
+                if markdown_only
+                else "- Run the configured test command.\n"
+            )
+            plan += f"\n## Verification\n{verification}- Run `git diff --check`.\n"
             self.orchestrator.plan_path.write_text(plan, encoding="utf-8")
             log_success(
                 f"Implementation plan generated and saved to {self.orchestrator.plan_path}"

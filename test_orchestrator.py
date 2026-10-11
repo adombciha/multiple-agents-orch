@@ -2484,6 +2484,10 @@ def test_developing_plan_uses_whole_file_task_for_new_markdown(
     task = initialized_orchestrator.state["tasks"][0]
     assert "section_heading" not in task
     assert task["output_contract"]["format"] == "file_blocks"
+    plan = initialized_orchestrator.plan_path.read_text(encoding="utf-8")
+    assert "Check Markdown structure, links, and code fences" in plan
+    assert "Run the configured test command" not in plan
+    assert "Run `git diff --check`" in plan
 
 
 def test_developing_plan_uses_whole_file_tasks_for_readme_language_swap(
@@ -2662,6 +2666,9 @@ def test_developing_plan_covers_non_markdown_requested_file(
         "verify_alignment.py",
     }
     assert "- `verify_alignment.py`" in initialized_orchestrator.plan_path.read_text(
+        encoding="utf-8"
+    )
+    assert "Run the configured test command" in initialized_orchestrator.plan_path.read_text(
         encoding="utf-8"
     )
 
