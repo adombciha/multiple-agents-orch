@@ -51,13 +51,13 @@ Codex の `auto` は CLI の推奨モデルを使用します。AGY の `auto:ge
 agy models
 ```
 
-### ローカル Ollama の動的モデルルーティング
+### 動的モデルルーティング
 
 ローカル Ollama の実行では、`tev1:4b` を Ollama の `/v1/systemone` endpoint 経由の判断専用ルーターとして使用します（`/api/chat` のタスク実行モデルとしては使用しません）。
 - **モデルの検出**：設定済み Ollama endpoint の `/api/tags` からインストール済みモデルを動的に検出します。モデルの pull や削除は行いません。
 - **プライバシー**：候補選択には role、短いタスク要約、候補モデルの説明のみを送信し、完全な task prompt はルーターに送信しません。
-- **検証と fallback**：選択結果、confidence、インストール済み候補の allowlist を検証します。endpoint／ルーターが利用できない場合や、結果が無効または低 confidence の場合は、設定済みの静的 route に戻ります。
-- **ローカル限定**：動的 routing は Ollama 内で完結し、Codex と AGY の route は変更しません。
+- **検証と fallback**：選択結果、confidence、インストール済み候補それぞれの確率を検証し、確率の高い順にローカルモデルを試します。低 confidence は記録しますが、有効な順位付けは使用します。endpoint／ルーターが利用できない場合や応答が無効な場合は、ローカルモデルの固定順序を使用します。
+- **実行時のクラウド選択**：Tev1 はタスクごとに設定済み backend も順位付けします。Codex `auto` の候補モデルと推論強度は `codex debug models`、AGY `auto:*` の候補は `agy models` から取得します。ローカルルーターに送るのは短いタスク要約のみです。明示指定モデルは固定し、検出や評価に失敗した場合は従来の route 順序と auto 動作を維持します。
 
 ## 自動 review と human review
 

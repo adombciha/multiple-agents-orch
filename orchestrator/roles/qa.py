@@ -50,6 +50,7 @@ _MISSING_DEPENDENCY_SIGNALS = re.compile(
 
 
 class QAAgent(BaseAgent):
+
     def step_testing(self):
         from orchestrator.core.state import (
             log_header,
@@ -59,11 +60,13 @@ class QAAgent(BaseAgent):
         )
 
         log_header("5. TESTING & VERIFICATION (QA Agent)")
-        target_files = list(dict.fromkeys(
-            path
-            for task in self.orchestrator.state.get("tasks", [])
-            for path in task.get("target_files", [])
-        ))
+        target_files = list(
+            dict.fromkeys(
+                path
+                for task in self.orchestrator.state.get("tasks", [])
+                for path in task.get("target_files", [])
+            )
+        )
         docs_only = bool(target_files) and all(
             Path(path).suffix.lower() == ".md" for path in target_files
         )
@@ -86,7 +89,11 @@ class QAAgent(BaseAgent):
                     errors.append(f"Empty Markdown target: {target}")
                 document_contents.append(f"### {target}\n{content}")
             code = 1 if errors else 0
-            output = "\n".join(errors) if errors else f"Read {len(target_files)} Markdown target(s)."
+            output = (
+                "\n".join(errors)
+                if errors
+                else f"Read {len(target_files)} Markdown target(s)."
+            )
         else:
             test_cmd = self.orchestrator.config.get("test_command", "git diff --stat")
             log_info(f"Running test command: {test_cmd}")

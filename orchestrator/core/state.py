@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import re
 import time
+import hashlib
 import tempfile
 import hashlib
 import fcntl
@@ -68,6 +69,7 @@ def log_header(msg: str):
 
 
 class AgentOrchestrator:
+
     def __init__(self, workspace: Path):
         self.workspace = workspace
 
@@ -107,10 +109,11 @@ class AgentOrchestrator:
             self.ai_dir = workspace / ".ai-company"
         self.config_path = self.ai_dir / "config.json"
         self.state_path = self.ai_dir / "state.json"
-        self.pause_request_path = self.ai_dir / "pause.request"
-        self.execution_lock_path = workspace / f"{self.ai_dir.name}.execution.lock"
-        self._execution_lock_owner = None
-        self._execution_lock_depth = 0
+        self.status_path = self.ai_dir / "status.json"
+        self.pause_request_path = self.ai_dir / "pause_request.json"
+        self.delivery_preview_path = self.ai_dir / "delivery_preview.md"
+        self.merge_failure_path = self.ai_dir / "merge_failure.md"
+        self.run_log_path = self.ai_dir / "run.log"
 
         # Files for data sharing
         self.request_path = self.ai_dir / "request.md"
@@ -192,6 +195,17 @@ class AgentOrchestrator:
                         "A completed run still has an undelivered worktree; its artifacts were preserved."
                     )
                 if existing_state.get("state") in {"COMPLETED", "FAILED"}:
+                    delivery = existing_state.get("delivery", {})
+                    if existing_state.get("state") == "COMPLETED" and (
+                        not delivery.get("delivered", False)
+                        and (
+                            "delivery" in existing_state
+                            or (self.ai_dir / "worktree").exists()
+                        )
+                    ):
+                        raise RuntimeError(
+                            "A completed run still has an undelivered worktree; deliver or preserve it before initializing a new run."
+                        )
                     log_info("Clearing completed or failed workflow artifacts.")
                     self.clear_run_artifacts()
             except (OSError, json.JSONDecodeError) as error:
@@ -230,7 +244,14 @@ class AgentOrchestrator:
                 raise RuntimeError(
                     "Cannot safely clear unreadable workflow state; existing artifacts were preserved."
                 ) from error
-            if self._completed_run_needs_preservation(existing_state):
+            delivery = existing_state.get("delivery", {})
+            if existing_state.get("state") == "COMPLETED" and (
+                ("delivery" in existing_state and not delivery.get("delivered", False))
+                or (
+                    "delivery" not in existing_state
+                    and (self.ai_dir / "worktree").exists()
+                )
+            ):
                 raise RuntimeError(
                     "The completed workflow has not been delivered; its artifacts were preserved."
                 )
@@ -240,8 +261,17 @@ class AgentOrchestrator:
             else None
         )
         if not self.cleanup_worktree(merge=False):
-            raise RuntimeError("Could not clear the worktree; run artifacts were preserved.")
-        shutil.rmtree(self.ai_dir, ignore_errors=True)
+            raise RuntimeError(
+                "Could not clear the worktree; run artifacts were preserved."
+            )
+        if self.ai_dir.exists():
+            for path in self.ai_dir.iterdir():
+                if path.name in {"config.json", "run.lock"}:
+                    continue
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
         if self.has_git:
             self.run_command(["git", "worktree", "prune"], cwd=self.workspace)
         self.ai_dir.mkdir(parents=True, exist_ok=True)
@@ -382,7 +412,24 @@ class AgentOrchestrator:
         self.state.setdefault("task_backend_overrides", {})
         for task_id, backend in list(self.state["task_backend_overrides"].items()):
             if backend in {"claude", "grok"}:
-                self.state["task_backend_overrides"][task_id] = self.config["backends"]["developer_senior"]
+                self.state["task_backend_overrides"][task_id] = self.config["backends"][
+                    "developer_senior"
+                ]
+
+        delivery = self.state.get("delivery")
+        if self.state.get("state") == "COMPLETED" and delivery is None:
+            worktree = self.ai_dir / "worktree"
+            self.state["delivery"] = (
+                {"delivered": False, "report_done": True, "legacy": True}
+                if worktree.exists()
+                else {"delivered": True, "legacy": True}
+            )
+        try:
+            from orchestrator.core.status import write_snapshot
+
+            write_snapshot(self)
+        except Exception as error:
+            log_warning(f"Could not update status snapshot: {error}")
 
     def read_state_snapshot(self) -> dict:
         """Read the committed state without changing worker memory or run artifacts."""
@@ -632,6 +679,12 @@ class AgentOrchestrator:
             os.replace(temp_path, self.pause_request_path)
         finally:
             temp_path.unlink(missing_ok=True)
+        try:
+            from orchestrator.core.status import write_snapshot
+
+            write_snapshot(self)
+        except Exception as error:
+            log_warning(f"Could not update status snapshot: {error}")
 
     def pause_requested(self) -> bool:
         return self.pause_request_path.exists()
@@ -721,6 +774,7 @@ class AgentOrchestrator:
     def pause_for_human_review(
         self, source: str, details: str, resume_state: str, pass_state: str
     ):
+        from orchestrator.core.status import next_actions
         from orchestrator.core.telemetry import summary_markdown
 
         requirements = (
@@ -735,9 +789,16 @@ class AgentOrchestrator:
             if chinese
             else f"{source} verification requires human review."
         )
-        next_step = "確認後執行" if chinese else "After review, run"
+        action_state = {
+            **self.state,
+            "state": "WAITING_FOR_OWNER",
+            "human_review_source": source,
+        }
+        actions = next_actions(action_state)
+        next_action = actions[0]["command"] if actions else "status"
         usage = summary_markdown(self)
-        report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}:\n\n```bash\npython3 orchestrator.py approve --run\n```\n"
+        next_step = "後續動作" if chinese else "Next action"
+        report = f"# {title}\n\n## 結論\n\n{conclusion}\n\n## 詳細資訊\n\n{details}\n\n## 後續動作\n\n{next_step}: `{next_action}`\n\n```bash\npython3 orchestrator.py {next_action}\n```\n"
         test_command_suggestion = self.state.get("test_command_suggestion")
         if test_command_suggestion:
             heading = (
@@ -759,6 +820,21 @@ class AgentOrchestrator:
             }
         )
         self.save_state()
+
+    def consume_pause_request(self) -> bool:
+        if not self.pause_request_path.exists():
+            return False
+        try:
+            self.pause_request_path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        self.pause_request_path.unlink(missing_ok=True)
+        current_state = self.state.get("state", "PLANNING")
+        self.pause_for_human_review(
+            "Owner", "Pause requested by owner.", current_state, current_state
+        )
+        log_info("Pause requested; the workflow stopped at a step boundary.")
+        return True
 
     def escalate_to_replan_or_pause(
         self, source: str, feedback: str, resume_state: str, pass_state: str
@@ -991,14 +1067,7 @@ class AgentOrchestrator:
                 "[FILE_END: path/to/file.ext]\n\n"
                 "Any modifications outside this format will be ignored. Write only complete file contents inside the blocks."
             )
-        try:
-            if model is None:
-                return self.call_ollama(
-                    prompt,
-                    system_prompt,
-                    role=role,
-                    **({"image_paths": image_paths} if image_paths else {}),
-                )
+        if model:
             return self.call_ollama(
                 prompt,
                 system_prompt,
@@ -1006,16 +1075,38 @@ class AgentOrchestrator:
                 model=model,
                 **({"image_paths": image_paths} if image_paths else {}),
             )
-        except Exception:
-            if role.startswith("qa") and model is None:
+
+        from orchestrator.core import backends
+
+        candidates = sorted(
+            backends.discover_ollama_chat_models(self, force_refresh=True)
+        )
+        if not candidates:
+            raise RuntimeError("No installed Ollama chat-capable model is available.")
+        ranked = None
+        if self.config.get("ollama_router_enabled", True):
+            ranked = backends.route_ollama_model_with_tev1(
+                self,
+                role,
+                candidates,
+                self._get_compact_task_summary(role, prompt),
+            )
+        ordered_models = ranked or candidates
+        errors = []
+        for candidate in ordered_models:
+            try:
                 return self.call_ollama(
                     prompt,
                     system_prompt,
                     role=role,
-                    model=self.config.get("qa_ollama_fallback_model", "deepseek-r1:7b"),
+                    model=candidate,
                     **({"image_paths": image_paths} if image_paths else {}),
                 )
-            raise
+            except Exception as error:
+                errors.append(f"{candidate}: {error}")
+        raise RuntimeError(
+            f"All installed Ollama chat-capable models failed for {role}: {'; '.join(errors)}"
+        )
 
     def _call_with_usage(
         self, role, backend, model, prompt, system_prompt, callback, image_paths=None
@@ -1023,7 +1114,8 @@ class AgentOrchestrator:
         from orchestrator.core.telemetry import record_call
 
         started = time.monotonic()
-        self._resolved_cloud_model = None
+        if backend in {"codex", "agy"}:
+            self._resolved_cloud_model = None
         try:
             response = callback()
         except Exception as error:
@@ -1476,7 +1568,9 @@ class AgentOrchestrator:
 
         wt_path = self.ai_dir / "worktree"
         if not self.cleanup_worktree():
-            raise RuntimeError("Git worktree cleanup failed; existing work was preserved.")
+            raise RuntimeError(
+                "Git worktree cleanup failed; existing work was preserved."
+            )
 
         log_info(
             f"Setting up isolated Git worktree at {wt_path} on branch 'ai-feature-branch'..."
@@ -1537,7 +1631,9 @@ class AgentOrchestrator:
                 if code != 0:
                     log_error(f"Failed to inspect feature worktree: {status}")
                     return False
-                changes = status.partition("stdout:\n")[2].partition("\nstderr:")[0].strip()
+                changes = (
+                    status.partition("stdout:\n")[2].partition("\nstderr:")[0].strip()
+                )
                 if changes:
                     code, output = self.run_command(["git", "add", "."], cwd=wt_path)
                     if code != 0:
@@ -1878,9 +1974,11 @@ class AgentOrchestrator:
         elif current_state == "RESEARCHING":
             self.step_researching()
         elif current_state == "WAITING_FOR_OWNER":
-            log_warning(
-                "Currently waiting for owner approval. Edit state.json to resume."
-            )
+            from orchestrator.core.status import next_actions
+
+            actions = next_actions(self.state)
+            choices = ", ".join(action["command"] for action in actions)
+            log_warning(f"Currently waiting for owner review. Next actions: {choices}")
         elif current_state == "FAILED":
             log_error("Workflow failed. Please reset or start a new task.")
         else:
@@ -1892,18 +1990,24 @@ class AgentOrchestrator:
             return self._step_unlocked()
 
     def run_to_end(self):
-        with self.execution_lock():
+        self.load_config_and_state()
+        delivery = self.state.get("delivery", {})
+        if self.state.get("state") == "COMPLETED" and delivery.get("delivered"):
+            log_success("Project already delivered; nothing to continue.")
+            return
+        while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "FAILED"]:
+            if self.consume_pause_request():
+                return
+            try:
+                self.step()
+            except Exception as error:
+                failed_state = self.state.get("state", "PLANNING")
+                self.pause_for_human_review(
+                    "Orchestrator", str(error), failed_state, failed_state
+                )
+                return
             self.load_config_and_state()
-            while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "WAITING_FOR_DELIVERY", "FAILED"]:
-                try:
-                    if not self._step_unlocked():
-                        return
-                except Exception as error:
-                    failed_state = self.state.get("state", "PLANNING")
-                    self.pause_for_human_review(
-                        "Orchestrator", str(error), failed_state, failed_state
-                    )
-                    return
-                self.load_config_and_state()
-            if self.state["state"] == "COMPLETED":
-                self._step_unlocked()
+        if self.state["state"] == "COMPLETED":
+            if self.consume_pause_request():
+                return
+            self.step()

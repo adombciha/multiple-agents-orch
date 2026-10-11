@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import multiprocessing
-import subprocess
 import os
 import re
 import sys
@@ -20,9 +18,12 @@ import pytest
 import orchestrator
 import orchestrator.main as orchestrator_main
 from orchestrator import DEFAULT_CONFIG, AgentOrchestrator
-from orchestrator.gui import GuiService
 from orchestrator.core import backends, cloud_routing, gpt, scoring, roster, brain
 from orchestrator.core.telemetry import record_call, summary_markdown
+from orchestrator.core import delivery as delivery_module
+from orchestrator.core.delivery import delivery_preview, deliver
+from orchestrator.core.runlock import RunLock, RunLockBusy
+from orchestrator.core.status import next_actions, read_snapshot
 from orchestrator.core.backends import quota_exhausted
 from orchestrator.roles.base_agent import is_json_response
 from orchestrator.roles.developer import is_task_plan_response
@@ -3416,12 +3417,9 @@ def test_qa_senior_uses_tev1_selected_installed_model(
     select.assert_called_once()
 
 
-def test_qa_ollama_route_falls_back_through_installed_models(
+def test_qa_ollama_falls_back_through_installed_models(
     initialized_orchestrator, monkeypatch
 ):
-    initialized_orchestrator.config["role_model_routes"]["qa_junior"] = [
-        ["ollama", "auto"]
-    ]
     monkeypatch.setattr(
         backends,
         "discover_ollama_chat_models",
@@ -3435,9 +3433,10 @@ def test_qa_ollama_route_falls_back_through_installed_models(
     ollama = Mock(side_effect=[RuntimeError("model unavailable"), "second model"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
 
-    assert initialized_orchestrator.call_role_model_routes(
-        "qa_junior", "prompt"
-    ) == "second model"
+    assert (
+        initialized_orchestrator.call_agent_ollama_fallback("qa_junior", "prompt")
+        == "second model"
+    )
     assert ollama.call_args_list == [
         call("prompt", None, role="qa_junior", model="model-a"),
         call("prompt", None, role="qa_junior", model="model-b"),
@@ -5378,7 +5377,7 @@ def test_cleanup_worktree_merge_failure_aborts_and_records_conflict(
 def test_manager_queues_rd_task_after_worktree_merge_failure(
     initialized_orchestrator, monkeypatch
 ):
-    initialized_orchestrator.config["use_worktree"] = True
+    initialized_orchestrator.config["require_delivery_confirmation"] = False
     initialized_orchestrator.request_path.write_text("request", encoding="utf-8")
     initialized_orchestrator.requirements_path.write_text(
         "requirements", encoding="utf-8"
@@ -6671,404 +6670,521 @@ def test_default_role_routes_use_dynamic_ollama_slots(initialized_orchestrator):
         assert all(model == "auto" for backend, model in routes if backend == "ollama")
 
 
-def _start_worker_inline(service, prepare=None):
-    with service.orchestrator.execution_lock():
-        if prepare:
-            prepare()
-    return True
+def test_run_lock_is_exclusive_and_reports_its_holder(tmp_path):
+    lock = RunLock(tmp_path, "run")
+    with lock:
+        holder = RunLock.read_holder(tmp_path)
+        assert holder["command"] == "run"
+        assert holder["pid"] == os.getpid()
+        with pytest.raises(RunLockBusy) as error:
+            with RunLock(tmp_path, "start"):
+                pass
+        assert error.value.holder_info["command"] == "run"
+
+    assert RunLock.read_holder(tmp_path) is None
+    with RunLock(tmp_path, "continue"):
+        assert RunLock.read_holder(tmp_path)["command"] == "continue"
 
 
-def _hold_execution_lock(workspace, ready, release):
-    app = AgentOrchestrator(Path(workspace))
-    with app.execution_lock():
-        ready.set()
-        release.wait(5)
-
-
-def _git(workspace, *args):
-    return subprocess.run(
-        ["git", *args],
-        cwd=workspace,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-def _init_git_repo(workspace):
-    _git(workspace, "init", "-b", "master")
-    _git(workspace, "config", "user.email", "test@example.com")
-    _git(workspace, "config", "user.name", "Test User")
-    (workspace / "result.txt").write_text("base\n", encoding="utf-8")
-    (workspace / ".gitignore").write_text(".ai-company-*\n", encoding="utf-8")
-    _git(workspace, "add", "result.txt", ".gitignore")
-    _git(workspace, "commit", "-m", "initial")
-
-def test_handle_error_handling(
+def test_cli_rejects_concurrent_writer_without_changing_state(
     initialized_orchestrator, monkeypatch
 ):
-    get_mock = Mock(side_effect=backends.requests.RequestException("connection refused"))
-    monkeypatch.setattr(backends.requests, "get", get_mock)
+    app = initialized_orchestrator
+    before = app.state_path.read_text(encoding="utf-8")
+    monkeypatch.chdir(app.workspace)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "run"])
 
-    models = backends.discover_installed_ollama_models(initialized_orchestrator)
-    assert models == set()
+    with RunLock(app.ai_dir, "continue"):
+        assert orchestrator_main.main() == 1
 
-def test_execution_lock_rejects_another_process(tmp_path):
-    context = multiprocessing.get_context("fork")
-    ready = context.Event()
-    release = context.Event()
-    process = context.Process(
-        target=_hold_execution_lock,
-        args=(str(tmp_path), ready, release),
+    assert app.state_path.read_text(encoding="utf-8") == before
+
+
+def test_start_refuses_to_overwrite_active_workflow(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.request_path.write_text("old request", encoding="utf-8")
+    app.state["state"] = "PLANNING"
+    app.save_state()
+    before = app.state_path.read_text(encoding="utf-8")
+    monkeypatch.chdir(app.workspace)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "start", "new request"])
+
+    assert orchestrator_main.main() == 1
+    assert app.state_path.read_text(encoding="utf-8") == before
+    assert app.request_path.read_text(encoding="utf-8") == "old request"
+
+
+def test_status_command_reads_snapshot_without_loading_state(tmp_path, monkeypatch):
+    app = AgentOrchestrator(tmp_path)
+    app.ai_dir.mkdir()
+    app.status_path.write_text(
+        json.dumps(
+            {
+                "state": "WAITING_FOR_OWNER",
+                "plan_revisions": 1,
+                "code_revisions": 2,
+                "max_revisions": 3,
+                "tasks": [],
+                "next_actions": [{"command": "continue", "description": "resume"}],
+            }
+        ),
+        encoding="utf-8",
     )
-    process.start()
-
-    try:
-        assert ready.wait(5)
-        contender = AgentOrchestrator(tmp_path)
-        with pytest.raises(RuntimeError, match="already in progress"):
-            with contender.execution_lock():
-                pass
-    finally:
-        release.set()
-        process.join(5)
-
-    assert process.exitcode == 0
-
-def test_pause_request_and_state_snapshot_are_safe(initialized_orchestrator):
-    orchestrator = initialized_orchestrator
-    orchestrator.init_project()
-    orchestrator.state["state"] = "IMPLEMENTING"
-    orchestrator.save_state()
-
-    assert orchestrator.read_state_snapshot()["state"] == "IMPLEMENTING"
-
-    orchestrator.state["state"] = "FAILED"
-    persisted_state = orchestrator.read_state_snapshot()
-    persisted_state["state"] = "IMPLEMENTING"
-    orchestrator.state_path.write_text(
-        json.dumps(persisted_state), encoding="utf-8"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "status"])
+    monkeypatch.setattr(
+        AgentOrchestrator,
+        "load_config_and_state",
+        Mock(side_effect=AssertionError("status must not reload state")),
     )
-    assert orchestrator.read_state_snapshot()["state"] == "IMPLEMENTING"
 
-    orchestrator.request_pause()
-    assert orchestrator.pause_requested()
-    assert orchestrator.check_pause_at_step_boundary()
-    assert orchestrator.state["state"] == "WAITING_FOR_OWNER"
-    pause_snapshot = orchestrator.read_state_snapshot()
-    assert pause_snapshot["state"] == "WAITING_FOR_OWNER"
-    assert pause_snapshot["pass_state"] == "IMPLEMENTING"
-    assert orchestrator.pause_requested()
+    orchestrator_main.main()
 
-    restarted = AgentOrchestrator(orchestrator.workspace)
-    restarted.load_config_and_state()
-    assert restarted.state["state"] == "WAITING_FOR_OWNER"
-    assert restarted.pause_requested()
 
-    orchestrator_main.apply_approve(restarted)
-    assert restarted.state["state"] == "IMPLEMENTING"
-    assert not restarted.pause_requested()
-    assert not restarted.check_pause_at_step_boundary()
+def test_pause_cli_writes_and_cancels_request(tmp_path, monkeypatch):
+    app = AgentOrchestrator(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "pause"])
 
-def test_review_revision_clears_pause_request(initialized_orchestrator):
-    orchestrator = initialized_orchestrator
-    orchestrator.init_project()
-    orchestrator.state.update(
+    orchestrator_main.main()
+    assert (
+        json.loads(app.pause_request_path.read_text(encoding="utf-8"))["source"]
+        == "cli"
+    )
+
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "pause", "--cancel"])
+    orchestrator_main.main()
+    assert not app.pause_request_path.exists()
+
+
+def test_status_snapshot_and_next_actions(initialized_orchestrator):
+    app = initialized_orchestrator
+    app.state.update(
         {
             "state": "WAITING_FOR_OWNER",
-            "human_review_source": "QA",
-            "human_review_details": "Retry the failed verification.",
-            "code_revisions": 0,
-            "tasks": [],
+            "human_review_source": "Reviewer",
+            "tasks": [{"id": "T1", "status": "pending", "description": "x" * 150}],
         }
     )
-    orchestrator.save_state()
-    orchestrator.request_pause()
+    app.save_state()
 
-    orchestrator_main.apply_review_decision(orchestrator, "revise")
-
-    assert orchestrator.state["state"] == "IMPLEMENTING"
-    assert not orchestrator.pause_requested()
+    snapshot = read_snapshot(app.status_path)
+    assert snapshot["state"] == "WAITING_FOR_OWNER"
+    assert len(snapshot["tasks"][0]["description"]) == 120
+    assert [item["command"] for item in snapshot["next_actions"]] == [
+        "continue",
+        "review pass",
+        "reject",
+    ]
+    assert (
+        next_actions({"state": "WAITING_FOR_OWNER", "human_review_source": "Owner"})[0][
+            "command"
+        ]
+        == "continue"
+    )
 
 
 @pytest.mark.parametrize(
-    ("workflow_mode", "expected_state"),
+    ("state", "source", "delivery_pending", "expected"),
     [
-        ("delivery", "WAITING_FOR_DELIVERY"),
-        ("research", "COMPLETED"),
+        ("PLANNING", None, False, ["run"]),
+        (
+            "WAITING_FOR_OWNER",
+            "Reviewer",
+            False,
+            ["continue", "review pass", "reject"],
+        ),
+        ("WAITING_FOR_OWNER", "Owner", False, ["continue", "reject"]),
+        ("COMPLETED", None, True, ["deliver", "reject"]),
+        ("COMPLETED", None, False, []),
+        ("FAILED", None, False, ["reject", "reset"]),
     ],
 )
-
-def test_reviewer_approval_sets_delivery_state_or_completes_research(
-    tmp_path, workflow_mode, expected_state
+def test_next_actions_cover_workflow_decision_states(
+    state, source, delivery_pending, expected
 ):
-    workspace = tmp_path / workflow_mode
-    workspace.mkdir()
-    orchestrator = AgentOrchestrator(workspace)
-    orchestrator.ai_dir.mkdir(parents=True)
-    orchestrator.state["state"] = "REVIEWING_CODE"
-    orchestrator.state["workflow_mode"] = workflow_mode
+    assert [
+        action["command"]
+        for action in next_actions(
+            {"state": state, "human_review_source": source}, delivery_pending
+        )
+    ] == expected
 
-    orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
-    orchestrator.plan_path.write_text("plan", encoding="utf-8")
-    orchestrator.test_results_path.write_text("tests passed", encoding="utf-8")
-    orchestrator.read_agent_context = Mock(return_value={})
-    orchestrator.consult_specialists = Mock(return_value="")
-    orchestrator.reviewer.call_agent = Mock(
-        return_value='{"status": "APPROVED", "feedback": []}'
+
+def test_run_to_end_consumes_pause_request_at_step_boundary(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.state["state"] = "PLANNING"
+    app.save_state()
+    app.pause_request_path.write_text("{}", encoding="utf-8")
+    step = Mock()
+    monkeypatch.setattr(app, "step", step)
+
+    app.run_to_end()
+
+    step.assert_not_called()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert app.state["human_review_source"] == "Owner"
+    assert app.state["resume_state"] == "PLANNING"
+    assert not app.pause_request_path.exists()
+    assert "orchestrator.py continue" in app.human_report_path.read_text(
+        encoding="utf-8"
     )
 
-    orchestrator.reviewer.step_reviewing_code()
 
-    assert orchestrator.state["state"] == expected_state
+def test_run_to_end_is_noop_for_already_delivered_run(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.state.update({"state": "COMPLETED", "delivery": {"delivered": True}})
+    app.save_state()
+    step = Mock()
+    monkeypatch.setattr(app, "step", step)
 
-def test_manager_preserves_delivery_gate_and_research_completion(tmp_path):
-    workspace = tmp_path / "manager"
-    workspace.mkdir()
-    orchestrator = AgentOrchestrator(workspace)
-    orchestrator.config["use_worktree"] = True
-    orchestrator.has_git = True
-    orchestrator.state["state"] = "COMPLETED"
-    (orchestrator.ai_dir / "worktree").mkdir(parents=True)
+    app.run_to_end()
 
-    orchestrator.manager.step_completed()
-
-    assert orchestrator.state["state"] == "WAITING_FOR_DELIVERY"
-
-    orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
-    orchestrator.state["workflow_mode"] = "research"
-    orchestrator.manager.step_waiting_for_delivery()
-
-    assert orchestrator.state["state"] == "COMPLETED"
-
-def test_delivery_preview_binds_to_snapshot_and_invalidates_on_change(tmp_path):
-    _init_git_repo(tmp_path)
-    (tmp_path / "result.txt").write_text("updated\n", encoding="utf-8")
-
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
-    preview = orchestrator.create_delivery_preview()
-    orchestrator.present_delivery_preview(preview)
-
-    assert orchestrator.validate_delivery_preview(preview, "merge")
-    assert orchestrator.confirm_delivery(preview, "merge")
-    assert orchestrator.state["delivery_confirmed"] is True
-
-    tampered = dict(preview)
-    tampered["git_status"] = "tampered"
-    with pytest.raises(RuntimeError, match="does not match"):
-        orchestrator.validate_delivery_preview(tampered)
-
-    with pytest.raises(RuntimeError, match="Scheduled delivery operation changed"):
-        orchestrator.validate_delivery_preview(preview, "rebase")
-
-    orchestrator.state["tasks"] = [{"id": "T1"}]
-    with pytest.raises(RuntimeError, match="Workflow state changed"):
-        orchestrator.validate_delivery_preview(preview)
-
-    orchestrator.state["tasks"] = []
-    fresh_preview = orchestrator.create_delivery_preview()
-    orchestrator.present_delivery_preview(fresh_preview)
-    (tmp_path / "result.txt").write_text("changed again\n", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="Git delivery state changed"):
-        orchestrator.validate_delivery_preview(fresh_preview)
-
-def test_manager_revalidates_complete_delivery_snapshot_before_cleanup(tmp_path):
-    _init_git_repo(tmp_path)
-    (tmp_path / "result.txt").write_text("updated\n", encoding="utf-8")
-
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.ai_dir.mkdir(parents=True, exist_ok=True)
-    orchestrator.request_path.write_text("request", encoding="utf-8")
-    orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
-    orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
-    orchestrator.state["workflow_mode"] = "delivery"
-    preview = orchestrator.create_delivery_preview()
-    orchestrator.present_delivery_preview(preview)
-    orchestrator.confirm_delivery(preview)
-
-    orchestrator.manager.call_manager = Mock(return_value="summary")
-    orchestrator.assistant.generate_meeting_memory = Mock(return_value="memory")
-    orchestrator.assistant.generate_changelog = Mock(return_value="changelog")
-    orchestrator.manager._review_worker_weights = Mock()
-    orchestrator.cleanup_worktree = Mock(return_value=True)
-
-    (tmp_path / "result.txt").write_text("changed\n", encoding="utf-8")
-    orchestrator.manager.step_waiting_for_delivery()
-
-    orchestrator.cleanup_worktree.assert_not_called()
-    assert orchestrator.state["state"] == "WAITING_FOR_DELIVERY"
-    assert orchestrator.state["delivery_preview_presented"] is False
-    assert orchestrator.state["delivery_confirmed"] is False
+    step.assert_not_called()
 
 
-def test_manager_prepares_delivery_snapshot_without_marking_it_presented(
+def test_old_completed_run_with_worktree_is_preserved(
+    initialized_orchestrator,
+):
+    app = initialized_orchestrator
+    (app.ai_dir / "worktree").mkdir()
+    app.state_path.write_text(json.dumps({"state": "COMPLETED", "tasks": []}))
+
+    app.load_config_and_state()
+
+    assert app.state["delivery"]["delivered"] is False
+    assert app.state["delivery"]["legacy"] is True
+    with pytest.raises(RuntimeError, match="undelivered worktree"):
+        app.init_project()
+    assert (app.ai_dir / "worktree").is_dir()
+
+
+def _git_delivery_workspace(
+    root: Path, monkeypatch, *, dirty_workspace=False, dirty_path="owner.txt"
+):
+    root.mkdir()
+    app = AgentOrchestrator(root)
+    app.has_git = True
+    app.base_branch = "master"
+    app.ai_dir.mkdir()
+    worktree = app.ai_dir / "worktree"
+    worktree.mkdir()
+    (worktree / "tracked.txt").write_text("feature\n", encoding="utf-8")
+    (worktree / "new.txt").write_text("first\n", encoding="utf-8")
+    app.state = {
+        "state": "COMPLETED",
+        "delivery": {"delivered": False, "report_done": True},
+    }
+
+    def fake_git(command, *, cwd, **kwargs):
+        assert command[0] == "git"
+        args = command[1:]
+        cwd = Path(cwd)
+        if args == ["worktree", "list", "--porcelain"]:
+            stdout = (
+                f"worktree {root}\nHEAD base-commit\nbranch refs/heads/master\n\n"
+                f"worktree {worktree}\nHEAD feature-commit\n"
+                "branch refs/heads/ai-feature-branch\n"
+            )
+        elif args == ["branch", "--show-current"]:
+            stdout = "master\n"
+        elif args == ["rev-parse", "HEAD"]:
+            stdout = "base-commit\n" if cwd == root else "feature-commit\n"
+        elif args == ["status", "--porcelain", "--untracked-files=all"]:
+            stdout = (
+                f" M {dirty_path}\n"
+                if cwd == root and dirty_workspace
+                else " M tracked.txt\n?? new.txt\n"
+                if cwd == worktree
+                else ""
+            )
+        elif args == ["diff", "--stat", "base-commit"]:
+            stdout = " tracked.txt | 1 +\n"
+        elif args == ["diff", "--binary", "base-commit"]:
+            stdout = "binary patch"
+        elif args == ["diff", "--name-status", "base-commit"]:
+            stdout = "M\ttracked.txt\n"
+        elif args == ["ls-files", "--others", "--exclude-standard", "-z"]:
+            return types.SimpleNamespace(returncode=0, stdout=b"new.txt\0", stderr=b"")
+        else:
+            raise AssertionError(f"Unexpected Git command in delivery test: {args}")
+        return types.SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(
+        delivery_module, "subprocess", types.SimpleNamespace(run=fake_git)
+    )
+    return app, worktree
+
+
+def test_delivery_requires_fresh_preview_and_merges_only_after_confirmation(
     tmp_path, monkeypatch
 ):
-    _init_git_repo(tmp_path)
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.init_project()
-    orchestrator.config["use_worktree"] = False
-    orchestrator.request_path.write_text("request", encoding="utf-8")
-    orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
-    orchestrator.state.update(
-        state="WAITING_FOR_DELIVERY",
-        workflow_mode="delivery",
-        delivery_artifacts_prepared=False,
-        changelog_written=False,
-    )
-    orchestrator.manager.call_manager = Mock(return_value="summary")
-    orchestrator.assistant.generate_meeting_memory = Mock(return_value="memory")
-    orchestrator.assistant.generate_changelog = Mock(return_value="change")
-    orchestrator.manager._review_worker_weights = Mock()
-    orchestrator.manager._inspect_delivery_state = Mock(
-        return_value=("stat", "diff", "status")
-    )
-    monkeypatch.setattr(brain, "remember", Mock())
+    app, worktree = _git_delivery_workspace(tmp_path / "repo", monkeypatch)
+    cleanup = Mock(return_value=True)
+    monkeypatch.setattr(app, "cleanup_worktree", cleanup)
+    preview = delivery_preview(app)
+    assert "?? new.txt" in preview["files"]
 
-    orchestrator.manager.step_waiting_for_delivery()
+    assert deliver(app) is False
+    first_token = app.state["delivery"]["token"]
+    assert first_token
+    (worktree / "new.txt").write_text("changed after preview\n", encoding="utf-8")
 
-    assert isinstance(orchestrator.state["delivery_preview"], dict)
-    assert orchestrator.state["delivery_preview_presented"] is False
-    assert orchestrator.state["delivery_confirmed"] is False
+    assert deliver(app, first_token) is False
+    fresh_token = app.state["delivery"]["token"]
+    assert fresh_token != first_token
+    assert app.state["delivery"]["delivered"] is False
+    assert worktree.is_dir()
 
-    orchestrator.manager.step_waiting_for_delivery()
-
-    assert orchestrator.state["state"] == "WAITING_FOR_DELIVERY"
-
-    orchestrator.manager.step_waiting_for_delivery()
-
-    assert orchestrator.state["state"] == "WAITING_FOR_DELIVERY"
+    assert deliver(app, fresh_token) is True
+    assert app.state["delivery"]["delivered"] is True
+    assert app.state["delivery"]["delivered_at"]
+    assert app.state["delivery"]["merged_head"] == "base-commit"
+    cleanup.assert_called_once_with(merge=True)
+    assert worktree.is_dir()
 
 
-@pytest.mark.parametrize("command", ["run", "continue"])
-def test_run_and_continue_do_not_deliver(tmp_path, monkeypatch, command):
-    workspace = tmp_path / command
-    workspace.mkdir()
-    orchestrator = AgentOrchestrator(workspace)
-    orchestrator.init_project()
-    orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
-    orchestrator.save_state()
-
-    monkeypatch.chdir(workspace)
-    monkeypatch.setattr(sys, "argv", ["orchestrator.py", command])
-    monkeypatch.setattr(orchestrator_main, "log_warning", lambda message: None)
-
-    orchestrator_main.main()
-
-    assert orchestrator.read_state_snapshot()["state"] == "WAITING_FOR_DELIVERY"
-    assert not orchestrator.read_state_snapshot().get("delivery_confirmed", False)
-
-def test_cli_continue_clears_pending_pause_before_running(tmp_path, monkeypatch):
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.init_project()
-    orchestrator.state["state"] = "IMPLEMENTING"
-    orchestrator.save_state()
-    orchestrator.request_pause()
-
-    def run_to_end(instance):
-        assert not instance.pause_requested()
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "continue"])
-    monkeypatch.setattr(AgentOrchestrator, "run_to_end", run_to_end)
-
-    orchestrator_main.main()
-
-    assert not orchestrator.pause_requested()
-
-def test_merge_failure_preserves_feature_worktree(tmp_path):
-    _init_git_repo(tmp_path)
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.setup_worktree()
-
-    feature_file = orchestrator.ai_dir / "worktree" / "result.txt"
-    feature_file.write_text("feature\n", encoding="utf-8")
-
-    (tmp_path / "result.txt").write_text("base change\n", encoding="utf-8")
-    _git(tmp_path, "add", "result.txt")
-    _git(tmp_path, "commit", "-m", "base change")
-
-    assert orchestrator.cleanup_worktree(merge=True) is False
-    assert feature_file.exists()
-    assert feature_file.read_text(encoding="utf-8") == "feature\n"
-    assert orchestrator.state["worktree_conflict_files"] == ["result.txt"]
-    assert orchestrator.state["worktree_merge_error"]
-
-def test_gui_continue_clears_pause_request(tmp_path, monkeypatch):
-    service = GuiService(tmp_path)
-    service.orchestrator.init_project()
-    service.orchestrator.state["state"] = "IMPLEMENTING"
-    service.orchestrator.save_state()
-    service.orchestrator.request_pause()
-    monkeypatch.setattr(
-        service,
-        "_start_worker",
-        Mock(side_effect=lambda prepare=None: _start_worker_inline(service, prepare)),
+def test_delivery_preview_binds_main_workspace_cleanliness(tmp_path, monkeypatch):
+    app, _ = _git_delivery_workspace(
+        tmp_path / "repo", monkeypatch, dirty_workspace=True
     )
 
-    service.continue_task()
+    assert deliver(app) is False
+    token = app.state["delivery"]["token"]
+    assert token
+    assert deliver(app, token) is False
+    assert app.state["delivery"]["delivered"] is False
+    assert "uncommitted changes" in app.state["delivery"]["preview"]
 
-    assert not service.orchestrator.pause_requested()
 
-def test_gui_stop_writes_pause_request_while_execution_lock_is_held(tmp_path):
-    service = GuiService(tmp_path)
-    service.orchestrator.init_project()
-    service.orchestrator.state["state"] = "IMPLEMENTING"
-    service.orchestrator.save_state()
-
-    context = multiprocessing.get_context("fork")
-    ready = context.Event()
-    release = context.Event()
-    process = context.Process(
-        target=_hold_execution_lock,
-        args=(str(tmp_path), ready, release),
+def test_delivery_does_not_ignore_unrelated_ai_company_files(tmp_path, monkeypatch):
+    app, _ = _git_delivery_workspace(
+        tmp_path / "repo",
+        monkeypatch,
+        dirty_workspace=True,
+        dirty_path=".ai-company-other/important.txt",
     )
-    process.start()
 
-    try:
-        assert ready.wait(5)
-        result = service.stop()
-        assert result["pause_requested"] is True
-        assert service.orchestrator.pause_requested()
-    finally:
-        release.set()
-        process.join(5)
+    preview = delivery_preview(app)
 
-    assert process.exitcode == 0
+    assert preview["workspace_changes"] == [" M .ai-company-other/important.txt"]
 
-def test_gui_status_reads_persistent_snapshot_without_overwriting_worker_state(
-    tmp_path,
-):
-    service = GuiService(tmp_path)
-    service.orchestrator.init_project()
-    service.orchestrator.state = {
-        "state": "IMPLEMENTING",
-        "worker_progress": "unsaved",
+
+def test_delivery_confirmation_failure_returns_nonzero_from_cli(tmp_path, monkeypatch):
+    app = AgentOrchestrator(tmp_path)
+    app.ai_dir.mkdir()
+    app.config_path.write_text(json.dumps(DEFAULT_CONFIG), encoding="utf-8")
+    app.state = {
+        "state": "COMPLETED",
+        "delivery": {"delivered": False, "report_done": True},
     }
-    service.orchestrator.state_path.write_text(
-        json.dumps({"state": "WAITING_FOR_OWNER"}),
-        encoding="utf-8",
+    app.save_state()
+    assert deliver(app) is False
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", ["orchestrator.py", "deliver", "--confirm", "000000000000"]
     )
 
-    status = service.status()
+    assert orchestrator_main.main() == 1
 
-    assert status["state"] == "WAITING_FOR_OWNER"
-    assert service.orchestrator.state["state"] == "IMPLEMENTING"
-    assert service.orchestrator.state["worker_progress"] == "unsaved"
 
-def test_completed_run_keeps_delivery_gate_across_reload_and_new_task_archive(
-    tmp_path,
+def test_merge_failure_preserves_worktree_and_clears_confirmation(
+    tmp_path, monkeypatch
 ):
-    orchestrator = AgentOrchestrator(tmp_path)
-    orchestrator.init_project()
-    orchestrator.ai_dir.joinpath("worktree").mkdir(parents=True, exist_ok=True)
-    orchestrator.state["state"] = "COMPLETED"
-    orchestrator.save_state()
+    app, worktree = _git_delivery_workspace(tmp_path / "repo", monkeypatch)
+    app.state["tasks"] = []
+    app.state["worktree_merge_error"] = "simulated conflict"
+    monkeypatch.setattr(app, "cleanup_worktree", Mock(return_value=False))
 
-    reloaded = AgentOrchestrator(tmp_path)
-    reloaded.load_config_and_state()
+    assert deliver(app) is False
+    token = app.state["delivery"]["token"]
+    assert deliver(app, token) is False
 
-    assert reloaded.state["state"] == "WAITING_FOR_DELIVERY"
-    assert orchestrator_main.archive_previous_run(reloaded) is False
-    assert reloaded.state["state"] == "WAITING_FOR_DELIVERY"
+    assert worktree.is_dir()
+    assert app.state["delivery"]["token"] is None
+    assert app.state["delivery"]["preview"] == ""
+    assert "simulated conflict" in app.merge_failure_path.read_text(encoding="utf-8")
+    assert app.state["state"] == "IMPLEMENTING"
+
+
+def test_manager_default_completion_prepares_preview_without_merging(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.has_git = False
+    app.request_path.write_text("request", encoding="utf-8")
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    manager_call = Mock(return_value="summary")
+    changelog = Mock(return_value="one entry")
+    monkeypatch.setattr(app.manager, "call_manager", manager_call)
+    monkeypatch.setattr(
+        app.assistant, "generate_meeting_memory", Mock(return_value="memory")
+    )
+    monkeypatch.setattr(app.assistant, "generate_changelog", changelog)
+    cleanup = Mock()
+    monkeypatch.setattr(app, "cleanup_worktree", cleanup)
+
+    app.manager.step_completed()
+    app.manager.step_completed()
+
+    cleanup.assert_not_called()
+    changelog.assert_called_once()
+    assert app.state["delivery"]["report_done"] is True
+    assert app.state["delivery"]["token"]
+    assert "No Git impact" in app.delivery_preview_path.read_text(encoding="utf-8")
+
+
+def test_manager_keeps_changelog_entry_idempotent_by_run_id(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.has_git = False
+    app.request_path.write_text("request", encoding="utf-8")
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    run_id = "same-run"
+    marker = f"<!-- ai-company-run: {run_id} -->"
+    existing = f"# Changelog\n\n{marker}\nexisting entry\n"
+    (app.workspace / "CHANGELOG.md").write_text(existing, encoding="utf-8")
+    app.state["run_id"] = run_id
+    monkeypatch.setattr(app.manager, "call_manager", Mock(return_value="summary"))
+    monkeypatch.setattr(
+        app.assistant, "generate_meeting_memory", Mock(return_value="memory")
+    )
+    monkeypatch.setattr(
+        app.assistant, "generate_changelog", Mock(return_value="duplicate")
+    )
+
+    app.manager.step_completed()
+
+    assert (app.workspace / "CHANGELOG.md").read_text(encoding="utf-8") == existing
+    preview = app.delivery_preview_path.read_text(encoding="utf-8")
+    assert marker in preview
+    assert "existing entry" in preview
+
+
+def test_manager_can_keep_legacy_automatic_merge_when_configured(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.has_git = False
+    app.config["require_delivery_confirmation"] = False
+    app.request_path.write_text("request", encoding="utf-8")
+    app.requirements_path.write_text("requirements", encoding="utf-8")
+    monkeypatch.setattr(app.manager, "call_manager", Mock(return_value="summary"))
+    monkeypatch.setattr(
+        app.assistant, "generate_meeting_memory", Mock(return_value="memory")
+    )
+    monkeypatch.setattr(app.assistant, "generate_changelog", Mock(return_value="entry"))
+    cleanup = Mock(return_value=True)
+    monkeypatch.setattr(app, "cleanup_worktree", cleanup)
+
+    app.manager.step_completed()
+
+    cleanup.assert_called_once_with(merge=True)
+    assert app.state["delivery"]["delivered"] is True
+
+
+def test_manager_does_not_repeat_completion_work_after_delivery(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    app.state.update(
+        {"state": "COMPLETED", "delivery": {"delivered": True, "report_done": True}}
+    )
+    call_manager = Mock()
+    changelog = Mock()
+    monkeypatch.setattr(app.manager, "call_manager", call_manager)
+    monkeypatch.setattr(app.assistant, "generate_changelog", changelog)
+
+    app.manager.step_completed()
+
+    call_manager.assert_not_called()
+    changelog.assert_not_called()
+
+
+def test_local_gui_checks_host_origin_token_and_action_lock(tmp_path, monkeypatch):
+    from http.server import ThreadingHTTPServer
+
+    from orchestrator.gui import make_handler
+
+    app = AgentOrchestrator(tmp_path)
+    app.ai_dir.mkdir()
+    app.status_path.write_text(json.dumps({"state": "PLANNING", "next_actions": []}))
+    token = "test-token"
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(app, token, port))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        assert server.server_address[0] == "127.0.0.1"
+        page = urllib.request.urlopen(f"{base}/?token={token}").read().decode()
+        assert "textContent" in page
+        assert "innerHTML" not in page
+        assert "plan revisions" in page
+
+        request = urllib.request.Request(
+            f"{base}/api/status", headers={"X-Orchestrator-Token": token}
+        )
+        assert (
+            json.loads(urllib.request.urlopen(request).read())["snapshot"]["state"]
+            == "PLANNING"
+        )
+
+        bad_host = urllib.request.Request(
+            f"{base}/api/status",
+            headers={"Host": "attacker.example", "X-Orchestrator-Token": token},
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(bad_host)
+        assert error.value.code == 403
+
+        def post(payload, origin="http://127.0.0.1:" + str(port)):
+            return urllib.request.Request(
+                f"{base}/api/action",
+                data=json.dumps(payload).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Orchestrator-Token": token,
+                    "Origin": origin,
+                },
+                method="POST",
+            )
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(post({"action": "run"}, "http://attacker.example"))
+        assert error.value.code == 403
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(post({"action": "unknown"}))
+        assert error.value.code == 400
+
+        with RunLock(app.ai_dir, "run"):
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(post({"action": "run"}))
+            assert error.value.code == 409
+
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(post({"action": "deliver", "confirm": "bad"}))
+        assert error.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_local_gui_rejects_invalid_port_before_binding(tmp_path):
+    from orchestrator.gui import serve
+
+    with pytest.raises(ValueError, match="between 1 and 65535"):
+        serve(AgentOrchestrator(tmp_path), 0)
+    with pytest.raises(ValueError, match="between 1 and 65535"):
+        serve(AgentOrchestrator(tmp_path), "8765")

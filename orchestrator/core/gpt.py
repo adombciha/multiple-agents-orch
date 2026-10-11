@@ -6,7 +6,6 @@ from copy import deepcopy
 
 import requests
 
-
 FILE_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
