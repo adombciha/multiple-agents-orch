@@ -18,6 +18,8 @@ AGY_MODEL_ALIASES = {
 }
 
 _agy_models_cache = (0.0, ())
+_tev1_circuit_open = False
+_tev1_routing_warning_logged = False
 
 
 def resolve_agy_model(model: str) -> str:
@@ -286,36 +288,122 @@ def route_ollama_model_with_tev1(
         return None
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
+    cache = getattr(orchestrator, "_tev1_routing_cache", None)
+    if cache is None:
+        cache = orchestrator._tev1_routing_cache = {}
+    task_id = orchestrator.state.get("active_task_id")
+    cache_key = (role, task_id, summary, tuple(available_candidates))
+    if cache_key in cache:
+        cached = cache[cache_key]
+        return list(cached) if cached is not None else None
+    if _tev1_circuit_open:
+        cache[cache_key] = None
+        return None
+
     state_input = f"Role: {role}. Task: {summary}"
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
-    payload = {
-        "model": router_model,
-        "state": state_input,
-        "questions": {
-            "selected_model": {
-                "type": "choice",
-                "instructions": f"Select the best model for the role '{role}'.",
-                "criteria": {
-                    candidate: criteria.get(candidate) if criteria else None
-                    for candidate in available_candidates
-                },
-            }
-        },
-    }
+
+    try:
+        criterion_chars = max(
+            0, int(orchestrator.config.get("ollama_router_max_criterion_chars", 160))
+        )
+        max_payload_chars = max(
+            1, int(orchestrator.config.get("ollama_router_max_payload_chars", 6000))
+        )
+    except (TypeError, ValueError):
+        criterion_chars, max_payload_chars = 160, 6000
+
+    def make_payload(criteria_chars: int, include_descriptions: bool = True) -> dict:
+        question = {
+            "type": "choice",
+            "instructions": f"Select the best model for the role '{role}'.",
+        }
+        question["criteria"] = {
+            candidate: (
+                " ".join(criteria[candidate].split())[:criteria_chars]
+                if include_descriptions
+                and criteria
+                and isinstance(criteria.get(candidate), str)
+                else None
+            )
+            for candidate in available_candidates
+        }
+        return {
+            "model": router_model,
+            "state": state_input,
+            "questions": {"selected_model": question},
+        }
+
+    payload = make_payload(criterion_chars)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        payload = make_payload(60)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        payload = make_payload(0, include_descriptions=False)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        log_warning(
+            "Tev1 request exceeds the configured payload character limit; using static candidate order."
+        )
+        cache[cache_key] = None
+        return None
+
+    def response_detail(result) -> str:
+        detail = getattr(result, "text", "")
+        return " ".join(detail.split())[:300] if isinstance(detail, str) else ""
+
+    def is_context_error(result) -> bool:
+        return result.status_code == 400 and bool(
+            re.search(r"context|length|token|too\s+long", response_detail(result), re.I)
+        )
+
+    def disable_router(result, previous_detail: str = "") -> None:
+        global _tev1_circuit_open, _tev1_routing_warning_logged
+        _tev1_circuit_open = True
+        if _tev1_routing_warning_logged:
+            return
+        _tev1_routing_warning_logged = True
+        detail = response_detail(result) or previous_detail
+        suffix = f" Response: {detail}" if detail else ""
+        log_warning(
+            f"Ollama /v1/systemone returned status {result.status_code}.{suffix} "
+            "Tev1 routing is disabled for this process; using static candidate order."
+        )
 
     try:
         timeout = orchestrator.config.get("ollama_router_timeout", 10)
         response = requests.post(url, json=payload, timeout=timeout)
         if response.status_code != 200:
-            detail = getattr(response, "text", "")
-            detail = " ".join(detail.split())[:300] if isinstance(detail, str) else ""
-            detail_text = f" Response: {detail}" if detail else ""
-            log_info(
-                f"Ollama /v1/systemone returned status {response.status_code}.{detail_text} "
-                "Falling back to available local candidates."
-            )
-            return None
+            if is_context_error(response):
+                previous_detail = response_detail(response)
+                retry_payload = make_payload(0, include_descriptions=False)
+                if (
+                    len(
+                        json.dumps(
+                            retry_payload, ensure_ascii=False, separators=(",", ":")
+                        )
+                    )
+                    > max_payload_chars
+                ):
+                    cache[cache_key] = None
+                    return None
+                response = requests.post(url, json=retry_payload, timeout=timeout)
+                if response.status_code != 200:
+                    disable_router(response, previous_detail)
+                    cache[cache_key] = None
+                    return None
+            else:
+                disable_router(response)
+                cache[cache_key] = None
+                return None
         data = response.json()
         ans = data.get("answers", {}).get("selected_model", {})
         choice = ans.get("choice")
@@ -343,6 +431,7 @@ def route_ollama_model_with_tev1(
             log_warning(
                 "Tev1 returned an invalid model probability distribution; using static local model order."
             )
+            cache[cache_key] = None
             return None
 
         ranked = sorted(
@@ -357,9 +446,11 @@ def route_ollama_model_with_tev1(
         log_info(
             f"Tev1 ranked {role} options ({qualifier}confidence {confidence:.2f}): {scores}"
         )
+        cache[cache_key] = ranked
         return ranked
     except Exception as exc:
         log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
+        cache[cache_key] = None
         return None
 
 

@@ -33,3 +33,6 @@ Rules:
 - Reviewer approval does not merge changes. A Git preview must be explicitly confirmed with `deliver --confirm <token>`; a changed preview requires a new confirmation.
 - `run` and `continue` never bypass delivery confirmation. Research workflows complete without a Git delivery step.
 - State snapshots are written atomically; CLI writers are serialized by the shared run lock, while `pause` is recorded separately and consumed at a step boundary.
+- Developer implementation is limited to six model requests per task by default, including corrective retries. Contract-failed routes are skipped for that task; `approve` and `continue` reset the request budget after a Developer pause but preserve those failures unless `--clear-route-failures` is supplied.
+- Three repeated task-level Developer error signatures trigger the existing bounded Manager re-plan path. Dynamic Ollama fallback is capped at two models per call by default.
+- Tev1 ranking requests bound criteria and payload length; context-related HTTP 400 responses retry once with candidate names only. Other HTTP failures open a process-local circuit breaker and fall back to static order.

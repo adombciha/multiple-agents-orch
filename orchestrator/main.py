@@ -98,31 +98,142 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["quota_exhausted_backends"] = {}
     orchestrator.state["failed_model_routes"] = []
     orchestrator.state["task_failed_model_routes"] = {}
+    orchestrator.state["task_contract_failures"] = {}
+    orchestrator.state["task_developer_calls"] = {}
+    orchestrator.state["task_error_signatures"] = {}
     orchestrator.state["tasks"] = []
     orchestrator.state["active_task_id"] = None
 
 
-def apply_approve(orchestrator: AgentOrchestrator) -> None:
+def _all_available_developer_routes_failed_contract(orchestrator, task_id: str) -> bool:
+    from orchestrator.core import backends
+
+    task = next(
+        (
+            task
+            for task in orchestrator.state.get("tasks", [])
+            if task.get("id") == task_id
+        ),
+        {},
+    )
+    assignment = (
+        orchestrator.state.get("worker_assignments", {}).get("rd", {}).get(task_id, "")
+    )
+    level = (
+        assignment.split("-")[1]
+        if assignment.count("-") >= 2
+        else task.get("rd_level", task.get("assignee_level", "senior"))
+    )
+    role = f"developer_{level}"
+    role = (
+        orchestrator.state.get("task_developer_promotions", {})
+        .get(task_id, {})
+        .get(role, role)
+    )
+    configured = list(orchestrator.config.get("role_model_routes", {}).get(role, []))
+    override = orchestrator.state.get("task_backend_overrides", {}).get(task_id)
+    if override:
+        configured.sort(key=lambda route: route[0] != override)
+
+    routes = []
+    ollama_added = False
+    for backend, model in configured:
+        if not backends.backend_available(orchestrator, backend):
+            continue
+        if backend == "ollama":
+            if ollama_added:
+                continue
+            ollama_added = True
+            candidates = sorted(backends.discover_ollama_chat_models(orchestrator))
+            if orchestrator.config.get("ollama_router_enabled", True):
+                ranked = backends.route_ollama_model_with_tev1(
+                    orchestrator,
+                    role,
+                    candidates,
+                    task.get("implementation_scope") or task.get("description", ""),
+                )
+            else:
+                ranked = None
+            try:
+                limit = max(
+                    0, int(orchestrator.config.get("max_ollama_routes_per_call", 2))
+                )
+            except (TypeError, ValueError):
+                limit = 2
+            routes.extend(["ollama", item] for item in (ranked or candidates)[:limit])
+        else:
+            routes.append([backend, model])
+    available = [
+        f"{backend}/{model}"
+        for backend, model in routes
+        if backends.backend_available(orchestrator, backend)
+    ]
+    failed = orchestrator.state.get("task_contract_failures", {}).get(task_id, {})
+    return bool(available) and all(route in failed for route in available)
+
+
+def clear_task_route_failures(orchestrator, task_id: str, clear_contract: bool) -> None:
+    old_failures = orchestrator.state.setdefault("task_failed_model_routes", {}).pop(
+        task_id, []
+    )
+    if old_failures:
+        log_info(
+            f"Cleared {len(old_failures)} cached route failures for {task_id} before retry."
+        )
+    if clear_contract:
+        contract_failures = orchestrator.state.setdefault(
+            "task_contract_failures", {}
+        ).pop(task_id, {})
+        if contract_failures:
+            log_info(
+                f"Cleared {len(contract_failures)} contract-failed routes for {task_id}."
+            )
+
+
+def apply_approve(
+    orchestrator: AgentOrchestrator, clear_route_failures: bool = False
+) -> bool:
     """Resume a WAITING_FOR_OWNER pause at its recorded pass_state (falling
-    back to resume_state), clearing any cached route failures for the task
-    that was active when it paused."""
+    back to resume_state), resetting the Developer budget after a Developer
+    pause while retaining contract-failed routes unless explicitly cleared."""
     resume_state = orchestrator.state.get(
         "pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE")
     )
     active_task_id = orchestrator.state.get("active_task_id")
     if active_task_id:
-        old_failures = orchestrator.state.setdefault(
-            "task_failed_model_routes", {}
-        ).pop(active_task_id, [])
-        if old_failures:
-            log_info(
-                f"Cleared {len(old_failures)} cached route failures for {active_task_id} before retry."
+        source = orchestrator.state.get("human_review_source")
+        if (
+            source in {"Developer", "Orchestrator"}
+            and not clear_route_failures
+            and _all_available_developer_routes_failed_contract(
+                orchestrator, active_task_id
+            )
+        ):
+            log_error(
+                "Every available Developer route for this task has failed its output contract. "
+                "Use 'reject' to re-plan, or approve/continue with --clear-route-failures to retry them."
+            )
+            return False
+        clear_task_route_failures(
+            orchestrator, active_task_id, clear_contract=clear_route_failures
+        )
+        if source in {"Developer", "Orchestrator"}:
+            for task in orchestrator.state.get("tasks", []):
+                if task.get("id") == active_task_id:
+                    task["revisions"] = 0
+                    break
+            orchestrator.state.setdefault("task_developer_calls", {})[
+                active_task_id
+            ] = 0
+            orchestrator.state.setdefault("task_error_signatures", {}).pop(
+                active_task_id, None
             )
     orchestrator.state["state"] = resume_state
     orchestrator.state.pop("human_review_source", None)
     orchestrator.state.pop("resume_state", None)
     orchestrator.save_state()
     log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
+    return True
 
 
 def apply_review_decision(
@@ -306,12 +417,17 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     deliver_parser.add_argument("--confirm", help="Previously displayed delivery token")
     gui_parser = subparsers.add_parser("gui", help="Open the local workflow dashboard")
     gui_parser.add_argument("--port", type=int, help="HTTP port (defaults to config)")
-    subparsers.add_parser(
+    continue_parser = subparsers.add_parser(
         "continue",
         help="Auto-resume from wherever the project is: picks approve or revise "
         "for a paused review (auto-clearing the revision counter if needed) and "
         "keeps running. Use when you don't want to think about which command "
         "applies to the current pause.",
+    )
+    continue_parser.add_argument(
+        "--clear-route-failures",
+        action="store_true",
+        help="Clear cached temporary and contract route failures for the active task before continuing.",
     )
     subparsers.add_parser(
         "status", help="Get current orchestrator status and logs info"
@@ -321,6 +437,11 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     )
     approve_parser.add_argument(
         "--run", action="store_true", help="Continue the workflow after approval"
+    )
+    approve_parser.add_argument(
+        "--clear-route-failures",
+        action="store_true",
+        help="Clear cached temporary and contract route failures for the active task before approval.",
     )
     review_parser = subparsers.add_parser("review", help="Decide a paused human review")
     review_parser.add_argument("decision", choices=["pass", "revise", "reject"])
@@ -516,6 +637,9 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
             "task_failed_model_routes": {},
+            "task_contract_failures": {},
+            "task_developer_calls": {},
+            "task_error_signatures": {},
             "visual_image_paths": image_paths,
             "workflow_mode": "research" if args.research else "delivery",
             "research_roles": ["sales", "ra"] if args.research else [],
@@ -616,7 +740,8 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                     f"Cannot approve from state: {orchestrator.state.get('state')}"
                 )
                 return
-            apply_approve(orchestrator)
+            if not apply_approve(orchestrator, args.clear_route_failures):
+                return
             if args.run:
                 orchestrator.run_to_end()
         except FileNotFoundError:
@@ -657,8 +782,15 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             if state == "WAITING_FOR_OWNER":
                 decision, reset_revisions = pick_continue_decision(orchestrator)
                 if decision == "approve":
-                    apply_approve(orchestrator)
+                    if not apply_approve(orchestrator, args.clear_route_failures):
+                        return
                 else:
+                    if args.clear_route_failures:
+                        active_task_id = orchestrator.state.get("active_task_id")
+                        if active_task_id:
+                            clear_task_route_failures(
+                                orchestrator, active_task_id, clear_contract=True
+                            )
                     apply_review_decision(orchestrator, "revise", reset_revisions)
             orchestrator.run_to_end()
         except FileNotFoundError:

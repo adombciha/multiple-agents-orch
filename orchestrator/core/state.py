@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import re
 import time
+import hashlib
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -22,6 +23,15 @@ class ResponseContractError(RuntimeError):
 
 class DeveloperContractRetryExhausted(ResponseContractError):
     """A Developer response still failed validation after a corrective retry."""
+
+
+class DeveloperCallLimitReached(RuntimeError):
+    """The current task exhausted its persisted Developer request budget."""
+
+
+def developer_error_signature(error: str) -> str:
+    normalized = " ".join(re.sub(r"\d+", "", str(error)).split())
+    return hashlib.sha256(normalized[:160].encode("utf-8")).hexdigest()
 
 
 class Colors:
@@ -133,6 +143,9 @@ class AgentOrchestrator:
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
             "task_failed_model_routes": {},
+            "task_contract_failures": {},
+            "task_developer_calls": {},
+            "task_error_signatures": {},
             "task_developer_promotions": {},
             "task_backend_overrides": {},
             "tasks": [],
@@ -376,6 +389,9 @@ class AgentOrchestrator:
         self.state.setdefault("developer_promotions", {})
         self.state.setdefault("failed_model_routes", [])
         self.state.setdefault("task_failed_model_routes", {})
+        self.state.setdefault("task_contract_failures", {})
+        self.state.setdefault("task_developer_calls", {})
+        self.state.setdefault("task_error_signatures", {})
         self.state.setdefault("task_developer_promotions", {})
         self.state.setdefault("task_backend_overrides", {})
         for task_id, backend in list(self.state["task_backend_overrides"].items()):
@@ -870,6 +886,13 @@ class AgentOrchestrator:
             return "Agent response failed the task output contract"
 
         def developer_retry_prompt(response: str, error: str) -> str:
+            try:
+                response_chars = max(
+                    0, int(self.config.get("developer_retry_response_chars", 3000))
+                )
+            except (TypeError, ValueError):
+                response_chars = 3000
+            response_excerpt = response[-response_chars:] if response_chars else ""
             return (
                 prompt
                 + "\n\nRETRY: Your previous response was rejected. "
@@ -881,18 +904,17 @@ class AgentOrchestrator:
                 + "For Python files, the complete result must parse. "
                 + "Do not copy example placeholder text.\n"
                 + "Previous rejected response:\n"
-                + response[-8000:]
+                + response_excerpt
             )
 
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
             return None
         errors = []
-        task_id = (
-            self.state.get("active_task_id")
-            if self.state.get("state") == "IMPLEMENTING"
-            else None
+        implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith(
+            "developer"
         )
+        task_id = self.state.get("active_task_id") if implementing else None
         if task_id:
             failed_routes = self.state.setdefault(
                 "task_failed_model_routes", {}
@@ -901,8 +923,17 @@ class AgentOrchestrator:
             failed_routes = self.state.setdefault("failed_model_routes", [])
 
         effective_routes = list(routes)
+        backend_override = (
+            self.state.get("task_backend_overrides", {}).get(task_id)
+            if task_id
+            else None
+        )
+        if backend_override:
+            effective_routes.sort(key=lambda route: route[0] != backend_override)
         if any(backend == "ollama" for backend, _ in routes):
-            chat_models = backends.discover_ollama_chat_models(self, force_refresh=True)
+            chat_models = backends.discover_ollama_chat_models(
+                self, force_refresh=not implementing
+            )
             ollama_candidates = sorted(chat_models)
             if ollama_candidates:
                 ranked_models = None
@@ -912,6 +943,10 @@ class AgentOrchestrator:
                         self, role, ollama_candidates, task_summary
                     )
                 ordered_models = ranked_models or ollama_candidates
+                max_ollama_routes = max(
+                    0, int(self.config.get("max_ollama_routes_per_call", 2))
+                )
+                ordered_models = ordered_models[:max_ollama_routes]
                 effective_routes = []
                 ollama_inserted = False
                 for backend, model in routes:
@@ -952,123 +987,137 @@ class AgentOrchestrator:
             )
             if ranked_backends and set(ranked_backends) == set(available_backends):
                 effective_routes.sort(key=lambda route: ranked_backends.index(route[0]))
+        if backend_override:
+            effective_routes.sort(key=lambda route: route[0] != backend_override)
+
+        contract_failures = (
+            self.state.setdefault("task_contract_failures", {}).setdefault(task_id, {})
+            if task_id
+            else {}
+        )
+        try:
+            max_developer_calls = max(
+                0, int(self.config.get("max_developer_calls_per_task", 6))
+            )
+        except (TypeError, ValueError):
+            max_developer_calls = 6
+
+        def request_route(backend: str, model: str, request_prompt: str) -> str:
+            if task_id:
+                calls = self.state.setdefault("task_developer_calls", {})
+                used = int(calls.get(task_id, 0))
+                if used >= max_developer_calls:
+                    summary = "; ".join(errors)[:1200] or "no route errors recorded yet"
+                    raise DeveloperCallLimitReached(
+                        f"Developer task {task_id} reached its request limit "
+                        f"({used}/{max_developer_calls}); route errors: {summary}"
+                    )
+                calls[task_id] = used + 1
+                self.save_state()
+            if backend == "ollama":
+                return self.call_agent_ollama_fallback(
+                    role,
+                    request_prompt,
+                    system_prompt,
+                    model=model,
+                    **({"image_paths": image_paths} if image_paths else {}),
+                )
+            if backend == "codex":
+                return self.call_codex(
+                    request_prompt, system_prompt, role=role, model=model
+                )
+            if backend == "agy":
+                return self.call_agy(
+                    request_prompt, system_prompt, role=role, model=model
+                )
+            raise ValueError(f"Unsupported backend in route: {backend}")
+
+        def validate_response(response: str) -> str | None:
+            self.validate_routed_response(role, response, response_schema)
+            validation_error = contract_error(response)
+            if implementing and not any(
+                marker in response
+                for marker in (
+                    "[FILE_START:",
+                    "[FILE_EDIT_START:",
+                    "[SECTION_EDIT_START:",
+                )
+            ):
+                validation_error = (
+                    f"{validation_error}; " if validation_error else ""
+                ) + "Developer response omitted required file blocks"
+            return validation_error
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
             if not backends.backend_available(self, backend):
                 continue
+            if route in contract_failures:
+                error = contract_failures[route].get(
+                    "error", "Developer output contract previously failed"
+                )
+                errors.append(f"{route}: {error}")
+                log_info(f"Skipping contract-failed model route: {route}")
+                continue
             if route in failed_routes:
                 log_info(f"Skipping unavailable model route: {route}")
                 continue
-            retried_developer_contract = False
             try:
                 log_info(
                     f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})..."
                 )
-                if backend == "ollama":
-                    response = self.call_agent_ollama_fallback(
-                        role,
-                        prompt,
-                        system_prompt,
-                        model=model,
-                        **({"image_paths": image_paths} if image_paths else {}),
-                    )
-                    implementing = self.state.get(
-                        "state"
-                    ) == "IMPLEMENTING" and role.startswith("developer")
-                    has_blocks = any(
-                        marker in response
-                        for marker in (
-                            "[FILE_START:",
-                            "[FILE_EDIT_START:",
-                            "[SECTION_EDIT_START:",
+                response = request_route(backend, model, prompt)
+                validation_error = validate_response(response)
+                if implementing and validation_error:
+                    try:
+                        retry_count = max(
+                            0,
+                            int(
+                                self.config.get(
+                                    "developer_contract_retries_per_route", 1
+                                )
+                            ),
                         )
-                    )
-                    validation_error = contract_error(response)
-                    retryable_contract = not validation_error or (
-                        "outside the task contract" not in validation_error
-                    )
-                    if (
-                        implementing
-                        and (not has_blocks or validation_error)
-                        and retryable_contract
-                    ):
-                        if not has_blocks:
-                            validation_error = (
-                                f"{validation_error}; " if validation_error else ""
-                            ) + "Developer response omitted required file blocks"
-                        log_warning(
-                            f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
-                        )
-                        retry_prompt = developer_retry_prompt(
-                            response, validation_error
-                        )
-                        retried_developer_contract = True
-                        response = self.call_agent_ollama_fallback(
-                            role,
-                            retry_prompt,
-                            system_prompt,
-                            model=model,
-                            **({"image_paths": image_paths} if image_paths else {}),
-                        )
-                        has_blocks = any(
-                            marker in response
-                            for marker in (
-                                "[FILE_START:",
-                                "[FILE_EDIT_START:",
-                                "[SECTION_EDIT_START:",
+                    except (TypeError, ValueError):
+                        retry_count = 1
+                    for _ in range(retry_count):
+                        if "outside the task contract" in validation_error.lower():
+                            break
+                        if (
+                            task_id
+                            and int(
+                                self.state.setdefault("task_developer_calls", {}).get(
+                                    task_id, 0
+                                )
                             )
-                        )
-                        validation_error = contract_error(response)
-                    if implementing and not has_blocks:
-                        raise ResponseContractError(
-                            "Developer response omitted required file blocks"
-                        )
-                    self.validate_routed_response(role, response, response_schema)
-                    if validation_error:
-                        raise ResponseContractError(validation_error)
-                    return response
-                if backend == "codex":
-                    response = self.call_codex(
-                        prompt, system_prompt, role=role, model=model
-                    )
-                    self.validate_routed_response(role, response, response_schema)
-                    validation_error = contract_error(response)
-                    if validation_error:
-                        raise ResponseContractError(validation_error)
-                    return response
-                if backend == "agy":
-                    response = self.call_agy(
-                        prompt, system_prompt, role=role, model=model
-                    )
-                    self.validate_routed_response(role, response, response_schema)
-                    validation_error = contract_error(response)
-                    implementing = self.state.get(
-                        "state"
-                    ) == "IMPLEMENTING" and role.startswith("developer")
-                    retryable_contract = "outside the task contract" not in (
-                        validation_error or ""
-                    )
-                    if implementing and validation_error and retryable_contract:
-                        reason = validation_error.split("generated lines:", 1)[0]
-                        reason = reason.replace("\n", " ")[:300]
+                            >= max_developer_calls
+                        ):
+                            route_errors = "; ".join(
+                                errors + [f"{route}: {validation_error}"]
+                            )[:1200]
+                            used = self.state["task_developer_calls"].get(task_id, 0)
+                            raise DeveloperCallLimitReached(
+                                f"Developer task {task_id} reached its request limit "
+                                f"({used}/{max_developer_calls}); route errors: {route_errors}"
+                            )
                         log_warning(
-                            f"agy/{model} returned an invalid Developer contract: {reason}; retrying the same model once."
+                            f"{route} returned an invalid Developer contract; requesting a correction."
                         )
-                        retried_developer_contract = True
-                        response = self.call_agy(
-                            developer_retry_prompt(response, validation_error),
-                            system_prompt,
-                            role=role,
-                            model=model,
+                        previous_error = validation_error
+                        response = request_route(
+                            backend,
+                            model,
+                            developer_retry_prompt(response, previous_error),
                         )
-                        self.validate_routed_response(role, response, response_schema)
-                        validation_error = contract_error(response)
-                    if validation_error:
-                        raise ResponseContractError(validation_error)
-                    return response
-                raise ValueError(f"Unsupported backend in route: {backend}")
+                        validation_error = validate_response(response)
+                        if not validation_error:
+                            break
+                if validation_error:
+                    raise ResponseContractError(validation_error)
+                return response
             except Exception as error:
+                if isinstance(error, DeveloperCallLimitReached):
+                    raise
                 errors.append(f"{backend}/{model}: {error}")
                 if (
                     isinstance(error, ResponseContractError)
@@ -1080,12 +1129,21 @@ class AgentOrchestrator:
                     raise RuntimeError(
                         f"Strict JSON contract failed for {role}: {error}"
                     ) from error
-                if retried_developer_contract and isinstance(
-                    error, ResponseContractError
+                if (
+                    implementing
+                    and task_id
+                    and isinstance(error, ResponseContractError)
                 ):
-                    raise DeveloperContractRetryExhausted(
-                        f"{route} still failed the Developer output contract after one corrective retry: {error}"
-                    ) from error
+                    failures = self.state.setdefault(
+                        "task_contract_failures", {}
+                    ).setdefault(task_id, {})
+                    old_failure = failures.get(route, {})
+                    failures[route] = {
+                        "count": int(old_failure.get("count", 0)) + 1,
+                        "signature": developer_error_signature(str(error)),
+                        "error": str(error)[:1200],
+                    }
+                    self.save_state()
                 exhausted = backends.quota_exhausted(error)
                 if (
                     not isinstance(error, ResponseContractError)

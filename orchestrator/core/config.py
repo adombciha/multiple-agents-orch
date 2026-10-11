@@ -17,6 +17,12 @@ DEFAULT_CONFIG = {
     "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
     "max_plan_escalations": 1,  # After max_revisions narrow fixes fail a stage, give the Manager this many chances to replan before pausing for a human
+    "max_developer_calls_per_task": 6,
+    "developer_contract_retries_per_route": 1,
+    "developer_retry_response_chars": 3000,
+    "max_ollama_routes_per_call": 2,
+    "ollama_router_max_criterion_chars": 160,
+    "ollama_router_max_payload_chars": 6000,
     "backends": {
         "manager": "codex",
         "architect": "codex",

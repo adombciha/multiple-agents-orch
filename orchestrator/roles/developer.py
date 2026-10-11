@@ -896,7 +896,26 @@ class DeveloperAgent(BaseAgent):
         return list(dict.fromkeys(written_files))
 
     def retry_task_or_pause(self, task: dict, error: str) -> None:
-        from orchestrator.core.state import log_info
+        from orchestrator.core.state import developer_error_signature, log_info, log_warning
+
+        task_id = task.get("id")
+        signatures = self.orchestrator.state.setdefault(
+            "task_error_signatures", {}
+        ).setdefault(task_id, {})
+        signature = developer_error_signature(error)
+        signatures[signature] = int(signatures.get(signature, 0)) + 1
+        if signatures[signature] >= 3:
+            feedback = (
+                f"Task {task_id} repeated the same Developer failure "
+                f"{signatures[signature]} times. Failure details: {error[:1200]}"
+            )
+            log_warning(
+                f"Repeated Developer failure signature for {task_id}; requesting plan reconsideration."
+            )
+            self.orchestrator.escalate_to_replan_or_pause(
+                "Developer", feedback, "IMPLEMENTING", "IMPLEMENTING"
+            )
+            return
 
         self.orchestrator.escalate_developer_backend()
         self.orchestrator.maybe_hire_vendor(task)
@@ -909,6 +928,7 @@ class DeveloperAgent(BaseAgent):
         revisions = int(task.get("revisions", 0))
         if revisions < max_revisions:
             task["revisions"] = revisions + 1
+            task["last_error"] = error
             self.orchestrator.state["state"] = "IMPLEMENTING"
             self.orchestrator.state["last_developer_error"] = error
             self.orchestrator.save_state()
@@ -925,7 +945,7 @@ class DeveloperAgent(BaseAgent):
 
     def step_implementing(self):
         from orchestrator.core.state import (
-            DeveloperContractRetryExhausted,
+            DeveloperCallLimitReached,
             ResponseContractError,
             log_header,
             log_error,
@@ -1302,10 +1322,13 @@ class DeveloperAgent(BaseAgent):
                         "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
                         "Do not output analysis, a plan, Markdown fences, or explanations."
                     )
-            if (
-                self.orchestrator.state["code_revisions"] > 0
-                or task.get("revisions", 0) > 0
-            ):
+            if task.get("last_error"):
+                prompt += (
+                    "\n\nPrevious attempt for this task was rejected because: "
+                    f"{str(task['last_error'])[:1200]}"
+                )
+
+            if self.orchestrator.state["code_revisions"] > 0:
                 feedback = ""
                 if self.orchestrator.qa_report_path.exists():
                     with open(
@@ -1368,8 +1391,8 @@ class DeveloperAgent(BaseAgent):
                     if backend in ["ollama", "agy", "codex"]
                     else None,
                 )
-            except DeveloperContractRetryExhausted as error:
-                self.orchestrator.pause_for_human_review(
+            except DeveloperCallLimitReached as error:
+                self.orchestrator.escalate_to_replan_or_pause(
                     "Developer", str(error), "IMPLEMENTING", "IMPLEMENTING"
                 )
                 return
