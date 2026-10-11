@@ -1564,6 +1564,16 @@ def test_role_models_select_the_configured_seniority_model(
         initialized_orchestrator.get_active_model_for_role("developer_senior", "codex")
         == "auto"
     )
+    assert initialized_orchestrator.get_backend("developer_middle") == "codex"
+    assert initialized_orchestrator.get_backend("developer_junior") == "ollama"
+    assert initialized_orchestrator.config["role_model_routes"]["developer_middle"] == [
+        ["codex", "auto"],
+        ["agy", "auto:gemini-flash-medium"],
+        ["ollama", "auto"],
+    ]
+    assert initialized_orchestrator.config["role_model_routes"]["developer_junior"] == [
+        ["ollama", "auto"]
+    ]
     assert (
         initialized_orchestrator.get_active_model_for_role("developer_middle", "ollama")
         == "dynamic-local"

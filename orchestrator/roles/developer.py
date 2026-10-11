@@ -504,9 +504,19 @@ class DeveloperAgent(BaseAgent):
                             else "senior"
                         )
             roster.reassign_unavailable_levels(
-                tasks, roster_data, "rd_level", "developer"
+                tasks,
+                roster_data,
+                "rd_level",
+                "developer",
+                self.orchestrator.state.get("staffing", {}),
             )
-            roster.reassign_unavailable_levels(tasks, roster_data, "qa_level", "qa")
+            roster.reassign_unavailable_levels(
+                tasks,
+                roster_data,
+                "qa_level",
+                "qa",
+                self.orchestrator.state.get("staffing", {}),
+            )
             target_files = list(
                 dict.fromkeys(path for task in tasks for path in task["target_files"])
             )
