@@ -2144,7 +2144,8 @@ def test_whole_markdown_task_keeps_declared_file_block_contract(
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
-    assert "[FILE_START: path/to/file.ext]" in prompt
+    assert "[FILE_START: README.md]" in prompt
+    assert "[FILE_START: path/to/file.ext]" not in prompt
     assert "[SECTION_EDIT_START:" not in prompt
     assert "New" in readme.read_text(encoding="utf-8")
 
@@ -2655,6 +2656,87 @@ def test_file_blocks_cannot_write_outside_task_contract(initialized_orchestrator
     assert written == []
     assert not (initialized_orchestrator.workspace / "allowed.py").exists()
     assert not (initialized_orchestrator.workspace / "test_orchestrator.py").exists()
+
+
+@pytest.mark.parametrize("format", ["file_blocks", "file_edits"])
+def test_developer_source_protocol_strings_are_not_output_blocks(
+    initialized_orchestrator, format
+):
+    import orchestrator.roles.developer as developer_module
+
+    source = Path(developer_module.__file__).read_text(encoding="utf-8")
+    target = initialized_orchestrator.workspace / "developer.py"
+    target.write_text(source, encoding="utf-8")
+    replacement = source.replace("import ast", "import ast  # Parser regression", 1)
+    if format == "file_blocks":
+        response = (
+            f"[FILE_START: developer.py]\n{replacement}\n[FILE_END: developer.py]"
+        )
+    else:
+        response = (
+            f"[FILE_EDIT_START: developer.py]\n[OLD]\n{source}\n"
+            f"[NEW]\n{replacement}\n[FILE_EDIT_END: developer.py]"
+        )
+    errors = []
+
+    assert initialized_orchestrator.developer.parse_and_write_files(
+        response, ["developer.py"], dry_run=True, validation_errors=errors
+    ) == ["developer.py"]
+    assert errors == []
+    assert target.read_text(encoding="utf-8") == source
+
+
+@pytest.mark.parametrize("backend", ["codex", "agy"])
+def test_cloud_routes_accept_recorded_developer_prompt_edit(
+    initialized_orchestrator, monkeypatch, backend
+):
+    old = (
+        '            if backend in ["ollama", "agy", "codex"]:\n'
+        "                if use_section_blocks:\n"
+        '                    system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."\n'
+        "                else:\n"
+        '                    system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."\n'
+    )
+    new = old.replace(
+        "                else:\n",
+        "                elif use_file_edits:\n"
+        '                    system_prompt += " Respond only with [FILE_EDIT_START: path], [OLD], [NEW], and [FILE_EDIT_END: path] blocks; never provide prose."\n'
+        "                else:\n",
+    )
+    filepath = "orchestrator/roles/developer.py"
+    target = initialized_orchestrator.workspace / filepath
+    target.parent.mkdir(parents=True)
+    source = "def build_prompt():\n    if True:\n        if True:\n" + old
+    target.write_text(source, encoding="utf-8")
+    response = (
+        f"[FILE_EDIT_START: {filepath}]\n[OLD]\n{old}"
+        f"[NEW]\n{new}[FILE_EDIT_END: {filepath}]\n"
+    )
+    initialized_orchestrator.state["state"] = "IMPLEMENTING"
+    initialized_orchestrator.config["role_model_routes"]["developer_senior"] = [
+        [backend, "auto"]
+    ]
+    provider = Mock(return_value=response)
+    monkeypatch.setattr(initialized_orchestrator, f"call_{backend}", provider)
+    errors = []
+
+    def validate(output):
+        return initialized_orchestrator.developer.parse_and_write_files(
+            output, [filepath], dry_run=True, validation_errors=errors
+        ) == [filepath]
+
+    result = initialized_orchestrator.call_role_model_routes(
+        "developer_senior", "repair prompt contract", response_validator=validate
+    )
+    assert result == response
+    assert errors == []
+    provider.assert_called_once()
+    assert initialized_orchestrator.parse_and_write_files(result, [filepath]) == [
+        filepath
+    ]
+    assert target.read_text(encoding="utf-8") == source.replace(
+        old.rstrip("\n"), new.rstrip("\n")
+    )
 
 
 def test_file_blocks_cannot_remove_existing_markdown_headings(initialized_orchestrator):

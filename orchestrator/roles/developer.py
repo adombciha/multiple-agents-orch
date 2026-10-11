@@ -598,17 +598,25 @@ class DeveloperAgent(BaseAgent):
                 validation_errors.append(message)
 
         pattern = re.compile(
-            r"\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]", re.DOTALL
+            r"^[ \t]*\[FILE_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[FILE_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         matches = pattern.findall(text)
         edit_pattern = re.compile(
-            r"\[FILE_EDIT_START:\s*(.*?)\]\s*\[OLD\]\n?(.*?)\n?\[NEW\]\n?(.*?)\n?\[FILE_EDIT_END:\s*\1\]",
-            re.DOTALL,
+            r"^[ \t]*\[FILE_EDIT_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n"
+            r"[ \t]*\[OLD\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[NEW\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[FILE_EDIT_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         edits = edit_pattern.findall(text)
         section_pattern = re.compile(
-            r"\[SECTION_EDIT_START:\s*(.*?)\]\s*\[HEADING\]\n?(.*?)\n?\[CONTENT\]\n?(.*?)\n?\[SECTION_EDIT_END:\s*\1\]",
-            re.DOTALL,
+            r"^[ \t]*\[SECTION_EDIT_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n"
+            r"[ \t]*\[HEADING\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[CONTENT\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[SECTION_EDIT_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         section_edits = section_pattern.findall(text)
         if (
@@ -1182,8 +1190,11 @@ class DeveloperAgent(BaseAgent):
             prompt = (
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
+                f"Exclusive writable files: {json.dumps(target_files)}\n"
                 f"Description: {task['description']}\n"
                 f"Machine contract: {json.dumps(machine_contract)}\n"
+                "The description may describe a larger parent task. Implement only the portion belonging to target_files. "
+                "Do not emit blocks for other files mentioned in the description or review feedback.\n"
                 f"Modify only target_files. {heading_rule} "
                 "Any READ_ONLY_REFERENCE content is for factual comparison only and must never be modified.\n"
             )
@@ -1235,8 +1246,11 @@ class DeveloperAgent(BaseAgent):
                     prompt += (
                         "Please write the code for any files that need to be created or modified. "
                         "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
-                        "[FILE_START: path/to/file.ext]\n"
-                        "[FILE_END: path/to/file.ext]\n\n"
+                        + "\n".join(
+                            f"[FILE_START: {filepath}]\n<complete file content>\n[FILE_END: {filepath}]"
+                            for filepath in target_files
+                        )
+                        + "\n\n"
                         "Insert the complete file content between the two markers. "
                         "Make sure the path is relative to the project root. "
                         "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
