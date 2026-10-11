@@ -17,6 +17,12 @@ DEFAULT_CONFIG = {
     "test_command": "python3 -m pytest -q",
     "max_revisions": 2,
     "max_plan_escalations": 1,  # After max_revisions narrow fixes fail a stage, give the Manager this many chances to replan before pausing for a human
+    "max_developer_calls_per_task": 6,
+    "developer_contract_retries_per_route": 1,
+    "developer_retry_response_chars": 3000,
+    "max_ollama_routes_per_call": 2,
+    "ollama_router_max_criterion_chars": 160,
+    "ollama_router_max_payload_chars": 6000,
     "backends": {
         "manager": "codex",
         "architect": "codex",
@@ -24,7 +30,7 @@ DEFAULT_CONFIG = {
         "reviewer": "codex",
         "qa": "ollama",
         "developer_senior": "codex",
-        "developer_middle": "ollama",
+        "developer_middle": "codex",
         "developer_junior": "ollama",
         "qa_senior": "ollama",
         "qa_middle": "ollama",
@@ -42,6 +48,8 @@ DEFAULT_CONFIG = {
     },
     "use_ponytail": False,  # Enforces minimalist senior developer/reviewer principles (YAGNI)
     "use_worktree": True,  # Enforces isolated git worktrees for agent roles
+    "require_delivery_confirmation": True,
+    "gui_port": 8765,
     "backend_escalation_path": ["ollama", "agy", "codex"],
     "vendor_quota_check_enabled": False,  # Probe vendor CLIs' interactive /usage screen (via tmux) before hiring; off by default (slow, needs tmux)
     "vendor_quota_check_threshold_pct": 95,
@@ -54,7 +62,7 @@ DEFAULT_CONFIG = {
         "manager": "auto",
         "reviewer": "auto",
         "developer_senior": "auto",
-        "developer_middle": "granite4.2:8b",
+        "developer_middle": "auto",
         "developer_junior": "gemma4:latest",
         "qa_senior": "deepseek-r1:7b",
         "qa_middle": "ornith:9b",
@@ -75,7 +83,7 @@ DEFAULT_CONFIG = {
         "manager": "codex",
         "reviewer": "codex",
         "developer_senior": "codex",
-        "developer_middle": "ollama",
+        "developer_middle": "codex",
         "developer_junior": "ollama",
         "qa_senior": "ollama",
         "qa_middle": "ollama",
@@ -98,9 +106,9 @@ DEFAULT_CONFIG = {
         "qa_senior": ["deepseek-r1:7b", "gemma4:latest"],
         "qa_middle": ["ornith:9b", "gemma4:latest"],
         "architect": ["auto", "auto:gemini-flash-medium"],
-        "developer_senior": ["auto", "gpt-oss:20b", "granite4.2:8b"],
-        "developer_middle": ["granite4.2:8b", "qwen3.5:9b", "llama3.1:8b"],
-        "developer_junior": ["gemma4:latest", "phi4-mini:latest", "nemotron-3-nano:4b"],
+        "developer_senior": ["auto"],
+        "developer_middle": ["auto", "auto:gemini-flash-medium"],
+        "developer_junior": [],
         "ra": ["auto:gemini-flash-medium"],
         "sales": ["auto:gemini-flash-medium"],
     },
@@ -108,86 +116,68 @@ DEFAULT_CONFIG = {
         "manager": [
             ["codex", "auto"],
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "qwen3.8:latest"],
+            ["ollama", "auto"],
         ],
         "architect": [
             ["codex", "auto"],
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "developer_senior": [
             ["codex", "auto"],
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "gpt-oss:20b"],
-            ["ollama", "granite4.2:8b"],
+            ["ollama", "auto"],
         ],
         "developer_middle": [
-            ["ollama", "granite4.2:8b"],
-            ["ollama", "qwen3.5:9b"],
-            ["ollama", "llama3.1:8b"],
+            ["codex", "auto"],
+            ["agy", "auto:gemini-flash-medium"],
+            ["ollama", "auto"],
         ],
         "developer_junior": [
-            ["ollama", "gemma4:latest"],
-            ["ollama", "phi4-mini:latest"],
-            ["ollama", "nemotron-3-nano:4b"],
+            ["ollama", "auto"],
         ],
         "qa_senior": [
-            ["ollama", "deepseek-r1:7b"],
-            ["ollama", "gemma4:latest"],
-            ["ollama", "ornith-1.5:9b"],
+            ["ollama", "auto"],
         ],
         "qa_middle": [
-            ["ollama", "ornith:9b"],
-            ["ollama", "gemma4:latest"],
-            ["ollama", "qwen3.5:9b"],
+            ["ollama", "auto"],
         ],
         "qa_junior": [
-            ["ollama", "gemma4:latest"],
-            ["ollama", "phi4-mini:latest"],
+            ["ollama", "auto"],
         ],
         "reviewer": [
             ["codex", "auto"],
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "security": [
-            ["ollama", "deepseek-r1:7b"],
-            ["ollama", "granite4.2:8b"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "devops": [
-            ["ollama", "qwen3.8:latest"],
-            ["ollama", "granite4.2:8b"],
+            ["ollama", "auto"],
         ],
-        "uiux": [["ollama", "qwen3.5:9b"], ["ollama", "gemma4:latest"]],
+        "uiux": [["ollama", "auto"]],
         "uiux_visual_review": [
-            ["ollama", "gemma4:latest"],
-            ["ollama", "venkataparswanadh/muse-glimmer:iq2_m"],
+            ["ollama", "auto"],
         ],
-        "fae": [["ollama", "qwen3.5:9b"], ["ollama", "gemma4:latest"]],
+        "fae": [["ollama", "auto"]],
         "integration": [
-            ["ollama", "granite4.2:8b"],
-            ["ollama", "qwen3.5:9b"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "ra": [
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "qwen3.8:latest"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "sales": [
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "qwen3.8:latest"],
-            ["ollama", "gemma4:latest"],
+            ["ollama", "auto"],
         ],
         "sre": [
             ["agy", "auto:gemini-flash-medium"],
-            ["ollama", "qwen3.8:latest"],
+            ["ollama", "auto"],
         ],
         "assistant": [
-            ["ollama", "gemma4:latest"],
-            ["ollama", "phi4-mini:latest"],
-            ["ollama", "lfm2.5:latest"],
+            ["ollama", "auto"],
         ],
     },
     "reasoning_effort": {
@@ -200,7 +190,6 @@ DEFAULT_CONFIG = {
         "rd": {"senior": 1, "middle": 2, "junior": 3},
         "qa": {"senior": 1, "middle": 2, "junior": 3},
     },
-    "qa_ollama_fallback_model": "gemma4:latest",
     # Internal staff trust weights (ollama-backed roles only). Vendors (codex/agy)
     # are billed per token and use vendor_scores below instead of a headcount weight.
     "worker_weights": {
@@ -238,19 +227,29 @@ def migrate_legacy_config(values: dict) -> dict:
 
     for role, model in migrated.get("role_models", {}).items():
         if model in old_models:
-            migrated["role_models"][role] = DEFAULT_CONFIG["role_models"].get(role, model)
+            migrated["role_models"][role] = DEFAULT_CONFIG["role_models"].get(
+                role, model
+            )
 
     for role, models in migrated.get("role_model_tiers", {}).items():
         migrated["role_model_tiers"][role] = [
-            "auto:gemini-flash-medium" if model.startswith("Gemini") and model in old_models
-            else "auto" if model in old_models else model
+            "auto:gemini-flash-medium"
+            if model.startswith("Gemini") and model in old_models
+            else "auto"
+            if model in old_models
+            else model
             for model in models
         ]
 
     for role, routes in migrated.get("role_model_routes", {}).items():
         routes = [route for route in routes if route[0] not in removed]
         routes = [
-            [backend, DEFAULT_CONFIG["model_tiers"].get(backend, [model])[0] if model in old_models else model]
+            [
+                backend,
+                DEFAULT_CONFIG["model_tiers"].get(backend, [model])[0]
+                if model in old_models
+                else model,
+            ]
             for backend, model in routes
         ]
         preferred = DEFAULT_CONFIG["role_model_routes"].get(role, [None])[0]
@@ -262,12 +261,17 @@ def migrate_legacy_config(values: dict) -> dict:
         migrated.get("model_tiers", {}).pop(backend, None)
     for backend, models in migrated.get("model_tiers", {}).items():
         migrated["model_tiers"][backend] = [
-            "auto:gemini-flash-medium" if model == "Gemini 3.5 Flash (Medium)"
-            else "auto" if model == "gpt-5.6-luna" else model
+            "auto:gemini-flash-medium"
+            if model == "Gemini 3.5 Flash (Medium)"
+            else "auto"
+            if model == "gpt-5.6-luna"
+            else model
             for model in models
         ]
     if "backend_escalation_path" in migrated:
         migrated["backend_escalation_path"] = [
-            backend for backend in migrated["backend_escalation_path"] if backend not in removed
+            backend
+            for backend in migrated["backend_escalation_path"]
+            if backend not in removed
         ]
     return migrated

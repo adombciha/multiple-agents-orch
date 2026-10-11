@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -17,6 +18,8 @@ AGY_MODEL_ALIASES = {
 }
 
 _agy_models_cache = (0.0, ())
+_tev1_circuit_open = False
+_tev1_routing_warning_logged = False
 
 
 def resolve_agy_model(model: str) -> str:
@@ -24,7 +27,7 @@ def resolve_agy_model(model: str) -> str:
         return AGY_MODEL_ALIASES.get(model, model)
 
     global _agy_models_cache
-    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 3600:
+    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 300:
         result = subprocess.run(
             ["agy", "models"], capture_output=True, text=True, timeout=60, check=False
         )
@@ -32,19 +35,29 @@ def resolve_agy_model(model: str) -> str:
             raise RuntimeError(f"Cannot list AGY models: {result.stderr.strip()}")
         _agy_models_cache = (
             time.monotonic(),
-            tuple(line.split("\t", 1)[0] for line in result.stdout.splitlines() if "\t" in line),
+            tuple(
+                line.split("\t", 1)[0]
+                for line in result.stdout.splitlines()
+                if "\t" in line
+            ),
         )
 
     family, effort = model.removeprefix("auto:").rsplit("-", 1)
     prefix, _, variant = family.partition("-")
-    pattern = re.compile(
-        rf"^{re.escape(prefix)}-(\d+(?:\.\d+)*)-{re.escape(variant)}-{re.escape(effort)}$"
-    ) if prefix == "gemini" else re.compile(
-        rf"^{re.escape(prefix)}-{re.escape(variant)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+    pattern = (
+        re.compile(
+            rf"^{re.escape(prefix)}-(\d+(?:\.\d+)*)-{re.escape(variant)}-{re.escape(effort)}$"
+        )
+        if prefix == "gemini"
+        else re.compile(
+            rf"^{re.escape(prefix)}-{re.escape(variant)}-(\d+(?:-\d+)*)-{re.escape(effort)}$"
+        )
     )
-    matches = ((tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
-               for name in _agy_models_cache[1]
-               if (match := pattern.fullmatch(name)))
+    matches = (
+        (tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
+        for name in _agy_models_cache[1]
+        if (match := pattern.fullmatch(name))
+    )
     try:
         return max(matches)[1]
     except ValueError as exc:
@@ -79,6 +92,17 @@ def get_backend(orchestrator, role: str) -> str:
 
 
 def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | None:
+    if backend == "ollama":
+        candidates = sorted(
+            discover_ollama_chat_models(orchestrator, force_refresh=True)
+        )
+        if not candidates:
+            return None
+        ranked = route_ollama_model_with_tev1(
+            orchestrator, role, candidates, f"Execution for role {role}"
+        )
+        return ranked[0] if ranked else candidates[0]
+
     expected_backend = orchestrator.config.get("role_model_backends", {}).get(role)
     if backend == expected_backend:
         role_tiers = orchestrator.config.get("role_model_tiers", {}).get(role, [])
@@ -103,34 +127,34 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
     return tiers[-1]
 
 
-OLLAMA_MODEL_DESCRIPTIONS = {
-    "gpt-oss:20b": "advanced reasoning and complex code implementation",
-    "deepseek-r1:7b": "deep reasoning, mathematical logic, and verification",
-    "granite4.2:8b": "enterprise software engineering, refactoring, and integration",
-    "qwen3.8:latest": "general programming, system devops, and complex logic",
-    "qwen3.5:9b": "fast capable coding, UI/UX, and scripting",
-    "llama3.1:8b": "general purpose language understanding and synthesis",
-    "gemma4:latest": "efficient coding, QA testing, and review",
-    "ornith-1.5:9b": "rigorous QA, test execution, and verification",
-    "ornith:9b": "automated test evaluation and verification",
-    "phi4-mini:latest": "lightweight junior coding and unit tests",
-    "nemotron-3-nano:4b": "fast lightweight junior coding",
-    "lfm2.5:latest": "documentation, changelogs, and assistant tasks",
-    "venkataparswanadh/muse-glimmer:iq2_m": "visual design and UI styling",
-}
+def _ollama_model_matches(candidate: str, installed: set[str]) -> bool:
+    if candidate in installed:
+        return True
+    for model in installed:
+        if model.startswith(f"{candidate}:") or candidate.startswith(f"{model}:"):
+            return True
+        if candidate.endswith(":latest") and model == candidate[:-7]:
+            return True
+        if model.endswith(":latest") and candidate == model[:-7]:
+            return True
+    return False
 
 
-def discover_installed_ollama_models(orchestrator) -> set[str]:
+def discover_installed_ollama_models(
+    orchestrator, force_refresh: bool = False
+) -> set[str]:
     """Discover installed models from Ollama /api/tags endpoint without pulling or deleting."""
     from orchestrator.core.state import log_info
 
     cached = getattr(orchestrator, "_installed_ollama_models_cache", None)
-    if cached and time.monotonic() - cached[0] < 60:
+    if cached and not force_refresh and time.monotonic() - cached[0] < 60:
         return cached[1]
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/tags"
     try:
-        response = requests.get(url, timeout=orchestrator.config.get("ollama_router_timeout", 5))
+        response = requests.get(
+            url, timeout=orchestrator.config.get("ollama_router_timeout", 5)
+        )
         if response.status_code == 200:
             data = response.json()
             models = {m.get("name") for m in data.get("models", []) if m.get("name")}
@@ -139,9 +163,77 @@ def discover_installed_ollama_models(orchestrator) -> set[str]:
     except Exception as exc:
         log_info(f"Could not discover Ollama installed models at {url}: {exc}")
 
-    if cached:
+    if cached and not force_refresh:
         return cached[1]
     return set()
+
+
+def discover_ollama_chat_models(
+    orchestrator, force_refresh: bool = False
+) -> dict[str, dict[str, object]]:
+    """Return installed models that Ollama reports as supporting completion."""
+    from orchestrator.core.state import log_info
+
+    installed = discover_installed_ollama_models(orchestrator, force_refresh)
+    if not installed:
+        return {}
+
+    cached = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    if (
+        cached
+        and cached[1] == frozenset(installed)
+        and time.monotonic() - cached[0] < 60
+    ):
+        return cached[2]
+
+    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/show"
+    chat_models = {}
+    for model in sorted(installed):
+        if _ollama_model_matches(router_model, {model}):
+            continue
+        try:
+            response = requests.post(
+                url,
+                json={"model": model},
+                timeout=orchestrator.config.get("ollama_router_timeout", 5),
+            )
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            capabilities = data.get("capabilities", [])
+            if "completion" not in capabilities:
+                continue
+            details = data.get("details", {})
+            model_info = data.get("model_info", {})
+            context_length = next(
+                (
+                    value
+                    for key, value in model_info.items()
+                    if key.endswith(".context_length")
+                ),
+                None,
+            )
+            chat_models[model] = {
+                key: value
+                for key, value in {
+                    "family": details.get("family"),
+                    "parameter_size": details.get("parameter_size"),
+                    "quantization_level": details.get("quantization_level"),
+                    "context_length": context_length,
+                    "capabilities": sorted(capabilities),
+                }.items()
+                if value is not None
+            }
+        except Exception as exc:
+            log_info(f"Could not inspect Ollama model '{model}': {exc}")
+
+    orchestrator._ollama_chat_models_cache = (
+        time.monotonic(),
+        frozenset(installed),
+        chat_models,
+    )
+    return chat_models
 
 
 def route_ollama_model_with_tev1(
@@ -149,91 +241,216 @@ def route_ollama_model_with_tev1(
     role: str,
     candidates: list[str],
     task_summary: str | None = None,
-) -> str | None:
-    """Use Tev1 as a decision router via /v1/systemone to pick among installed candidates."""
+    *,
+    criteria: dict[str, str | None] | None = None,
+    require_installed: bool = True,
+) -> list[str] | None:
+    """Rank runtime candidates using Tev1 choice probabilities."""
     from orchestrator.core.state import log_info, log_warning
 
     if not orchestrator.config.get("ollama_router_enabled", True):
         return None
 
-    installed_models = discover_installed_ollama_models(orchestrator)
+    chat_model_cache = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    installed_models = (
+        set(chat_model_cache[1])
+        if chat_model_cache
+        else discover_installed_ollama_models(orchestrator)
+    )
     if not installed_models:
         return None
 
     router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
 
-    def _matches(candidate: str, installed: set[str]) -> bool:
-        if candidate in installed:
-            return True
-        for m in installed:
-            if m == candidate or m.startswith(f"{candidate}:") or candidate.startswith(f"{m}:"):
-                return True
-            if candidate.endswith(":latest") and m == candidate[:-7]:
-                return True
-            if m.endswith(":latest") and candidate == m[:-7]:
-                return True
-        return False
-
-    if not _matches(router_model, installed_models):
-        log_info(f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back.")
+    if not _ollama_model_matches(router_model, installed_models):
+        log_info(
+            f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back."
+        )
         return None
 
-    available_candidates = [c for c in candidates if _matches(c, installed_models)]
+    available_candidates = list(
+        dict.fromkeys(
+            candidate
+            for candidate in candidates
+            if (
+                not require_installed
+                or _ollama_model_matches(candidate, installed_models)
+            )
+            and not _ollama_model_matches(candidate, {router_model})
+        )
+    )
     if not available_candidates:
         return None
     if len(available_candidates) == 1:
-        return available_candidates[0]
+        return available_candidates
+    if len(available_candidates) > 26:
+        log_warning("Tev1 supports at most 26 choices; using static local model order.")
+        return None
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
-    candidate_descs = "; ".join(
-        f"{c}: {OLLAMA_MODEL_DESCRIPTIONS.get(c, 'general task model')}"
-        for c in available_candidates
-    )
-    state_input = f"Role: {role}. Task: {summary}. Candidates: {candidate_descs}"
+    cache = getattr(orchestrator, "_tev1_routing_cache", None)
+    if cache is None:
+        cache = orchestrator._tev1_routing_cache = {}
+    task_id = orchestrator.state.get("active_task_id")
+    cache_key = (role, task_id, summary, tuple(available_candidates))
+    if cache_key in cache:
+        cached = cache[cache_key]
+        return list(cached) if cached is not None else None
+    if _tev1_circuit_open:
+        cache[cache_key] = None
+        return None
+
+    state_input = f"Role: {role}. Task: {summary}"
 
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
-    payload = {
-        "model": router_model,
-        "state": state_input,
-        "questions": {
-            "selected_model": {
-                "type": "choice",
-                "instructions": f"Select the best model for the role '{role}'.",
-                "criteria": {
-                    candidate: OLLAMA_MODEL_DESCRIPTIONS.get(
-                        candidate, "general task model"
-                    )
-                    for candidate in available_candidates
-                },
-            }
-        },
-    }
+
+    try:
+        criterion_chars = max(
+            0, int(orchestrator.config.get("ollama_router_max_criterion_chars", 160))
+        )
+        max_payload_chars = max(
+            1, int(orchestrator.config.get("ollama_router_max_payload_chars", 6000))
+        )
+    except (TypeError, ValueError):
+        criterion_chars, max_payload_chars = 160, 6000
+
+    def make_payload(criteria_chars: int, include_descriptions: bool = True) -> dict:
+        question = {
+            "type": "choice",
+            "instructions": f"Select the best model for the role '{role}'.",
+        }
+        question["criteria"] = {
+            candidate: (
+                " ".join(criteria[candidate].split())[:criteria_chars]
+                if include_descriptions
+                and criteria
+                and isinstance(criteria.get(candidate), str)
+                else None
+            )
+            for candidate in available_candidates
+        }
+        return {
+            "model": router_model,
+            "state": state_input,
+            "questions": {"selected_model": question},
+        }
+
+    payload = make_payload(criterion_chars)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        payload = make_payload(60)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        payload = make_payload(0, include_descriptions=False)
+    if (
+        len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        > max_payload_chars
+    ):
+        log_warning(
+            "Tev1 request exceeds the configured payload character limit; using static candidate order."
+        )
+        cache[cache_key] = None
+        return None
+
+    def response_detail(result) -> str:
+        detail = getattr(result, "text", "")
+        return " ".join(detail.split())[:300] if isinstance(detail, str) else ""
+
+    def is_context_error(result) -> bool:
+        return result.status_code == 400 and bool(
+            re.search(r"context|length|token|too\s+long", response_detail(result), re.I)
+        )
+
+    def disable_router(result, previous_detail: str = "") -> None:
+        global _tev1_circuit_open, _tev1_routing_warning_logged
+        _tev1_circuit_open = True
+        if _tev1_routing_warning_logged:
+            return
+        _tev1_routing_warning_logged = True
+        detail = response_detail(result) or previous_detail
+        suffix = f" Response: {detail}" if detail else ""
+        log_warning(
+            f"Ollama /v1/systemone returned status {result.status_code}.{suffix} "
+            "Tev1 routing is disabled for this process; using static candidate order."
+        )
 
     try:
         timeout = orchestrator.config.get("ollama_router_timeout", 10)
         response = requests.post(url, json=payload, timeout=timeout)
         if response.status_code != 200:
-            log_info(
-                f"Ollama /v1/systemone returned status {response.status_code}; falling back to static routes."
-            )
-            return None
+            if is_context_error(response):
+                previous_detail = response_detail(response)
+                retry_payload = make_payload(0, include_descriptions=False)
+                if (
+                    len(
+                        json.dumps(
+                            retry_payload, ensure_ascii=False, separators=(",", ":")
+                        )
+                    )
+                    > max_payload_chars
+                ):
+                    cache[cache_key] = None
+                    return None
+                response = requests.post(url, json=retry_payload, timeout=timeout)
+                if response.status_code != 200:
+                    disable_router(response, previous_detail)
+                    cache[cache_key] = None
+                    return None
+            else:
+                disable_router(response)
+                cache[cache_key] = None
+                return None
         data = response.json()
         ans = data.get("answers", {}).get("selected_model", {})
         choice = ans.get("choice")
-        confidence = float(ans.get("confidence", 0.0))
+        probabilities = ans.get("probabilities")
+        confidence = ans.get("confidence")
         min_conf = float(orchestrator.config.get("ollama_router_min_confidence", 0.5))
 
-        if choice in available_candidates and confidence >= min_conf:
-            log_info(
-                f"Tev1 router selected '{choice}' for {role} (confidence: {confidence:.2f})."
+        def valid_probability(value):
+            return (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and 0 <= value <= 1
             )
-            return choice
-        log_warning(
-            f"Tev1 router returned invalid choice '{choice}' or low confidence ({confidence:.2f}); falling back."
+
+        if (
+            choice not in available_candidates
+            or not isinstance(probabilities, dict)
+            or set(probabilities) != set(available_candidates)
+            or not all(valid_probability(value) for value in probabilities.values())
+            or not valid_probability(confidence)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=0.01)
+            or probabilities[choice] < max(probabilities.values()) - 0.001
+        ):
+            log_warning(
+                "Tev1 returned an invalid model probability distribution; using static local model order."
+            )
+            cache[cache_key] = None
+            return None
+
+        ranked = sorted(
+            available_candidates,
+            key=lambda candidate: probabilities[candidate],
+            reverse=True,
         )
-        return None
+        scores = ", ".join(
+            f"{candidate}={probabilities[candidate]:.3f}" for candidate in ranked
+        )
+        qualifier = "low confidence; " if confidence < min_conf else ""
+        log_info(
+            f"Tev1 ranked {role} options ({qualifier}confidence {confidence:.2f}): {scores}"
+        )
+        cache[cache_key] = ranked
+        return ranked
     except Exception as exc:
         log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
+        cache[cache_key] = None
         return None
 
 
@@ -253,11 +470,9 @@ def call_ollama(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    model = (
-        model
-        or orchestrator.get_active_model_for_role(role, "ollama")
-        or orchestrator.config.get("ollama_model", "gemma2:2b")
-    )
+    model = model or orchestrator.get_active_model_for_role(role, "ollama")
+    if not model:
+        raise RuntimeError("No installed Ollama chat-capable model is available.")
     if "tev1" in model.lower():
         raise RuntimeError(
             f"Model '{model}' is restricted to decision routing via /v1/systemone and cannot be used as task executor."
@@ -287,7 +502,7 @@ def call_ollama(
         response = requests.post(url, json=payload, timeout=timeout)
         if payload.get("think") and response.status_code == 400:
             log_info(
-                f"Ollama model {model} does not accept think={think}; retrying without thinking."
+                f"Ollama returned HTTP 400 with think={think} for {model}; retrying without thinking."
             )
             no_think_models.add(model)
             orchestrator._ollama_no_think_models = no_think_models
@@ -297,9 +512,13 @@ def call_ollama(
         response.raise_for_status()
         return response.json()["message"]["content"]
     except requests.exceptions.RequestException as e:
+        error_response = getattr(e, "response", None)
+        detail = ""
+        if error_response is not None and error_response.status_code == 400:
+            detail = f": {error_response.text.strip()[:500]}"
         log_error(f"Failed to communicate with Ollama at {url}.")
-        log_error(f"Error detail: {e}")
-        raise RuntimeError(f"Ollama connection failed: {e}")
+        log_error(f"Error detail: {e}{detail}")
+        raise RuntimeError(f"Ollama connection failed: {e}{detail}") from e
 
 
 def call_codex(
@@ -329,9 +548,16 @@ def call_codex(
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
+    if role.startswith("developer") and model != "auto" and not model.endswith("-luna"):
+        raise RuntimeError("Developer Codex route requires a Luna model")
+    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
+    if model == "auto":
+        from orchestrator.core.cloud_routing import select_codex_model
+
+        model, effort = select_codex_model(orchestrator, role, prompt)
+    orchestrator._resolved_cloud_model = model
     if model and model != "auto":
         cmd.extend(["-m", model])
-    effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if effort:
         cmd.extend(["-c", f"model_reasoning_effort={effort!r}"])
     cmd.append("-")
@@ -378,10 +604,27 @@ def call_agy(
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
     full_prompt += prompt
 
-    cmd = ["agy", "--sandbox", "--mode", "plan"]
+    mode = (
+        "accept-edits"
+        if orchestrator.state.get("state") == "IMPLEMENTING"
+        and role.startswith("developer")
+        else "plan"
+    )
+    if mode == "accept-edits":
+        full_prompt += (
+            "\n\nDo not edit files directly or use workspace tools. "
+            "Return only the machine-readable file blocks required by the task."
+        )
+
+    cmd = ["agy", "--sandbox", "--mode", mode]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
+    if model and model.startswith("auto:"):
+        from orchestrator.core.cloud_routing import select_agy_model
+
+        model = select_agy_model(orchestrator, role, prompt, model)
     if model:
         model = resolve_agy_model(model)
+    orchestrator._resolved_cloud_model = model
     if model:
         cmd.extend(["--model", model])
     cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
@@ -465,15 +708,36 @@ def quota_exhausted(error: Exception) -> bool:
 
 def backend_available(orchestrator, backend: str) -> bool:
     exhausted = orchestrator.state.setdefault("quota_exhausted_backends", {})
-    return backend not in exhausted
+    until = exhausted.get(backend)
+    if until is None:
+        return True
+    if (
+        isinstance(until, (int, float))
+        and not isinstance(until, bool)
+        and until > time.time()
+    ):
+        return False
+    exhausted.pop(backend, None)
+    prefix = f"{backend}/"
+    orchestrator.state["failed_model_routes"] = [
+        route
+        for route in orchestrator.state.get("failed_model_routes", [])
+        if not route.startswith(prefix)
+    ]
+    for routes in orchestrator.state.get("task_failed_model_routes", {}).values():
+        routes[:] = [route for route in routes if not route.startswith(prefix)]
+    orchestrator.save_state()
+    return True
 
 
 def mark_backend_quota_exhausted(orchestrator, backend: str) -> None:
     from orchestrator.core.state import log_warning
 
-    orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = True
+    orchestrator.state.setdefault("quota_exhausted_backends", {})[backend] = (
+        time.time() + 300
+    )
     orchestrator.save_state()
-    log_warning(f"{backend} quota exhausted; skipping it for this workflow.")
+    log_warning(f"{backend} quota exhausted; retrying after 5 minutes.")
 
 
 QUOTA_EXHAUSTED_THRESHOLD_PCT = 95
@@ -765,9 +1029,9 @@ def maybe_hire_vendor(orchestrator, task: dict) -> str | None:
         if check_vendor_quota(orchestrator, hired_backend) is False:
             mark_backend_quota_exhausted(orchestrator, hired_backend)
             continue
-        orchestrator.state.setdefault("task_backend_overrides", {})[task_id] = (
-            hired_backend
-        )
+        orchestrator.state.setdefault("task_backend_overrides", {})[
+            task_id
+        ] = hired_backend
         orchestrator.save_state()
         log_warning(
             f"[!] Task {task_id} is struggling on internal staff ({effective_role}); hiring vendor '{hired_backend}' (rating {hired_rating}) to firefight."

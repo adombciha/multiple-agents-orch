@@ -1,8 +1,9 @@
 from __future__ import annotations
 import ast
-import sys
+import difflib
 import json
 import re
+import sys
 from pathlib import Path
 from orchestrator.roles.base_agent import (
     BaseAgent,
@@ -33,9 +34,55 @@ def _parse_error(filepath: str, content: str) -> str | None:
             ast.parse(content)
         elif suffix == ".json":
             json.loads(content)
-    except (SyntaxError, ValueError) as error:
+    except SyntaxError as error:
+        lines = content.splitlines()
+        start = max((error.lineno or 1) - 3, 0)
+        end = min((error.lineno or 1) + 2, len(lines))
+        excerpt = " | ".join(
+            f"{index + 1}: {lines[index]}" for index in range(start, end)
+        )
+        return f"{error}; generated lines: {excerpt[:500]}"
+    except ValueError as error:
         return str(error)
     return None
+
+
+def _current_file_excerpt(filepath: str, original: str, old: str) -> str:
+    source_lines = original.splitlines()
+    old_lines = old.splitlines()
+    if not source_lines:
+        return ""
+
+    normalized_source = [line.strip() for line in source_lines]
+    normalized_old = [line.strip() for line in old_lines]
+    match = max(
+        difflib.SequenceMatcher(
+            None, normalized_old, normalized_source
+        ).get_matching_blocks(),
+        key=lambda block: block.size,
+    )
+    if match.size:
+        focus = match.b + match.size - 1
+    else:
+        anchors = sorted(
+            (line for line in normalized_old if line), key=len, reverse=True
+        )
+        close = (
+            difflib.get_close_matches(anchors[0], normalized_source, n=1, cutoff=0.5)
+            if anchors
+            else []
+        )
+        focus = normalized_source.index(close[0]) if close else 0
+
+    start = max(0, focus - 5)
+    end = min(len(source_lines), start + 12)
+    if end - start < 12:
+        start = max(0, end - 12)
+    excerpt = "\n".join(
+        f"{index + 1}: {source_lines[index][:140]}" for index in range(start, end)
+    )
+    return (f"Current {filepath} excerpt (lines {start + 1}-{end}):\n{excerpt}")[:1000]
+
 
 TASK_PLAN_SCHEMA = {
     "type": "object",
@@ -58,6 +105,7 @@ def is_task_plan_response(response: str) -> bool:
 
 
 class DeveloperAgent(BaseAgent):
+
     def _markdown_headings(self, base_dir: Path, filepath: str) -> list[str]:
         path = base_dir / filepath
         if path.suffix.lower() != ".md" or not path.is_file():
@@ -102,7 +150,7 @@ class DeveloperAgent(BaseAgent):
                 "response_must_start_with": "[SECTION_EDIT_START:",
                 "allow_prose": False,
             }
-        if Path(filepath).suffix.lower() == ".md" and (base_dir / filepath).is_file():
+        if (base_dir / filepath).is_file():
             return {
                 "format": "file_edits",
                 "response_must_start_with": "[FILE_EDIT_START:",
@@ -494,9 +542,19 @@ class DeveloperAgent(BaseAgent):
                             else "senior"
                         )
             roster.reassign_unavailable_levels(
-                tasks, roster_data, "rd_level", "developer"
+                tasks,
+                roster_data,
+                "rd_level",
+                "developer",
+                self.orchestrator.state.get("staffing", {}),
             )
-            roster.reassign_unavailable_levels(tasks, roster_data, "qa_level", "qa")
+            roster.reassign_unavailable_levels(
+                tasks,
+                roster_data,
+                "qa_level",
+                "qa",
+                self.orchestrator.state.get("staffing", {}),
+            )
             target_files = list(
                 dict.fromkeys(path for task in tasks for path in task["target_files"])
             )
@@ -568,21 +626,37 @@ class DeveloperAgent(BaseAgent):
         dry_run: bool = False,
         allowed_heading: str | None = None,
         allow_markdown_heading_changes: bool = False,
+        validation_errors: list[str] | None = None,
     ) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
 
+        def reject(message: str, retry_context: str | None = None) -> None:
+            log_warning(message)
+            if validation_errors is not None:
+                validation_errors.append(message)
+                if retry_context:
+                    validation_errors.append(retry_context)
+
         pattern = re.compile(
-            r"\[FILE_START:\s*(.*?)\](.*?)\[FILE_END:\s*\1\]", re.DOTALL
+            r"^[ \t]*\[FILE_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[FILE_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         matches = pattern.findall(text)
         edit_pattern = re.compile(
-            r"\[FILE_EDIT_START:\s*(.*?)\]\s*\[OLD\]\n?(.*?)\n?\[NEW\]\n?(.*?)\n?\[FILE_EDIT_END:\s*\1\]",
-            re.DOTALL,
+            r"^[ \t]*\[FILE_EDIT_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n"
+            r"[ \t]*\[OLD\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[NEW\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[FILE_EDIT_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         edits = edit_pattern.findall(text)
         section_pattern = re.compile(
-            r"\[SECTION_EDIT_START:\s*(.*?)\]\s*\[HEADING\]\n?(.*?)\n?\[CONTENT\]\n?(.*?)\n?\[SECTION_EDIT_END:\s*\1\]",
-            re.DOTALL,
+            r"^[ \t]*\[SECTION_EDIT_START:[ \t]*([^\]\r\n]+)\][ \t]*\r?\n"
+            r"[ \t]*\[HEADING\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[CONTENT\][ \t]*\r?\n(.*?)"
+            r"^[ \t]*\[SECTION_EDIT_END:[ \t]*\1\][ \t]*(?=\r?$)",
+            re.DOTALL | re.MULTILINE,
         )
         section_edits = section_pattern.findall(text)
         if (
@@ -607,7 +681,7 @@ class DeveloperAgent(BaseAgent):
             str(Path(block[0].strip())) not in allowed
             for block in (*matches, *edits, *section_edits)
         ):
-            log_warning("Rejecting response with files outside the task contract.")
+            reject("Rejecting response with files outside the task contract.")
             return []
 
         written_files = []
@@ -615,12 +689,10 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             content = content.strip()
             if not content:
-                log_warning(f"Skipping empty file content: {filepath_str}")
+                reject(f"Skipping empty file content: {filepath_str}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
 
             # Strip potential leading/trailing markdown code block wrappers
@@ -642,14 +714,12 @@ class DeveloperAgent(BaseAgent):
             target_path = (base_dir / filepath_str).resolve()
             # Safety check: ensure it is inside base_dir
             if base_dir not in target_path.parents and target_path != base_dir:
-                log_warning(
-                    f"Skipping file write outside target directory: {filepath_str}"
-                )
+                reject(f"Skipping file write outside target directory: {filepath_str}")
                 continue
             if target_path.suffix.lower() == ".md" and target_path.exists():
                 original = target_path.read_text(encoding="utf-8")
                 if content == original:
-                    log_warning(f"Skipping unchanged file response: {filepath_str}")
+                    reject(f"Skipping unchanged file response: {filepath_str}")
                     continue
                 headings = [
                     line
@@ -660,14 +730,14 @@ class DeveloperAgent(BaseAgent):
                     any(heading not in content for heading in headings)
                     and not allow_markdown_heading_changes
                 ):
-                    log_warning(
+                    reject(
                         f"Skipping Markdown rewrite that removes existing headings: {filepath_str}"
                     )
                     continue
 
             parse_error = _parse_error(filepath_str, content)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping file whose content does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -686,10 +756,11 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             old = old.strip("\n")
             new = new.strip("\n")
+            if re.search(r"(?m)^\s*\[(?:OLD|NEW)\]\s*$", old + "\n" + new):
+                reject(f"Skipping edit with nested OLD/NEW marker: {filepath_str}")
+                continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
 
             base_dir = self.orchestrator.workspace
@@ -698,18 +769,26 @@ class DeveloperAgent(BaseAgent):
                 base_dir = worktree
             target_path = (base_dir / filepath_str).resolve()
             if base_dir not in target_path.parents or not target_path.is_file():
-                log_warning(f"Skipping edit for missing or unsafe file: {filepath_str}")
+                reject(f"Skipping edit for missing or unsafe file: {filepath_str}")
                 continue
 
             original = target_path.read_text(encoding="utf-8")
-            if not old or original.count(old) != 1:
-                log_warning(
-                    f"Skipping edit whose OLD text is not unique: {filepath_str}"
+            old_matches = original.count(old) if old else 0
+            if old_matches != 1:
+                message = (
+                    f"Skipping edit whose OLD text is not unique: {filepath_str} "
+                    f"(matched {old_matches} times)"
+                )
+                reject(
+                    message,
+                    _current_file_excerpt(filepath_str, original, old)
+                    if old_matches == 0
+                    else None,
                 )
                 continue
             updated = original.replace(old, new, 1)
             if updated == original:
-                log_warning(f"Skipping unchanged edit response: {filepath_str}")
+                reject(f"Skipping unchanged edit response: {filepath_str}")
                 continue
             headings = [
                 line
@@ -717,13 +796,13 @@ class DeveloperAgent(BaseAgent):
                 if re.match(r"^#{1,6}\s+\S", line)
             ]
             if any(heading not in updated for heading in headings):
-                log_warning(
+                reject(
                     f"Skipping Markdown edit that removes existing headings: {filepath_str}"
                 )
                 continue
             parse_error = _parse_error(filepath_str, updated)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -737,27 +816,19 @@ class DeveloperAgent(BaseAgent):
             heading = heading.strip()
             content = content.strip("\n")
             if not content.strip():
-                log_warning(
-                    f"Skipping empty section content: {filepath_str}: {heading}"
-                )
+                reject(f"Skipping empty section content: {filepath_str}: {heading}")
                 continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
-                log_warning(
-                    f"Skipping file not declared by task contract: {filepath_str}"
-                )
+                reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
             if allowed_heading and heading != allowed_heading:
                 if not heading:
                     heading = allowed_heading
                 else:
-                    log_warning(
-                        f"Skipping section not declared by task contract: {heading}"
-                    )
+                    reject(f"Skipping section not declared by task contract: {heading}")
                     continue
             if allowed_heading is None:
-                log_warning(
-                    f"Skipping section block for a file-level task: {filepath_str}"
-                )
+                reject(f"Skipping section block for a file-level task: {filepath_str}")
                 continue
 
             base_dir = self.orchestrator.workspace
@@ -766,7 +837,7 @@ class DeveloperAgent(BaseAgent):
                 base_dir = worktree
             target_path = (base_dir / filepath_str).resolve()
             if base_dir not in target_path.parents or not target_path.is_file():
-                log_warning(
+                reject(
                     f"Skipping section edit for missing or unsafe file: {filepath_str}"
                 )
                 continue
@@ -780,7 +851,7 @@ class DeveloperAgent(BaseAgent):
             ]
             heading_match = re.match(r"^(#{1,6})\s+\S", heading)
             if len(indices) != 1 or not heading_match:
-                log_warning(
+                reject(
                     f"Skipping edit whose heading is missing or ambiguous: {filepath_str}: {heading}"
                 )
                 continue
@@ -794,13 +865,13 @@ class DeveloperAgent(BaseAgent):
                     break
             original_body = "".join(lines[start:end]).strip()
             if content.strip() == original_body:
-                log_warning(
+                reject(
                     f"Skipping unchanged section response: {filepath_str}: {heading}"
                 )
                 continue
             updated = "".join(lines[:start]) + f"\n{content}\n\n" + "".join(lines[end:])
             if updated == original:
-                log_warning(
+                reject(
                     f"Skipping unchanged section response: {filepath_str}: {heading}"
                 )
                 continue
@@ -808,13 +879,13 @@ class DeveloperAgent(BaseAgent):
                 line.rstrip("\r\n") for line in lines if re.match(r"^#{1,6}\s+\S", line)
             ]
             if any(existing_heading not in updated for existing_heading in headings):
-                log_warning(
+                reject(
                     f"Skipping Markdown section edit that removes existing headings: {filepath_str}"
                 )
                 continue
             parse_error = _parse_error(filepath_str, updated)
             if parse_error:
-                log_warning(
+                reject(
                     f"Skipping section edit whose result does not parse: {filepath_str}: {parse_error}"
                 )
                 continue
@@ -825,7 +896,26 @@ class DeveloperAgent(BaseAgent):
         return list(dict.fromkeys(written_files))
 
     def retry_task_or_pause(self, task: dict, error: str) -> None:
-        from orchestrator.core.state import log_info
+        from orchestrator.core.state import developer_error_signature, log_info, log_warning
+
+        task_id = task.get("id")
+        signatures = self.orchestrator.state.setdefault(
+            "task_error_signatures", {}
+        ).setdefault(task_id, {})
+        signature = developer_error_signature(error)
+        signatures[signature] = int(signatures.get(signature, 0)) + 1
+        if signatures[signature] >= 3:
+            feedback = (
+                f"Task {task_id} repeated the same Developer failure "
+                f"{signatures[signature]} times. Failure details: {error[:1200]}"
+            )
+            log_warning(
+                f"Repeated Developer failure signature for {task_id}; requesting plan reconsideration."
+            )
+            self.orchestrator.escalate_to_replan_or_pause(
+                "Developer", feedback, "IMPLEMENTING", "IMPLEMENTING"
+            )
+            return
 
         self.orchestrator.escalate_developer_backend()
         self.orchestrator.maybe_hire_vendor(task)
@@ -838,6 +928,7 @@ class DeveloperAgent(BaseAgent):
         revisions = int(task.get("revisions", 0))
         if revisions < max_revisions:
             task["revisions"] = revisions + 1
+            task["last_error"] = error
             self.orchestrator.state["state"] = "IMPLEMENTING"
             self.orchestrator.state["last_developer_error"] = error
             self.orchestrator.save_state()
@@ -854,6 +945,8 @@ class DeveloperAgent(BaseAgent):
 
     def step_implementing(self):
         from orchestrator.core.state import (
+            DeveloperCallLimitReached,
+            ResponseContractError,
             log_header,
             log_error,
             log_success,
@@ -901,25 +994,45 @@ class DeveloperAgent(BaseAgent):
                 )
                 break
         for task in list(tasks):
-            if task.get("status") != "pending" or not str(
-                task.get("id", "")
-            ).startswith("FIX-"):
+            if task.get("status") != "pending":
                 continue
-            target_files = task.get("target_files") or list(
-                dict.fromkeys(
-                    path
-                    for existing_task in tasks
-                    for path in existing_task.get("target_files", [])
+            is_fix = str(task.get("id", "")).startswith("FIX-")
+            target_files = task.get("target_files") or (
+                list(
+                    dict.fromkeys(
+                        path
+                        for existing_task in tasks
+                        for path in existing_task.get("target_files", [])
+                    )
                 )
+                if is_fix
+                else []
             )
             if len(target_files) <= 1:
                 continue
-            task_index = tasks.index(task)
-            task_id = task["id"]
             section_base = self.orchestrator.workspace
             worktree = self.orchestrator.ai_dir / "worktree"
             if self.orchestrator.config.get("use_worktree", True) and worktree.exists():
                 section_base = worktree
+            existing_targets = all(
+                (section_base / path).is_file() for path in target_files
+            )
+            has_existing_target = any(
+                (section_base / path).is_file() for path in target_files
+            )
+            if (
+                not is_fix
+                and not (has_existing_target and not existing_targets)
+                and sum(
+                    (section_base / path).stat().st_size
+                    for path in target_files
+                    if (section_base / path).is_file()
+                )
+                <= 40_000
+            ):
+                continue
+            task_index = tasks.index(task)
+            task_id = task["id"]
             reference_headings = self._reference_headings_for_fix_task(
                 tasks, task, section_base
             )
@@ -952,7 +1065,7 @@ class DeveloperAgent(BaseAgent):
             if self.orchestrator.state.get("active_task_id") == task_id:
                 self.orchestrator.state.pop("active_task_id")
             log_info(
-                f"Split multi-file revision {task_id} into {len(split_tasks)} file-scoped tasks."
+                f"Split multi-file task {task_id} into {len(split_tasks)} file-scoped tasks."
             )
             self.orchestrator.save_state()
             with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:
@@ -974,8 +1087,9 @@ class DeveloperAgent(BaseAgent):
         _, rd_assignments = self.orchestrator.allocate_workers("rd", tasks)
         for task in pending_tasks:
             self.orchestrator.state["active_task_id"] = task["id"]
-            log_info(f"Implementing Task {task['id']}: {task['description']}")
-            description = task["description"].lstrip().lower()
+            task_description = task.get("implementation_scope") or task["description"]
+            log_info(f"Implementing Task {task['id']}: {task_description}")
+            description = task_description.lstrip().lower()
             if description.startswith(
                 (
                     "inventory ",
@@ -1071,6 +1185,18 @@ class DeveloperAgent(BaseAgent):
                 }
                 if task.get("section_heading"):
                     machine_contract["section_heading"] = task["section_heading"]
+            if (
+                not use_section_blocks
+                and len(target_files) > 1
+                and task.get("output_contract", {}).get("format") == "file_blocks"
+                and all((base_dir / filepath).is_file() for filepath in target_files)
+            ):
+                task["output_contract"] = {
+                    "format": "file_edits",
+                    "response_must_start_with": "[FILE_EDIT_START:",
+                    "allow_prose": False,
+                }
+                machine_contract["output_contract"] = task["output_contract"]
             use_file_edits = (
                 task.get("output_contract", {}).get("format") == "file_edits"
             )
@@ -1132,8 +1258,11 @@ class DeveloperAgent(BaseAgent):
             prompt = (
                 "Implement this single task in the workspace root.\n"
                 f"Task ID: {task['id']}\n"
-                f"Description: {task['description']}\n"
+                f"Exclusive writable files: {json.dumps(target_files)}\n"
+                f"Description: {task_description}\n"
                 f"Machine contract: {json.dumps(machine_contract)}\n"
+                "The description may describe a larger parent task. Implement only the portion belonging to target_files. "
+                "Do not emit blocks for other files mentioned in the description or review feedback.\n"
                 f"Modify only target_files. {heading_rule} "
                 "Any READ_ONLY_REFERENCE content is for factual comparison only and must never be modified.\n"
             )
@@ -1145,9 +1274,7 @@ class DeveloperAgent(BaseAgent):
                 )
 
             if backend == "ollama":
-                memory_block = brain.inject_prompt(
-                    self.orchestrator, task["description"]
-                )
+                memory_block = brain.inject_prompt(self.orchestrator, task_description)
                 if memory_block:
                     prompt += f"\n{memory_block}\n"
 
@@ -1167,30 +1294,41 @@ class DeveloperAgent(BaseAgent):
                         "other files, analysis, Markdown fences, or explanations."
                     )
                 elif use_file_edits:
-                    filepath = target_files[0]
                     prompt += (
-                        "Return only exact file edit blocks for the declared target file. "
+                        "Return exact file edit blocks for every declared target file. "
                         "Put the complete existing text to replace in [OLD] and the complete replacement text in [NEW]. "
                         "[OLD] must be copied verbatim from the current file contents above and must appear there exactly once; "
-                        "repeat the whole block once per independent change, and leave every other part of the file untouched. "
+                        "Put [OLD] and [NEW] on their own lines exactly once per block; never copy these markers into either payload. "
+                        "If the requested text is not present verbatim, choose a smaller exact span from CURRENT_FILE. "
+                        "include at least one block per target file, repeat the block for independent changes, "
+                        "and leave every other part of each file untouched. "
                         "Do not return the complete file, other files, analysis, Markdown fences, or explanations.\n"
-                        f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
+                        + "\n".join(
+                            f"[FILE_EDIT_START: {filepath}]\n[OLD]\n<exact existing text>\n[NEW]\n<replacement text>\n[FILE_EDIT_END: {filepath}]"
+                            for filepath in target_files
+                        )
                     )
                 else:
                     prompt += (
                         "Please write the code for any files that need to be created or modified. "
                         "You MUST wrap the code for each file exactly inside the following file-marker blocks:\n"
-                        "[FILE_START: path/to/file.ext]\n"
-                        "[FILE_END: path/to/file.ext]\n\n"
+                        + "\n".join(
+                            f"[FILE_START: {filepath}]\n<complete file content>\n[FILE_END: {filepath}]"
+                            for filepath in target_files
+                        )
+                        + "\n\n"
                         "Insert the complete file content between the two markers. "
                         "Make sure the path is relative to the project root. "
                         "Your response MUST begin with [FILE_START: and contain only file-marker blocks. "
                         "Do not output analysis, a plan, Markdown fences, or explanations."
                     )
-            if (
-                self.orchestrator.state["code_revisions"] > 0
-                or task.get("revisions", 0) > 0
-            ):
+            if task.get("last_error"):
+                prompt += (
+                    "\n\nPrevious attempt for this task was rejected because: "
+                    f"{str(task['last_error'])[:1200]}"
+                )
+
+            if self.orchestrator.state["code_revisions"] > 0:
                 feedback = ""
                 if self.orchestrator.qa_report_path.exists():
                     with open(
@@ -1217,20 +1355,32 @@ class DeveloperAgent(BaseAgent):
             if backend in ["ollama", "agy", "codex"]:
                 if use_section_blocks:
                     system_prompt += " Respond only with [SECTION_EDIT_START: path], [HEADING], [CONTENT], and [SECTION_EDIT_END: path] blocks; never provide prose."
+                elif use_file_edits:
+                    system_prompt += " Respond only with [FILE_EDIT_START: path], [OLD], [NEW], and [FILE_EDIT_END: path] blocks; never provide prose."
                 else:
                     system_prompt += " Respond only with [FILE_START: path] and [FILE_END: path] blocks; never provide prose."
             self.orchestrator.state["last_developer_role"] = agent_role
 
             def valid_file_response(response):
-                return set(
-                    self.parse_and_write_files(
-                        response,
-                        target_files,
-                        dry_run=True,
-                        allowed_heading=task.get("section_heading"),
-                        allow_markdown_heading_changes=allow_markdown_heading_changes,
+                validation_errors = []
+                valid_files = self.parse_and_write_files(
+                    response,
+                    target_files,
+                    dry_run=True,
+                    allowed_heading=task.get("section_heading"),
+                    allow_markdown_heading_changes=allow_markdown_heading_changes,
+                    validation_errors=validation_errors,
+                )
+                missing = set(target_files) - set(valid_files)
+                if missing:
+                    validation_errors.append(
+                        f"Missing valid edits for: {', '.join(sorted(missing))}"
                     )
-                ) == set(target_files)
+                if validation_errors:
+                    raise ResponseContractError(
+                        "; ".join(dict.fromkeys(validation_errors))[:1200]
+                    )
+                return True
 
             try:
                 dev_output = self.call_agent(
@@ -1241,14 +1391,22 @@ class DeveloperAgent(BaseAgent):
                     if backend in ["ollama", "agy", "codex"]
                     else None,
                 )
+            except DeveloperCallLimitReached as error:
+                self.orchestrator.escalate_to_replan_or_pause(
+                    "Developer", str(error), "IMPLEMENTING", "IMPLEMENTING"
+                )
+                return
             except RuntimeError as error:
                 self.retry_task_or_pause(task, str(error))
                 return
 
             if backend in ["ollama", "agy", "codex"]:
-                if not valid_file_response(dev_output):
+                try:
+                    valid_file_response(dev_output)
+                except ResponseContractError as error:
                     self.retry_task_or_pause(
-                        task, f"Task {task['id']} omitted or invalidated target files."
+                        task,
+                        f"Task {task['id']} omitted or invalidated target files: {error}",
                     )
                     return
                 written = self.parse_and_write_files(
@@ -1257,16 +1415,16 @@ class DeveloperAgent(BaseAgent):
                     allowed_heading=task.get("section_heading"),
                     allow_markdown_heading_changes=allow_markdown_heading_changes,
                 )
-                if written:
+                if set(written) == set(target_files):
                     log_success(
                         f"Successfully processed files written by Developer: {', '.join(written)}"
                     )
                 else:
                     log_warning(
-                        "No files were parsed from Developer response. Ensure they used [FILE_START: path] blocks."
+                        "Developer response did not update every declared target file."
                     )
                     self.retry_task_or_pause(
-                        task, f"Task {task['id']} produced no permitted file changes."
+                        task, f"Task {task['id']} produced incomplete file changes."
                     )
                     return
             developer_logs.append(

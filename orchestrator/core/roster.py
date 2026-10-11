@@ -62,23 +62,28 @@ def snapshot(orchestrator) -> dict:
 
 
 def reassign_unavailable_levels(
-    tasks: list[dict], roster_data: dict, role_key: str, role_prefix: str
+    tasks: list[dict],
+    roster_data: dict,
+    role_key: str,
+    role_prefix: str,
+    staffing: dict | None = None,
 ) -> None:
     """Move a task off an offline level onto the nearest staffed/hireable one."""
     available_roles = roster_data.get("available_roles", {})
+    capacity = staffing.get(role_key.removesuffix("_level"), {}) if staffing else None
+
+    def usable(level: str) -> bool:
+        return available_roles.get(f"{role_prefix}_{level}", {}).get(
+            "status"
+        ) == "available" and (capacity is None or capacity.get(level, 0) > 0)
+
     for task in tasks:
         level = task.get(role_key)
         if level not in LEVELS:
             continue
-        if (
-            available_roles.get(f"{role_prefix}_{level}", {}).get("status")
-            == "available"
-        ):
+        if usable(level):
             continue
         for candidate in LEVEL_FALLBACK.get(level, ()):
-            if (
-                available_roles.get(f"{role_prefix}_{candidate}", {}).get("status")
-                == "available"
-            ):
+            if usable(candidate):
                 task[role_key] = candidate
                 break

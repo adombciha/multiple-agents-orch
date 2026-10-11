@@ -7,6 +7,10 @@ import shutil
 import re
 import time
 import tempfile
+import hashlib
+import fcntl
+import threading
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 import requests
@@ -18,6 +22,19 @@ from orchestrator.roles.base_agent import PONYTAIL_PROMPT, inject_ponytail_promp
 
 class ResponseContractError(RuntimeError):
     """The provider responded, but not in the format required by this call."""
+
+
+class DeveloperContractRetryExhausted(ResponseContractError):
+    """A Developer response still failed validation after a corrective retry."""
+
+
+class DeveloperCallLimitReached(RuntimeError):
+    """The current task exhausted its persisted Developer request budget."""
+
+
+def developer_error_signature(error: str) -> str:
+    normalized = " ".join(re.sub(r"\d+", "", str(error)).split())
+    return hashlib.sha256(normalized[:160].encode("utf-8")).hexdigest()
 
 
 class Colors:
@@ -90,6 +107,10 @@ class AgentOrchestrator:
             self.ai_dir = workspace / ".ai-company"
         self.config_path = self.ai_dir / "config.json"
         self.state_path = self.ai_dir / "state.json"
+        self.pause_request_path = self.ai_dir / "pause.request"
+        self.execution_lock_path = workspace / f"{self.ai_dir.name}.execution.lock"
+        self._execution_lock_owner = None
+        self._execution_lock_depth = 0
 
         # Files for data sharing
         self.request_path = self.ai_dir / "request.md"
@@ -123,6 +144,9 @@ class AgentOrchestrator:
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
             "task_failed_model_routes": {},
+            "task_contract_failures": {},
+            "task_developer_calls": {},
+            "task_error_signatures": {},
             "task_developer_promotions": {},
             "task_backend_overrides": {},
             "tasks": [],
@@ -163,6 +187,10 @@ class AgentOrchestrator:
         if self.state_path.exists():
             try:
                 existing_state = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if self._completed_run_needs_preservation(existing_state):
+                    raise RuntimeError(
+                        "A completed run still has an undelivered worktree; its artifacts were preserved."
+                    )
                 if existing_state.get("state") in {"COMPLETED", "FAILED"}:
                     log_info("Clearing completed or failed workflow artifacts.")
                     self.clear_run_artifacts()
@@ -195,6 +223,17 @@ class AgentOrchestrator:
         )
 
     def clear_run_artifacts(self):
+        if self.state_path.exists():
+            try:
+                existing_state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise RuntimeError(
+                    "Cannot safely clear unreadable workflow state; existing artifacts were preserved."
+                ) from error
+            if self._completed_run_needs_preservation(existing_state):
+                raise RuntimeError(
+                    "The completed workflow has not been delivered; its artifacts were preserved."
+                )
         config_text = (
             self.config_path.read_text(encoding="utf-8")
             if self.config_path.exists()
@@ -223,6 +262,9 @@ class AgentOrchestrator:
             "specialists": [],
             "failed_model_routes": [],
             "task_failed_model_routes": {},
+            "task_contract_failures": {},
+            "task_developer_calls": {},
+            "task_error_signatures": {},
             "task_developer_promotions": {},
             "task_backend_overrides": {},
             "staffing": {
@@ -294,11 +336,13 @@ class AgentOrchestrator:
 
     def load_config_and_state(self):
         """Loads configuration and state files from disk."""
-        if not self.config_path.exists():
-            raise FileNotFoundError("Project not initialized. Please run 'init' first.")
-
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            loaded_config = json.load(f)
+        if self.config_path.exists():
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                loaded_config = json.load(f)
+        else:
+            if not self.state_path.exists():
+                raise FileNotFoundError("Project not initialized. Please run 'init' first.")
+            loaded_config = {}
         self.explicit_backends = set(loaded_config.get("backends", {}))
 
         from orchestrator.core.config import merge_defaults, migrate_legacy_config
@@ -319,8 +363,11 @@ class AgentOrchestrator:
 
         self.config = merge_defaults(DEFAULT_CONFIG, loaded_config)
 
-        with open(self.state_path, "r", encoding="utf-8") as f:
-            self.state = json.load(f)
+        self.state = self.read_state_snapshot()
+        if self._completed_run_needs_preservation(self.state):
+            self.state["state"] = "WAITING_FOR_DELIVERY"
+            self.state.setdefault("resume_state", "WAITING_FOR_DELIVERY")
+            self.save_state()
         self.state.setdefault("specialists", [])
         self.state.setdefault("staffing", {})
         self.state.setdefault("worker_assignments", {})
@@ -328,11 +375,222 @@ class AgentOrchestrator:
         self.state.setdefault("developer_promotions", {})
         self.state.setdefault("failed_model_routes", [])
         self.state.setdefault("task_failed_model_routes", {})
+        self.state.setdefault("task_contract_failures", {})
+        self.state.setdefault("task_developer_calls", {})
+        self.state.setdefault("task_error_signatures", {})
         self.state.setdefault("task_developer_promotions", {})
         self.state.setdefault("task_backend_overrides", {})
         for task_id, backend in list(self.state["task_backend_overrides"].items()):
             if backend in {"claude", "grok"}:
                 self.state["task_backend_overrides"][task_id] = self.config["backends"]["developer_senior"]
+
+    def read_state_snapshot(self) -> dict:
+        """Read the committed state without changing worker memory or run artifacts."""
+        with self.state_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _delivery_state_fingerprint(self, state: dict | None = None) -> str:
+        values = deepcopy(self.state if state is None else state)
+        for key in (
+            "delivery_preview",
+            "delivery_preview_presented",
+            "presented_delivery_snapshot",
+            "delivery_confirmed",
+        ):
+            values.pop(key, None)
+        payload = json.dumps(
+            values,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    @staticmethod
+    def _git_stdout(output: str) -> str:
+        if "stdout:\n" not in output:
+            return output
+        return output.partition("stdout:\n")[2].partition("\nstderr:")[0]
+
+    def _checked_git_output(self, args: list[str], cwd: Path) -> str:
+        code, output = self.run_command(["git", *args], cwd=cwd)
+        if code != 0:
+            raise RuntimeError(
+                f"Git delivery check failed for {' '.join(args)}: {output.strip()}"
+            )
+        return self._git_stdout(output)
+
+    def _delivery_workspace(self) -> Path:
+        if not self.has_git:
+            raise RuntimeError("Git delivery check failed: no Git repository.")
+        worktree = self.ai_dir / "worktree"
+        if self.config.get("use_worktree", True) and worktree.exists():
+            return worktree
+        return self.workspace
+
+    @staticmethod
+    def _delivery_file_content(path: Path) -> str | None:
+        if not path.exists():
+            return None
+        data = path.read_bytes()
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return f"hex:{data.hex()}"
+
+    def _delivery_file_contents(
+        self, cwd: Path, paths: list[str]
+    ) -> dict[str, str | None]:
+        return {
+            path: self._delivery_file_content(cwd / path)
+            for path in sorted(set(paths))
+        }
+
+    def _build_delivery_preview(self, operation: str = "merge") -> dict:
+        operation = operation.strip()
+        if not operation:
+            raise ValueError("Delivery operation is required.")
+
+        source_cwd = self._delivery_workspace()
+        source_commit = self._checked_git_output(["rev-parse", "HEAD"], source_cwd).strip()
+        target_commit = self._checked_git_output(
+            ["rev-parse", self.base_branch], self.workspace
+        ).strip()
+        diff_stat = self._checked_git_output(
+            ["diff", "--stat", self.base_branch], source_cwd
+        )
+        git_status = self._checked_git_output(
+            ["status", "--short"], source_cwd
+        )
+        tracked_paths = self._checked_git_output(
+            ["diff", "--name-only", "--no-renames", "-z", self.base_branch],
+            source_cwd,
+        ).split("\0")
+        internal_paths = {
+            self.ai_dir.name,
+            self.execution_lock_path.name,
+        }
+        untracked_paths = [
+            path
+            for path in self._checked_git_output(
+                ["ls-files", "--others", "--exclude-standard", "-z"], source_cwd
+            ).split("\0")
+            if path
+            and path not in internal_paths
+            and not any(path.startswith(f"{internal}/") for internal in internal_paths)
+        ]
+        self._checked_git_output(["diff", "--check", self.base_branch], source_cwd)
+
+        tracked_files = self._delivery_file_contents(
+            source_cwd, [path for path in tracked_paths if path]
+        )
+        untracked_files = self._delivery_file_contents(
+            source_cwd, [path for path in untracked_paths if path]
+        )
+        return {
+            "tracked_files": tracked_files,
+            "untracked_files": untracked_files,
+            "source_commit": source_commit,
+            "target_commit": target_commit,
+            "scheduled_operation": operation,
+            "diff_stat": diff_stat,
+            "git_status": git_status,
+            "workflow_state": self.state.get("state"),
+            "state_fingerprint": self._delivery_state_fingerprint(),
+        }
+
+    def get_delivery_preview(self) -> dict:
+        preview = self.state.get("delivery_preview")
+        if not isinstance(preview, dict):
+            raise RuntimeError("No persistent delivery preview is available.")
+        return deepcopy(preview)
+
+    def create_delivery_preview(self, operation: str = "merge") -> dict:
+        preview = self._build_delivery_preview(operation)
+        self.state["delivery_preview"] = deepcopy(preview)
+        self.state["delivery_preview_presented"] = False
+        self.state["delivery_confirmed"] = False
+        self.save_state()
+        return deepcopy(preview)
+
+    def capture_delivery_preview(self, operation: str = "merge") -> dict:
+        return self.create_delivery_preview(operation)
+
+    def present_delivery_preview(self, preview: dict | None = None) -> dict:
+        stored = self.get_delivery_preview()
+        if preview is not None and preview != stored:
+            raise RuntimeError("Presented delivery preview does not match the persisted snapshot.")
+        self.state["delivery_preview_presented"] = True
+        self.state["delivery_confirmed"] = False
+        self.save_state()
+        return deepcopy(stored)
+
+    def mark_delivery_preview_presented(self, preview: dict | None = None) -> dict:
+        return self.present_delivery_preview(preview)
+
+    def validate_delivery_preview(
+        self, preview: dict | None = None, operation: str | None = None
+    ) -> bool:
+        stored = self.get_delivery_preview()
+        if not self.state.get("delivery_preview_presented", False):
+            raise RuntimeError("Delivery preview has not been presented.")
+        if preview is not None and preview != stored:
+            raise RuntimeError("Delivery preview does not match the persisted snapshot.")
+        if operation is not None and operation != stored.get("scheduled_operation"):
+            raise RuntimeError("Scheduled delivery operation changed.")
+
+        persisted_state = (
+            self.read_state_snapshot() if self.state_path.exists() else self.state
+        )
+        if self._delivery_state_fingerprint() != stored.get("state_fingerprint"):
+            raise RuntimeError("Workflow state changed since delivery preview.")
+        if self._delivery_state_fingerprint(persisted_state) != stored.get(
+            "state_fingerprint"
+        ):
+            raise RuntimeError("Persisted workflow state changed since delivery preview.")
+
+        current = self._build_delivery_preview(
+            stored.get("scheduled_operation", "merge")
+        )
+        current.pop("git_status", None)
+        expected = deepcopy(stored)
+        expected.pop("git_status", None)
+        if current != expected:
+            raise RuntimeError("Git delivery state changed since delivery preview.")
+        return True
+
+    def validate_delivery(
+        self, preview: dict | None = None, operation: str | None = None
+    ) -> bool:
+        return self.validate_delivery_preview(preview, operation)
+
+    def confirm_delivery(
+        self, preview: dict | None = None, operation: str | None = None
+    ) -> bool:
+        self.validate_delivery_preview(preview, operation)
+        self.state["delivery_confirmed"] = True
+        self.save_state()
+        return True
+
+    def has_undelivered_worktree(self) -> bool:
+        delivery = self.state.get("delivery")
+        if isinstance(delivery, dict) and delivery.get("delivered") is True:
+            return False
+        return bool(
+            self.state.get("state") == "COMPLETED"
+            and self.config.get("use_worktree", True)
+            and self.has_git
+            and (self.ai_dir / "worktree").exists()
+        )
+
+    def _completed_run_needs_preservation(self, state: dict) -> bool:
+        if state.get("state") != "COMPLETED":
+            return False
+        delivery = state.get("delivery")
+        if isinstance(delivery, dict) and not delivery.get("delivered", False):
+            return True
+        return bool((self.ai_dir / "worktree").exists())
 
     @staticmethod
     def merge_defaults(defaults: dict, values: dict) -> dict:
@@ -341,20 +599,92 @@ class AgentOrchestrator:
         return merge_defaults(defaults, values)
 
     def save_state(self):
-        """Saves current state to state.json."""
+        """Atomically saves current state to state.json."""
+        with self.execution_lock():
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False
+            ) as f:
+                temp_path = Path(f.name)
+                try:
+                    json.dump(self.state, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+            try:
+                os.replace(temp_path, self.state_path)
+            finally:
+                temp_path.unlink(missing_ok=True)
+
+    def request_pause(self):
+        """Atomically persist a safe pause request independently of workflow state."""
+        self.ai_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False
+            mode="w", encoding="utf-8", dir=self.ai_dir, delete=False
         ) as f:
             temp_path = Path(f.name)
-            try:
-                json.dump(self.state, f, indent=2)
-            except Exception:
-                temp_path.unlink(missing_ok=True)
-                raise
+            f.write("pause\n")
+            f.flush()
+            os.fsync(f.fileno())
         try:
-            os.replace(temp_path, self.state_path)
+            os.replace(temp_path, self.pause_request_path)
         finally:
             temp_path.unlink(missing_ok=True)
+
+    def pause_requested(self) -> bool:
+        return self.pause_request_path.exists()
+
+    def clear_pause_request(self):
+        self.pause_request_path.unlink(missing_ok=True)
+
+    def check_pause_at_step_boundary(self) -> bool:
+        """Persist a pause state at a workflow step boundary."""
+        if not self.pause_requested():
+            return False
+        persisted_state = (
+            self.read_state_snapshot() if self.state_path.exists() else self.state
+        )
+        current_state = persisted_state.get("state", "PLANNING")
+        self.state["state"] = current_state
+        self.state.update(
+            {
+                "state": "WAITING_FOR_OWNER",
+                "resume_state": current_state,
+                "pass_state": current_state,
+            }
+        )
+        self.save_state()
+        log_warning("Safe pause requested; workflow stopped at a step boundary.")
+        return True
+
+    @contextmanager
+    def execution_lock(self):
+        """Serialize workflow execution across processes and reentrant calls."""
+        owner = (os.getpid(), threading.get_ident())
+        if self._execution_lock_owner == owner:
+            self._execution_lock_depth += 1
+            try:
+                yield
+            finally:
+                self._execution_lock_depth -= 1
+            return
+
+        self.execution_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.execution_lock_path, "a+b") as lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RuntimeError("Workflow execution is already in progress.") from error
+            self._execution_lock_owner = owner
+            self._execution_lock_depth = 1
+            try:
+                yield
+            finally:
+                self._execution_lock_depth = 0
+                self._execution_lock_owner = None
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
 
     def relevant_target_files(self, text: str, primary: str = "") -> list:
         """Narrow a QA/Reviewer failure report down to the files it actually
@@ -693,6 +1023,7 @@ class AgentOrchestrator:
         from orchestrator.core.telemetry import record_call
 
         started = time.monotonic()
+        self._resolved_cloud_model = None
         try:
             response = callback()
         except Exception as error:
@@ -700,7 +1031,7 @@ class AgentOrchestrator:
                 self,
                 role=role,
                 backend=backend,
-                model=model,
+                model=getattr(self, "_resolved_cloud_model", None) or model,
                 prompt=prompt,
                 system_prompt=system_prompt,
                 output=None,
@@ -713,7 +1044,7 @@ class AgentOrchestrator:
             self,
             role=role,
             backend=backend,
-            model=model,
+            model=getattr(self, "_resolved_cloud_model", None) or model,
             prompt=prompt,
             system_prompt=system_prompt,
             output=response,
@@ -748,15 +1079,46 @@ class AgentOrchestrator:
     ) -> str | None:
         from orchestrator.core import backends
 
+        def contract_error(response: str) -> str | None:
+            if response_validator is None:
+                return None
+            try:
+                if response_validator(response):
+                    return None
+            except ResponseContractError as error:
+                return str(error)
+            return "Agent response failed the task output contract"
+
+        def developer_retry_prompt(response: str, error: str) -> str:
+            try:
+                response_chars = max(
+                    0, int(self.config.get("developer_retry_response_chars", 3000))
+                )
+            except (TypeError, ValueError):
+                response_chars = 3000
+            response_excerpt = response[-response_chars:] if response_chars else ""
+            return (
+                prompt
+                + "\n\nRETRY: Your previous response was rejected. "
+                + f"Validation error: {error[:1200]}. "
+                + "Correct the rejected edits and return valid blocks for every declared target file. "
+                + "Any current-file excerpt in the validation error was read from the active workspace and is authoritative. "
+                + "For FILE_EDIT blocks, OLD must match exactly once in the current file. "
+                + "Copy OLD from the current file contents in this request, using a smaller exact span if needed. "
+                + "For Python files, the complete result must parse. "
+                + "Do not copy example placeholder text.\n"
+                + "Previous rejected response:\n"
+                + response_excerpt
+            )
+
         routes = self.config.get("role_model_routes", {}).get(role, [])
         if not routes:
             return None
         errors = []
-        task_id = (
-            self.state.get("active_task_id")
-            if self.state.get("state") == "IMPLEMENTING"
-            else None
+        implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith(
+            "developer"
         )
+        task_id = self.state.get("active_task_id") if implementing else None
         if task_id:
             failed_routes = self.state.setdefault(
                 "task_failed_model_routes", {}
@@ -765,127 +1127,201 @@ class AgentOrchestrator:
             failed_routes = self.state.setdefault("failed_model_routes", [])
 
         effective_routes = list(routes)
-        if self.config.get("ollama_router_enabled", True):
-            ollama_candidates = [
-                m
-                for b, m in routes
-                if b == "ollama" and f"ollama/{m}" not in failed_routes
-            ]
+        backend_override = (
+            self.state.get("task_backend_overrides", {}).get(task_id)
+            if task_id
+            else None
+        )
+        if backend_override:
+            effective_routes.sort(key=lambda route: route[0] != backend_override)
+        if any(backend == "ollama" for backend, _ in routes):
+            chat_models = backends.discover_ollama_chat_models(
+                self, force_refresh=not implementing
+            )
+            ollama_candidates = sorted(chat_models)
             if ollama_candidates:
-                task_summary = self._get_compact_task_summary(role, prompt)
-                chosen_model = backends.route_ollama_model_with_tev1(
-                    self, role, ollama_candidates, task_summary
+                ranked_models = None
+                if self.config.get("ollama_router_enabled", True):
+                    task_summary = self._get_compact_task_summary(role, prompt)
+                    ranked_models = backends.route_ollama_model_with_tev1(
+                        self, role, ollama_candidates, task_summary
+                    )
+                ordered_models = ranked_models or ollama_candidates
+                max_ollama_routes = max(
+                    0, int(self.config.get("max_ollama_routes_per_call", 2))
                 )
-                if chosen_model and chosen_model in ollama_candidates:
-                    other_ollama = [m for m in ollama_candidates if m != chosen_model]
-                    new_routes = []
-                    ollama_seen = False
-                    for b, m in effective_routes:
-                        if b == "ollama":
-                            if not ollama_seen:
-                                new_routes.append(["ollama", chosen_model])
-                                for om in other_ollama:
-                                    new_routes.append(["ollama", om])
-                                ollama_seen = True
-                        else:
-                            new_routes.append([b, m])
-                    effective_routes = new_routes
+                ordered_models = ordered_models[:max_ollama_routes]
+                effective_routes = []
+                ollama_inserted = False
+                for backend, model in routes:
+                    if backend == "ollama":
+                        if not ollama_inserted:
+                            effective_routes.extend(
+                                ["ollama", candidate] for candidate in ordered_models
+                            )
+                            ollama_inserted = True
+                    else:
+                        effective_routes.append([backend, model])
+            else:
+                log_warning(
+                    "No installed Ollama chat-capable models were discovered; skipping local routes."
+                )
+                errors.append(
+                    "No installed Ollama chat-capable models were discovered."
+                )
+                effective_routes = [route for route in routes if route[0] != "ollama"]
+
+        available_backends = list(dict.fromkeys(route[0] for route in effective_routes))
+        if (
+            self.config.get("ollama_router_enabled", True)
+            and len(available_backends) > 1
+        ):
+            descriptions = {
+                "codex": "Cloud coding agent with selectable models and reasoning effort",
+                "agy": "Cloud agent with selectable model and reasoning effort",
+                "ollama": "Locally installed chat models; limited by host hardware",
+            }
+            ranked_backends = backends.route_ollama_model_with_tev1(
+                self,
+                role,
+                available_backends,
+                self._get_compact_task_summary(role, prompt),
+                criteria={name: descriptions.get(name) for name in available_backends},
+                require_installed=False,
+            )
+            if ranked_backends and set(ranked_backends) == set(available_backends):
+                effective_routes.sort(key=lambda route: ranked_backends.index(route[0]))
+        if backend_override:
+            effective_routes.sort(key=lambda route: route[0] != backend_override)
+
+        contract_failures = (
+            self.state.setdefault("task_contract_failures", {}).setdefault(task_id, {})
+            if task_id
+            else {}
+        )
+        try:
+            max_developer_calls = max(
+                0, int(self.config.get("max_developer_calls_per_task", 6))
+            )
+        except (TypeError, ValueError):
+            max_developer_calls = 6
+
+        def request_route(backend: str, model: str, request_prompt: str) -> str:
+            if task_id:
+                calls = self.state.setdefault("task_developer_calls", {})
+                used = int(calls.get(task_id, 0))
+                if used >= max_developer_calls:
+                    summary = "; ".join(errors)[:1200] or "no route errors recorded yet"
+                    raise DeveloperCallLimitReached(
+                        f"Developer task {task_id} reached its request limit "
+                        f"({used}/{max_developer_calls}); route errors: {summary}"
+                    )
+                calls[task_id] = used + 1
+                self.save_state()
+            if backend == "ollama":
+                return self.call_agent_ollama_fallback(
+                    role,
+                    request_prompt,
+                    system_prompt,
+                    model=model,
+                    **({"image_paths": image_paths} if image_paths else {}),
+                )
+            if backend == "codex":
+                return self.call_codex(
+                    request_prompt, system_prompt, role=role, model=model
+                )
+            if backend == "agy":
+                return self.call_agy(
+                    request_prompt, system_prompt, role=role, model=model
+                )
+            raise ValueError(f"Unsupported backend in route: {backend}")
+
+        def validate_response(response: str) -> str | None:
+            self.validate_routed_response(role, response, response_schema)
+            validation_error = contract_error(response)
+            if implementing and not any(
+                marker in response
+                for marker in (
+                    "[FILE_START:",
+                    "[FILE_EDIT_START:",
+                    "[SECTION_EDIT_START:",
+                )
+            ):
+                validation_error = (
+                    f"{validation_error}; " if validation_error else ""
+                ) + "Developer response omitted required file blocks"
+            return validation_error
 
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
+            if not backends.backend_available(self, backend):
+                continue
+            if route in contract_failures:
+                error = contract_failures[route].get(
+                    "error", "Developer output contract previously failed"
+                )
+                errors.append(f"{route}: {error}")
+                log_info(f"Skipping contract-failed model route: {route}")
+                continue
             if route in failed_routes:
                 log_info(f"Skipping unavailable model route: {route}")
-                continue
-            if not backends.backend_available(self, backend):
                 continue
             try:
                 log_info(
                     f"Requesting Agent '{role}' (Backend: {backend}, Model: {model})..."
                 )
-                if backend == "ollama":
-                    response = self.call_agent_ollama_fallback(
-                        role,
-                        prompt,
-                        system_prompt,
-                        model=model,
-                        **({"image_paths": image_paths} if image_paths else {}),
-                    )
-                    implementing = self.state.get(
-                        "state"
-                    ) == "IMPLEMENTING" and role.startswith("developer")
-                    has_blocks = any(
-                        marker in response
-                        for marker in (
-                            "[FILE_START:",
-                            "[FILE_EDIT_START:",
-                            "[SECTION_EDIT_START:",
+                response = request_route(backend, model, prompt)
+                validation_error = validate_response(response)
+                if implementing and validation_error:
+                    try:
+                        retry_count = max(
+                            0,
+                            int(
+                                self.config.get(
+                                    "developer_contract_retries_per_route", 1
+                                )
+                            ),
                         )
-                    )
-                    contract_ok = response_validator is None or response_validator(
-                        response
-                    )
-                    if implementing and (not has_blocks or not contract_ok):
-                        log_warning(
-                            f"ollama/{model} returned an invalid Developer contract; retrying the same local model once."
-                        )
-                        retry_prompt = (
-                            prompt
-                            + "\n\nRETRY: Your previous response was rejected. Return only valid blocks matching the machine contract and declared target_files. Do not copy example placeholder text."
-                        )
-                        response = self.call_agent_ollama_fallback(
-                            role,
-                            retry_prompt,
-                            system_prompt,
-                            model=model,
-                            **({"image_paths": image_paths} if image_paths else {}),
-                        )
-                        has_blocks = any(
-                            marker in response
-                            for marker in (
-                                "[FILE_START:",
-                                "[FILE_EDIT_START:",
-                                "[SECTION_EDIT_START:",
+                    except (TypeError, ValueError):
+                        retry_count = 1
+                    for _ in range(retry_count):
+                        if "outside the task contract" in validation_error.lower():
+                            break
+                        if (
+                            task_id
+                            and int(
+                                self.state.setdefault("task_developer_calls", {}).get(
+                                    task_id, 0
+                                )
                             )
+                            >= max_developer_calls
+                        ):
+                            route_errors = "; ".join(
+                                errors + [f"{route}: {validation_error}"]
+                            )[:1200]
+                            used = self.state["task_developer_calls"].get(task_id, 0)
+                            raise DeveloperCallLimitReached(
+                                f"Developer task {task_id} reached its request limit "
+                                f"({used}/{max_developer_calls}); route errors: {route_errors}"
+                            )
+                        log_warning(
+                            f"{route} returned an invalid Developer contract; requesting a correction."
                         )
-                        contract_ok = response_validator is None or response_validator(
-                            response
+                        previous_error = validation_error
+                        response = request_route(
+                            backend,
+                            model,
+                            developer_retry_prompt(response, previous_error),
                         )
-                    if implementing and not has_blocks and response_validator is None:
-                        raise ResponseContractError(
-                            "Developer response omitted required file blocks"
-                        )
-                    self.validate_routed_response(role, response, response_schema)
-                    if not contract_ok:
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
-                    return response
-                if backend == "codex":
-                    response = self.call_codex(
-                        prompt, system_prompt, role=role, model=model
-                    )
-                    self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
-                    return response
-                if backend == "agy":
-                    response = self.call_agy(
-                        prompt, system_prompt, role=role, model=model
-                    )
-                    self.validate_routed_response(role, response, response_schema)
-                    if response_validator is not None and not response_validator(
-                        response
-                    ):
-                        raise ResponseContractError(
-                            "Agent response failed the task output contract"
-                        )
-                    return response
-                raise ValueError(f"Unsupported backend in route: {backend}")
+                        validation_error = validate_response(response)
+                        if not validation_error:
+                            break
+                if validation_error:
+                    raise ResponseContractError(validation_error)
+                return response
             except Exception as error:
+                if isinstance(error, DeveloperCallLimitReached):
+                    raise
                 errors.append(f"{backend}/{model}: {error}")
                 if (
                     isinstance(error, ResponseContractError)
@@ -898,12 +1334,29 @@ class AgentOrchestrator:
                         f"Strict JSON contract failed for {role}: {error}"
                     ) from error
                 if (
+                    implementing
+                    and task_id
+                    and isinstance(error, ResponseContractError)
+                ):
+                    failures = self.state.setdefault(
+                        "task_contract_failures", {}
+                    ).setdefault(task_id, {})
+                    old_failure = failures.get(route, {})
+                    failures[route] = {
+                        "count": int(old_failure.get("count", 0)) + 1,
+                        "signature": developer_error_signature(str(error)),
+                        "error": str(error)[:1200],
+                    }
+                    self.save_state()
+                exhausted = backends.quota_exhausted(error)
+                if (
                     not isinstance(error, ResponseContractError)
+                    and not exhausted
                     and route not in failed_routes
                 ):
                     failed_routes.append(route)
                     self.save_state()
-                if backends.quota_exhausted(error):
+                if exhausted:
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
         raise RuntimeError(
@@ -1138,7 +1591,7 @@ class AgentOrchestrator:
             cwd=self.workspace,
         )
         if code != 0:
-            log_error(f"Failed to remove Git worktree: {output}")
+            log_error(f"Failed to remove git worktree: {output}")
             return False
         code, output = self.run_command(
             ["git", "branch", "-d", "ai-feature-branch"], cwd=self.workspace
@@ -1360,6 +1813,9 @@ class AgentOrchestrator:
     def step_completed(self):
         return self.manager.step_completed()
 
+    def step_waiting_for_delivery(self):
+        return self.manager.step_waiting_for_delivery()
+
     def step_researching(self):
         log_header("RESEARCHING (Sales / RA)")
         requirements = self.requirements_path.read_text(encoding="utf-8")
@@ -1383,17 +1839,23 @@ class AgentOrchestrator:
         allowed_files: list[str] | None = None,
         allowed_heading: str | None = None,
         allow_markdown_heading_changes: bool = False,
+        dry_run: bool = False,
+        validation_errors: list[str] | None = None,
     ) -> list[str]:
         return self.developer.parse_and_write_files(
             text,
             allowed_files,
+            dry_run=dry_run,
             allowed_heading=allowed_heading,
             allow_markdown_heading_changes=allow_markdown_heading_changes,
+            validation_errors=validation_errors,
         )
 
     # State Dispatching
-    def step(self):
+    def _step_unlocked(self):
         self.load_config_and_state()
+        if self.check_pause_at_step_boundary():
+            return False
         current_state = self.state["state"]
         log_info(f"Current state is: {current_state}")
 
@@ -1409,6 +1871,8 @@ class AgentOrchestrator:
             self.step_testing()
         elif current_state == "REVIEWING_CODE":
             self.step_reviewing_code()
+        elif current_state == "WAITING_FOR_DELIVERY":
+            self.step_waiting_for_delivery()
         elif current_state == "COMPLETED":
             self.step_completed()
         elif current_state == "RESEARCHING":
@@ -1421,18 +1885,25 @@ class AgentOrchestrator:
             log_error("Workflow failed. Please reset or start a new task.")
         else:
             log_error(f"Unknown state: {current_state}")
+        return True
+
+    def step(self):
+        with self.execution_lock():
+            return self._step_unlocked()
 
     def run_to_end(self):
-        self.load_config_and_state()
-        while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "FAILED"]:
-            try:
-                self.step()
-            except Exception as error:
-                failed_state = self.state.get("state", "PLANNING")
-                self.pause_for_human_review(
-                    "Orchestrator", str(error), failed_state, failed_state
-                )
-                return
+        with self.execution_lock():
             self.load_config_and_state()
-        if self.state["state"] == "COMPLETED":
-            self.step()
+            while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "WAITING_FOR_DELIVERY", "FAILED"]:
+                try:
+                    if not self._step_unlocked():
+                        return
+                except Exception as error:
+                    failed_state = self.state.get("state", "PLANNING")
+                    self.pause_for_human_review(
+                        "Orchestrator", str(error), failed_state, failed_state
+                    )
+                    return
+                self.load_config_and_state()
+            if self.state["state"] == "COMPLETED":
+                self._step_unlocked()

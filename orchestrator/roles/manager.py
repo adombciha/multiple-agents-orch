@@ -205,7 +205,32 @@ class ManagerAgent(BaseAgent):
             self.orchestrator.state["state"] = "DEVELOPING_PLAN"
         self.orchestrator.save_state()
 
-    def step_completed(self):
+    def _inspect_delivery_state(self) -> tuple[str, str, str]:
+        wt_path = self.orchestrator.ai_dir / "worktree"
+        target_cwd = (
+            wt_path
+            if self.orchestrator.config.get("use_worktree", True)
+            and wt_path.exists()
+            and self.orchestrator.has_git
+            else (self.orchestrator.workspace if self.orchestrator.has_git else None)
+        )
+        if target_cwd is not None:
+            _, diff_stat = self.orchestrator.run_command(
+                ["git", "diff", "--stat", self.orchestrator.base_branch], cwd=target_cwd
+            )
+            _, diff_patch = self.orchestrator.run_command(
+                ["git", "diff", self.orchestrator.base_branch], cwd=target_cwd
+            )
+            _, git_status = self.orchestrator.run_command(
+                ["git", "status", "--short"], cwd=target_cwd
+            )
+        else:
+            diff_stat = "No git repository."
+            diff_patch = "No git repository."
+            git_status = ""
+        return diff_stat, diff_patch, git_status
+
+    def step_waiting_for_delivery(self):
         from orchestrator.core.state import (
             log_header,
             log_success,
@@ -213,110 +238,211 @@ class ManagerAgent(BaseAgent):
             log_warning,
         )
 
-        log_header("7. GENERATING SUMMARY (Ollama Manager)")
+        log_header("WAITING FOR DELIVERY CONFIRMATION (Manager)")
+
+        if self.orchestrator.state.get("workflow_mode") == "research":
+            self.orchestrator.state["state"] = "COMPLETED"
+            self.orchestrator.save_state()
+            return
+
+        wt_path = self.orchestrator.ai_dir / "worktree"
+        has_pending_worktree = (
+            self.orchestrator.config.get("use_worktree", True)
+            and wt_path.exists()
+            and self.orchestrator.has_git
+        )
+        if (
+            self.orchestrator.state.get("changelog_written")
+            and self.orchestrator.state.get("delivery_confirmed")
+            and not has_pending_worktree
+        ):
+            self.orchestrator.state["state"] = "COMPLETED"
+            for key in (
+                "presented_delivery_snapshot",
+                "delivery_preview",
+                "delivery_preview_presented",
+                "delivery_confirmed",
+            ):
+                self.orchestrator.state.pop(key, None)
+            self.orchestrator.save_state()
+            log_success("Delivery was already completed; skipping duplicate finalization.")
+            return
+
+        diff_stat, diff_patch, _ = self._inspect_delivery_state()
+        if not self.orchestrator.state.get("delivery_artifacts_prepared", False):
+            with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
+                request = f.read()
+            with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
+                requirements = f.read()
+
+            prompt = f"""We have successfully completed the tasks.
+Original Request:
+{request}
+
+Requirements:
+{requirements}
+
+Git Diff Stat:
+{diff_stat}
+
+Write in the same language as the original request. Use exactly these Markdown sections:
+## Outcome
+## Changes Delivered
+## Verification
+## Scope and Follow-ups
+Be specific: name changed files, cite available test evidence, and distinguish completed work from follow-ups."""
+
+            summary = self.call_manager(
+                prompt,
+                "You are a Project Manager. Write a beautiful project final report.",
+            )
+            from orchestrator.core.telemetry import summary_markdown
+
+            usage = summary_markdown(self.orchestrator)
+            if usage:
+                summary = f"{summary.rstrip()}\n\n{usage}\n"
+
+            self.orchestrator.final_report_path.write_text(summary, encoding="utf-8")
+            log_success(
+                f"Final project report generated at {self.orchestrator.final_report_path}"
+            )
+
+            qa_report = (
+                self.orchestrator.qa_report_path.read_text(encoding="utf-8")
+                if self.orchestrator.qa_report_path.exists()
+                else "No QA report available."
+            )
+            review = (
+                self.orchestrator.reviewer_output_path.read_text(encoding="utf-8")
+                if self.orchestrator.reviewer_output_path.exists()
+                else "No code review available."
+            )
+            meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
+                request,
+                summary,
+                self.orchestrator.state.get("tasks", []),
+                qa_report,
+                review,
+                diff_stat,
+            )
+            self.orchestrator.meeting_memory_path.write_text(
+                meeting_memory, encoding="utf-8"
+            )
+            log_success(
+                f"Meeting memory saved at {self.orchestrator.meeting_memory_path}"
+            )
+            brain.remember(
+                self.orchestrator,
+                "meeting",
+                f"Request: {request[:500]}\n\n{meeting_memory}",
+            )
+
+            if not self.orchestrator.state.get("changelog_written", False):
+                log_info("Asking Assistant to generate CHANGELOG.md...")
+                changelog = self.orchestrator.assistant.generate_changelog(
+                    summary, diff_patch
+                ).strip()
+                delivery_workspace = (
+                    wt_path
+                    if self.orchestrator.config.get("use_worktree", True)
+                    and wt_path.exists()
+                    and self.orchestrator.has_git
+                    else self.orchestrator.workspace
+                )
+                changelog_path = delivery_workspace / "CHANGELOG.md"
+                existing = (
+                    changelog_path.read_text(encoding="utf-8")
+                    if changelog_path.exists()
+                    else ""
+                )
+                if changelog and changelog not in existing:
+                    with open(changelog_path, "a", encoding="utf-8") as f:
+                        f.write("\n\n" + changelog + "\n")
+                self.orchestrator.state["changelog_written"] = True
+
+            self._review_worker_weights(usage)
+            self.orchestrator.state["delivery_artifacts_prepared"] = True
+            self.orchestrator.save_state()
+
+        create_preview = self.orchestrator.create_delivery_preview
+
+        preview = self.orchestrator.state.get("delivery_preview")
+        if not isinstance(preview, dict):
+            create_preview("merge")
+            log_info("Prepared the persistent delivery snapshot.")
+            log_warning(
+                "Review the complete Git impact with 'preview' or the GUI before confirming delivery."
+            )
+            return
+
+        if not self.orchestrator.state.get("delivery_preview_presented", False):
+            log_warning(
+                "The saved Git impact has not been presented. Review it with 'preview' or the GUI before confirming."
+            )
+            return
+
+        if not self.orchestrator.state.get("delivery_confirmed", False):
+            log_warning(
+                "Waiting for explicit delivery confirmation of the presented Git snapshot."
+            )
+            return
+
+        try:
+            self.orchestrator.validate_delivery_preview(preview, "merge")
+        except RuntimeError as error:
+            log_warning(f"Delivery snapshot is no longer valid: {error}")
+            create_preview("merge")
+            log_warning(
+                "The Git impact changed. Review the refreshed snapshot with 'preview' or the GUI before confirming again."
+            )
+            return
+
+        log_info("Confirmed delivery snapshot is valid; attempting the scheduled Git merge.")
+        if not self.orchestrator.cleanup_worktree(merge=True):
+            log_warning(
+                "Delivery failed during Git merge. Preserving the feature worktree and queuing repair."
+            )
+            self.orchestrator.queue_worktree_repair_task()
+            return
+
+        self.orchestrator.state["state"] = "COMPLETED"
+        for key in (
+            "presented_delivery_snapshot",
+            "delivery_preview",
+            "delivery_preview_presented",
+            "delivery_confirmed",
+        ):
+            self.orchestrator.state.pop(key, None)
+        self.orchestrator.save_state()
+        log_success("Final artifacts delivered and merged successfully.")
+
+    def step_completed(self):
+        from orchestrator.core.state import (
+            log_header,
+            log_success,
+            log_warning,
+        )
+
+        log_header("7. COMPLETED (Manager)")
 
         if self.orchestrator.state.get("workflow_mode") == "research":
             log_success("Research-only workflow finished.")
             return
 
-        with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
-            request = f.read()
-        with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
-            requirements = f.read()
-
-        # Get final git diff stat
         wt_path = self.orchestrator.ai_dir / "worktree"
         if (
             self.orchestrator.config.get("use_worktree", True)
             and wt_path.exists()
             and self.orchestrator.has_git
         ):
-            _, diff_stat = self.orchestrator.run_command(
-                ["git", "diff", "--stat", self.orchestrator.base_branch], cwd=wt_path
-            )
-            _, diff_patch = self.orchestrator.run_command(
-                ["git", "diff", self.orchestrator.base_branch], cwd=wt_path
-            )
-        elif self.orchestrator.has_git:
-            _, diff_stat = self.orchestrator.run_command(
-                ["git", "diff", "--stat", self.orchestrator.base_branch]
-            )
-            _, diff_patch = self.orchestrator.run_command(
-                ["git", "diff", self.orchestrator.base_branch]
-            )
-        else:
-            diff_stat = "No git repository."
-            diff_patch = "No git repository."
-
-        prompt = f"""We have successfully completed the tasks.\nOriginal Request:\n{request}\n\nRequirements:\n{requirements}\n\nGit Diff Stat:\n{diff_stat}\n\nWrite in the same language as the original request. Use exactly these Markdown sections:\n## Outcome\n## Changes Delivered\n## Verification\n## Scope and Follow-ups\nBe specific: name changed files, cite available test evidence, and distinguish completed work from follow-ups."""
-
-        system_prompt = (
-            "You are a Project Manager. Write a beautiful project final report."
-        )
-        summary = self.call_manager(prompt, system_prompt)
-        from orchestrator.core.telemetry import summary_markdown
-
-        usage = summary_markdown(self.orchestrator)
-        if usage:
-            summary = f"{summary.rstrip()}\n\n{usage}\n"
-
-        with open(self.orchestrator.final_report_path, "w", encoding="utf-8") as f:
-            f.write(summary)
-
-        log_success(
-            f"Final project report generated at {self.orchestrator.final_report_path}"
-        )
-
-        qa_report = (
-            self.orchestrator.qa_report_path.read_text(encoding="utf-8")
-            if self.orchestrator.qa_report_path.exists()
-            else "No QA report available."
-        )
-        review = (
-            self.orchestrator.reviewer_output_path.read_text(encoding="utf-8")
-            if self.orchestrator.reviewer_output_path.exists()
-            else "No code review available."
-        )
-        meeting_memory = self.orchestrator.assistant.generate_meeting_memory(
-            request,
-            summary,
-            self.orchestrator.state.get("tasks", []),
-            qa_report,
-            review,
-            diff_stat,
-        )
-        self.orchestrator.meeting_memory_path.write_text(
-            meeting_memory, encoding="utf-8"
-        )
-        log_success(f"Meeting memory saved at {self.orchestrator.meeting_memory_path}")
-        brain.remember(
-            self.orchestrator,
-            "meeting",
-            f"Request: {request[:500]}\n\n{meeting_memory}",
-        )
-
-        # Assistant generates CHANGELOG
-        log_info("Asking Assistant to generate CHANGELOG.md...")
-        changelog = self.orchestrator.assistant.generate_changelog(summary, diff_patch)
-
-        with open(
-            self.orchestrator.workspace / "CHANGELOG.md", "a", encoding="utf-8"
-        ) as f:
-            f.write("\n\n" + changelog)
-
-        log_success("CHANGELOG.md updated successfully!")
-
-        self._review_worker_weights(usage)
-
-        # Merge and clean up isolated worktree
-        if self.orchestrator.cleanup_worktree(merge=True) is False:
-            task = self.orchestrator.queue_worktree_repair_task()
             log_warning(
-                f"PM queued RD repair task {task['id']} for the worktree merge failure."
+                "Found undelivered worktree in COMPLETED state. Returning to WAITING_FOR_DELIVERY."
             )
+            self.orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
+            self.orchestrator.save_state()
             return
 
-        log_success("Multi-agent workflow process has finished successfully!")
+        log_success("Workflow is already completed.")
 
     def _review_worker_weights(self, telemetry: str) -> None:
         """Manager performance review: propose small, clamped nudges to internal staff

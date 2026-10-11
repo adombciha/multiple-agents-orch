@@ -121,10 +121,14 @@ class ReviewerAgent(BaseAgent):
         log_info(f"Code Review response saved. Preview:\n{review[:200]}...")
 
         is_approved = review_data["status"] == "APPROVED"
+        workflow_mode = self.orchestrator.state.get("workflow_mode")
 
         if is_approved:
             log_success("Code changes APPROVED by Reviewer!")
-            self.orchestrator.state["state"] = "COMPLETED"
+            if workflow_mode == "research":
+                self.orchestrator.state["state"] = "COMPLETED"
+            else:
+                self.orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
             self.orchestrator.save_state()
         else:
             log_warning("Code changes REJECTED by Reviewer.")
@@ -163,5 +167,5 @@ class ReviewerAgent(BaseAgent):
                 )
             else:
                 self.orchestrator.escalate_to_replan_or_pause(
-                    "Reviewer", review, "IMPLEMENTING", "COMPLETED"
+                    "Reviewer", review, "IMPLEMENTING", "IMPLEMENTING"
                 )
