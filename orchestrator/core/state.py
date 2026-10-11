@@ -681,18 +681,15 @@ class AgentOrchestrator:
         )
         if not candidates:
             raise RuntimeError("No installed Ollama chat-capable model is available.")
-        chosen = None
+        ranked = None
         if self.config.get("ollama_router_enabled", True):
-            chosen = backends.route_ollama_model_with_tev1(
+            ranked = backends.route_ollama_model_with_tev1(
                 self,
                 role,
                 candidates,
                 self._get_compact_task_summary(role, prompt),
             )
-        ordered_models = ([chosen] if chosen in candidates else [])
-        ordered_models.extend(
-            candidate for candidate in candidates if candidate not in ordered_models
-        )
+        ordered_models = ranked or candidates
         errors = []
         for candidate in ordered_models:
             try:
@@ -803,16 +800,13 @@ class AgentOrchestrator:
             )
             ollama_candidates = sorted(chat_models)
             if ollama_candidates:
-                chosen_model = None
+                ranked_models = None
                 if self.config.get("ollama_router_enabled", True):
                     task_summary = self._get_compact_task_summary(role, prompt)
-                    chosen_model = backends.route_ollama_model_with_tev1(
+                    ranked_models = backends.route_ollama_model_with_tev1(
                         self, role, ollama_candidates, task_summary
                     )
-                ordered_models = ([chosen_model] if chosen_model in ollama_candidates else [])
-                ordered_models.extend(
-                    model for model in ollama_candidates if model not in ordered_models
-                )
+                ordered_models = ranked_models or ollama_candidates
                 effective_routes = []
                 ollama_inserted = False
                 for backend, model in routes:

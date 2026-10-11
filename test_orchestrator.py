@@ -611,7 +611,7 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(
     monkeypatch.setattr(
         backends,
         "route_ollama_model_with_tev1",
-        Mock(return_value="qwen3.8:latest"),
+        Mock(return_value=["qwen3.8:latest"]),
     )
     response = Mock()
     response.json.return_value = {"message": {"content": "agent answer"}}
@@ -1312,7 +1312,7 @@ def test_role_model_is_not_used_for_an_ollama_fallback(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
     )
 
     assert (
@@ -1347,7 +1347,7 @@ def test_invalid_architect_status_falls_back_to_next_route(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
     )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(initialized_orchestrator, "call_agy", Mock(return_value="..."))
@@ -1375,7 +1375,7 @@ def test_output_contract_failure_falls_back_to_next_route(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
     )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(
@@ -1410,7 +1410,7 @@ def test_ollama_developer_retries_invalid_contract_once(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-model": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-model")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-model"])
     )
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     call = Mock(
@@ -1925,7 +1925,7 @@ def test_repeated_invalid_edits_pause_with_specific_feedback(
     ollama_call = Mock(return_value=response)
     agy_call = Mock()
     monkeypatch.setattr(backends, "discover_ollama_chat_models", Mock(return_value={"model-a": {}}))
-    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value="model-a"))
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a"]))
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(app, "call_agent_ollama_fallback", ollama_call)
     monkeypatch.setattr(app, "call_agy", agy_call)
@@ -2406,7 +2406,7 @@ def test_manager_retries_agy_then_ollama_after_token_failure(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-manager": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-manager")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-manager"])
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
@@ -2428,7 +2428,7 @@ def test_reviewer_retries_agy_then_ollama_after_token_failure(
         backends, "discover_ollama_chat_models", Mock(return_value={"new-reviewer": {}})
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="new-reviewer")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["new-reviewer"])
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_codex", codex)
@@ -2488,7 +2488,7 @@ def test_qa_senior_uses_tev1_selected_installed_model(initialized_orchestrator, 
         "discover_ollama_chat_models",
         Mock(return_value={"new-qa-model": {}}),
     )
-    select = Mock(return_value="new-qa-model")
+    select = Mock(return_value=["new-qa-model"])
     monkeypatch.setattr(backends, "route_ollama_model_with_tev1", select)
     ollama = Mock(return_value="qa response")
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
@@ -2509,7 +2509,7 @@ def test_qa_ollama_falls_back_through_installed_models(
         Mock(return_value={"model-a": {}, "model-b": {}}),
     )
     monkeypatch.setattr(
-        backends, "route_ollama_model_with_tev1", Mock(return_value="model-a")
+        backends, "route_ollama_model_with_tev1", Mock(return_value=["model-a", "model-b"])
     )
     ollama = Mock(side_effect=[RuntimeError("model unavailable"), "second model"])
     monkeypatch.setattr(initialized_orchestrator, "call_ollama", ollama)
@@ -5033,6 +5033,7 @@ def test_route_ollama_model_with_tev1_selects_candidate(
                         "selected_model": {
                             "choice": "qwen3.5:9b",
                             "confidence": 0.88,
+                            "probabilities": {"granite4.2:8b": 0.12, "qwen3.5:9b": 0.88},
                         }
                     }
                 }
@@ -5047,7 +5048,7 @@ def test_route_ollama_model_with_tev1_selects_candidate(
         candidates=["granite4.2:8b", "qwen3.5:9b"],
         task_summary="Refactor parser module",
     )
-    assert chosen == "qwen3.5:9b"
+    assert chosen == ["qwen3.5:9b", "granite4.2:8b"]
 
     payload = post_mock.call_args.kwargs["json"]
     assert payload["model"] == "tev1:4b"
@@ -5056,6 +5057,31 @@ def test_route_ollama_model_with_tev1_selects_candidate(
         "granite4.2:8b": None,
         "qwen3.5:9b": None,
     }
+
+
+def test_route_ollama_model_with_tev1_ranks_all_candidates(
+    initialized_orchestrator, monkeypatch
+):
+    monkeypatch.setattr(
+        backends,
+        "discover_installed_ollama_models",
+        Mock(return_value={"tev1:4b", "model-a", "model-b", "model-c"}),
+    )
+    monkeypatch.setattr(
+        backends.requests,
+        "post",
+        Mock(return_value=Mock(status_code=200, json=Mock(return_value={
+            "answers": {"selected_model": {
+                "choice": "model-b",
+                "confidence": 0.30,
+                "probabilities": {"model-a": 0.20, "model-b": 0.50, "model-c": 0.30},
+            }}
+        }))),
+    )
+
+    assert backends.route_ollama_model_with_tev1(
+        initialized_orchestrator, "developer_senior", ["model-a", "model-b", "model-c"]
+    ) == ["model-b", "model-c", "model-a"]
 
 
 def test_route_ollama_model_logs_bounded_http_error_details(
@@ -5100,7 +5126,7 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
         Mock(return_value={"tev1:4b", "granite4.2:8b", "qwen3.5:9b"}),
     )
 
-    # 1. Low confidence (< 0.5)
+    # Low confidence still provides a usable ranking.
     post_low_conf = Mock(
         return_value=Mock(
             status_code=200,
@@ -5110,6 +5136,7 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
                         "selected_model": {
                             "choice": "qwen3.5:9b",
                             "confidence": 0.35,
+                            "probabilities": {"granite4.2:8b": 0.35, "qwen3.5:9b": 0.65},
                         }
                     }
                 }
@@ -5123,7 +5150,7 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
             role="developer_middle",
             candidates=["granite4.2:8b", "qwen3.5:9b"],
         )
-        is None
+        == ["qwen3.5:9b", "granite4.2:8b"]
     )
 
     # 2. Choice not in available candidates
@@ -5190,7 +5217,7 @@ def test_call_role_model_routes_prioritizes_tev1_decision(
     monkeypatch.setattr(
         backends, "discover_ollama_chat_models", Mock(return_value=candidates)
     )
-    route_decision = Mock(return_value="llama3.1:8b")
+    route_decision = Mock(return_value=["llama3.1:8b", "new-coder:latest"])
     monkeypatch.setattr(
         backends,
         "route_ollama_model_with_tev1",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import base64
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -83,10 +84,10 @@ def get_active_model_for_role(orchestrator, role: str, backend: str) -> str | No
         candidates = sorted(discover_ollama_chat_models(orchestrator, force_refresh=True))
         if not candidates:
             return None
-        chosen = route_ollama_model_with_tev1(
+        ranked = route_ollama_model_with_tev1(
             orchestrator, role, candidates, f"Execution for role {role}"
         )
-        return chosen if chosen in candidates else candidates[0]
+        return ranked[0] if ranked else candidates[0]
 
     expected_backend = orchestrator.config.get("role_model_backends", {}).get(role)
     if backend == expected_backend:
@@ -224,8 +225,8 @@ def route_ollama_model_with_tev1(
     role: str,
     candidates: list[str],
     task_summary: str | None = None,
-) -> str | None:
-    """Use Tev1 as a decision router via /v1/systemone to pick among installed candidates."""
+) -> list[str] | None:
+    """Rank installed candidates using Tev1 choice probabilities."""
     from orchestrator.core.state import log_info, log_warning
 
     if not orchestrator.config.get("ollama_router_enabled", True):
@@ -246,16 +247,19 @@ def route_ollama_model_with_tev1(
         log_info(f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back.")
         return None
 
-    available_candidates = [
+    available_candidates = list(dict.fromkeys(
         candidate
         for candidate in candidates
         if _ollama_model_matches(candidate, installed_models)
         and not _ollama_model_matches(candidate, {router_model})
-    ]
+    ))
     if not available_candidates:
         return None
     if len(available_candidates) == 1:
-        return available_candidates[0]
+        return available_candidates
+    if len(available_candidates) > 26:
+        log_warning("Tev1 supports at most 26 choices; using static local model order.")
+        return None
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
     state_input = f"Role: {role}. Task: {summary}"
@@ -288,18 +292,39 @@ def route_ollama_model_with_tev1(
         data = response.json()
         ans = data.get("answers", {}).get("selected_model", {})
         choice = ans.get("choice")
-        confidence = float(ans.get("confidence", 0.0))
+        probabilities = ans.get("probabilities")
+        confidence = ans.get("confidence")
         min_conf = float(orchestrator.config.get("ollama_router_min_confidence", 0.5))
 
-        if choice in available_candidates and confidence >= min_conf:
-            log_info(
-                f"Tev1 router selected '{choice}' for {role} (confidence: {confidence:.2f})."
+        def valid_probability(value):
+            return (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and 0 <= value <= 1
             )
-            return choice
-        log_warning(
-            f"Tev1 router returned invalid choice '{choice}' or low confidence ({confidence:.2f}); falling back."
+
+        if (
+            choice not in available_candidates
+            or not isinstance(probabilities, dict)
+            or set(probabilities) != set(available_candidates)
+            or not all(valid_probability(value) for value in probabilities.values())
+            or not valid_probability(confidence)
+            or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=0.01)
+            or probabilities[choice] < max(probabilities.values()) - 0.001
+        ):
+            log_warning("Tev1 returned an invalid model probability distribution; using static local model order.")
+            return None
+
+        ranked = sorted(
+            available_candidates, key=lambda candidate: probabilities[candidate], reverse=True
         )
-        return None
+        scores = ", ".join(
+            f"{candidate}={probabilities[candidate]:.3f}" for candidate in ranked
+        )
+        qualifier = "low confidence; " if confidence < min_conf else ""
+        log_info(f"Tev1 ranked {role} models ({qualifier}confidence {confidence:.2f}): {scores}")
+        return ranked
     except Exception as exc:
         log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
         return None

@@ -62,7 +62,7 @@ agy models
 For local Ollama execution, the orchestrator uses `tev1:4b` exclusively as a fast decision router via the Ollama `/v1/systemone` endpoint (never as a task executor via `/api/chat`).
 - **Endpoint model discovery**: Installed models are discovered dynamically from the configured Ollama endpoint (`/api/tags`) without pulling or deleting models.
 - **Privacy and compact state**: Candidate models are selected based on a compact role and task summary along with candidate descriptions—the full task prompt is never transmitted to the router.
-- **Validation and safe fallback**: The orchestrator strictly validates the returned model choice, confidence score, and installed candidate allowlist. If the `/v1/systemone` endpoint or router is unavailable, or if output is invalid or low-confidence, the system safely falls back to the configured static route fallback chain.
+- **Validation and safe fallback**: The orchestrator validates the choice, confidence, and probability for every installed candidate, then tries local models in descending probability order. Low confidence is logged but does not discard a valid ranking. If the endpoint or router is unavailable, or the response is invalid, it uses the static local model order.
 - **Local isolation**: All dynamic routing is kept local to Ollama and does not alter Codex or AGY routes.
 
 On load, legacy config entries using Grok or Claude Code are migrated to the current role defaults. Unsupported models are not downloaded automatically; Ollama still uses locally installed model tags.
