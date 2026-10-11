@@ -8,8 +8,6 @@ import re
 import time
 import hashlib
 import tempfile
-import hashlib
-import fcntl
 import threading
 from contextlib import contextmanager
 from copy import deepcopy
@@ -68,6 +66,13 @@ def log_header(msg: str):
     print(f"\n{Colors.HEADER}{Colors.BOLD}=== {msg} ==={Colors.ENDC}")
 
 
+def delivery_snapshot_id(snapshot: dict) -> str:
+    payload = json.dumps(
+        snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 class AgentOrchestrator:
 
     def __init__(self, workspace: Path):
@@ -110,6 +115,9 @@ class AgentOrchestrator:
         self.config_path = self.ai_dir / "config.json"
         self.state_path = self.ai_dir / "state.json"
         self.status_path = self.ai_dir / "status.json"
+        self.execution_lock_path = self.ai_dir / "run.lock"
+        self._execution_lock_owner = None
+        self._execution_lock_depth = 0
         self.pause_request_path = self.ai_dir / "pause_request.json"
         self.delivery_preview_path = self.ai_dir / "delivery_preview.md"
         self.merge_failure_path = self.ai_dir / "merge_failure.md"
@@ -190,6 +198,10 @@ class AgentOrchestrator:
         if self.state_path.exists():
             try:
                 existing_state = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if existing_state.get("state") == "WAITING_FOR_DELIVERY":
+                    raise RuntimeError(
+                        "A workflow is waiting for delivery; its undelivered worktree must be delivered or preserved before initializing a new run."
+                    )
                 if self._completed_run_needs_preservation(existing_state):
                     raise RuntimeError(
                         "A completed run still has an undelivered worktree; its artifacts were preserved."
@@ -244,6 +256,10 @@ class AgentOrchestrator:
                 raise RuntimeError(
                     "Cannot safely clear unreadable workflow state; existing artifacts were preserved."
                 ) from error
+            if existing_state.get("state") == "WAITING_FOR_DELIVERY":
+                raise RuntimeError(
+                    "The workflow is waiting for delivery; its undelivered worktree was preserved."
+                )
             delivery = existing_state.get("delivery", {})
             if existing_state.get("state") == "COMPLETED" and (
                 ("delivery" in existing_state and not delivery.get("delivered", False))
@@ -266,7 +282,7 @@ class AgentOrchestrator:
             )
         if self.ai_dir.exists():
             for path in self.ai_dir.iterdir():
-                if path.name in {"config.json", "run.lock"}:
+                if path.name in {"config.json", "run.lock", self.execution_lock_path.name}:
                     continue
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
@@ -394,10 +410,6 @@ class AgentOrchestrator:
         self.config = merge_defaults(DEFAULT_CONFIG, loaded_config)
 
         self.state = self.read_state_snapshot()
-        if self._completed_run_needs_preservation(self.state):
-            self.state["state"] = "WAITING_FOR_DELIVERY"
-            self.state.setdefault("resume_state", "WAITING_FOR_DELIVERY")
-            self.save_state()
         self.state.setdefault("specialists", [])
         self.state.setdefault("staffing", {})
         self.state.setdefault("worker_assignments", {})
@@ -417,6 +429,7 @@ class AgentOrchestrator:
                 ]
 
         delivery = self.state.get("delivery")
+        legacy_delivery_migrated = False
         if self.state.get("state") == "COMPLETED" and delivery is None:
             worktree = self.ai_dir / "worktree"
             self.state["delivery"] = (
@@ -424,6 +437,13 @@ class AgentOrchestrator:
                 if worktree.exists()
                 else {"delivered": True, "legacy": True}
             )
+            legacy_delivery_migrated = worktree.exists()
+        needs_delivery = self._completed_run_needs_preservation(self.state)
+        if needs_delivery:
+            self.state["state"] = "WAITING_FOR_DELIVERY"
+            self.state.setdefault("resume_state", "WAITING_FOR_DELIVERY")
+        if legacy_delivery_migrated or needs_delivery:
+            self.save_state()
         try:
             from orchestrator.core.status import write_snapshot
 
@@ -472,12 +492,30 @@ class AgentOrchestrator:
         if not self.has_git:
             raise RuntimeError("Git delivery check failed: no Git repository.")
         worktree = self.ai_dir / "worktree"
-        if self.config.get("use_worktree", True) and worktree.exists():
+        use_worktree = self.config.get("use_worktree", True)
+        if use_worktree:
+            if not worktree.is_dir() or worktree.is_symlink():
+                raise RuntimeError("The expected feature worktree is unavailable.")
             return worktree
+        if worktree.exists() or worktree.is_symlink():
+            raise RuntimeError(
+                "An existing worktree cannot be ignored while worktree mode is disabled."
+            )
         return self.workspace
+
+    def delivery_operation(self) -> str:
+        if self.config.get("use_worktree", True):
+            return "merge"
+        if (self.ai_dir / "worktree").exists() or (self.ai_dir / "worktree").is_symlink():
+            raise RuntimeError(
+                "An existing worktree cannot be ignored while worktree mode is disabled."
+            )
+        return "confirm_without_merge"
 
     @staticmethod
     def _delivery_file_content(path: Path) -> str | None:
+        if path.is_symlink():
+            return f"symlink:{os.readlink(path)}"
         if not path.exists():
             return None
         data = path.read_bytes()
@@ -489,10 +527,18 @@ class AgentOrchestrator:
     def _delivery_file_contents(
         self, cwd: Path, paths: list[str]
     ) -> dict[str, str | None]:
-        return {
-            path: self._delivery_file_content(cwd / path)
-            for path in sorted(set(paths))
-        }
+        root = cwd.resolve()
+        files = {}
+        for relative in sorted(set(paths)):
+            path = cwd / relative
+            try:
+                path.parent.resolve().relative_to(root)
+            except (OSError, RuntimeError, ValueError) as error:
+                raise RuntimeError(
+                    f"Delivery file escapes the source worktree: {relative}"
+                ) from error
+            files[relative] = self._delivery_file_content(path)
+        return files
 
     def _build_delivery_preview(self, operation: str = "merge") -> dict:
         operation = operation.strip()
@@ -501,9 +547,18 @@ class AgentOrchestrator:
 
         source_cwd = self._delivery_workspace()
         source_commit = self._checked_git_output(["rev-parse", "HEAD"], source_cwd).strip()
+        source_branch = self._checked_git_output(
+            ["rev-parse", "--abbrev-ref", "HEAD"], source_cwd
+        ).strip()
         target_commit = self._checked_git_output(
             ["rev-parse", self.base_branch], self.workspace
         ).strip()
+        target_branch = self._checked_git_output(
+            ["branch", "--show-current"], self.workspace
+        ).strip()
+        index_entries = self._checked_git_output(
+            ["ls-files", "--stage", "-z"], source_cwd
+        )
         diff_stat = self._checked_git_output(
             ["diff", "--stat", self.base_branch], source_cwd
         )
@@ -539,7 +594,10 @@ class AgentOrchestrator:
             "tracked_files": tracked_files,
             "untracked_files": untracked_files,
             "source_commit": source_commit,
+            "source_branch": source_branch,
             "target_commit": target_commit,
+            "target_branch": target_branch,
+            "index_entries": index_entries,
             "scheduled_operation": operation,
             "diff_stat": diff_stat,
             "git_status": git_status,
@@ -549,8 +607,23 @@ class AgentOrchestrator:
 
     def get_delivery_preview(self) -> dict:
         preview = self.state.get("delivery_preview")
+        operation = self.delivery_operation()
         if not isinstance(preview, dict):
-            raise RuntimeError("No persistent delivery preview is available.")
+            if self.state.get("state") != "WAITING_FOR_DELIVERY":
+                raise RuntimeError("No persistent delivery preview is available.")
+            return self.create_delivery_preview(operation)
+
+        if preview.get("scheduled_operation") != operation:
+            return self.create_delivery_preview(operation)
+
+        current = self._build_delivery_preview(operation)
+        if current != preview:
+            self.state["delivery_preview"] = deepcopy(current)
+            self.state["delivery_preview_presented"] = False
+            self.state["delivery_confirmed"] = False
+            self.state.pop("presented_delivery_snapshot", None)
+            self.save_state()
+            preview = current
         return deepcopy(preview)
 
     def create_delivery_preview(self, operation: str = "merge") -> dict:
@@ -558,6 +631,7 @@ class AgentOrchestrator:
         self.state["delivery_preview"] = deepcopy(preview)
         self.state["delivery_preview_presented"] = False
         self.state["delivery_confirmed"] = False
+        self.state.pop("presented_delivery_snapshot", None)
         self.save_state()
         return deepcopy(preview)
 
@@ -565,7 +639,11 @@ class AgentOrchestrator:
         return self.create_delivery_preview(operation)
 
     def present_delivery_preview(self, preview: dict | None = None) -> dict:
-        stored = self.get_delivery_preview()
+        stored = self.state.get("delivery_preview")
+        if not isinstance(stored, dict):
+            stored = self.get_delivery_preview()
+        else:
+            stored = deepcopy(stored)
         if preview is not None and preview != stored:
             raise RuntimeError("Presented delivery preview does not match the persisted snapshot.")
         self.state["delivery_preview_presented"] = True
@@ -579,7 +657,10 @@ class AgentOrchestrator:
     def validate_delivery_preview(
         self, preview: dict | None = None, operation: str | None = None
     ) -> bool:
-        stored = self.get_delivery_preview()
+        stored = self.state.get("delivery_preview")
+        if not isinstance(stored, dict):
+            raise RuntimeError("No persistent delivery preview is available.")
+        stored = deepcopy(stored)
         if not self.state.get("delivery_preview_presented", False):
             raise RuntimeError("Delivery preview has not been presented.")
         if preview is not None and preview != stored:
@@ -598,11 +679,9 @@ class AgentOrchestrator:
             raise RuntimeError("Persisted workflow state changed since delivery preview.")
 
         current = self._build_delivery_preview(
-            stored.get("scheduled_operation", "merge")
+            self.delivery_operation()
         )
-        current.pop("git_status", None)
         expected = deepcopy(stored)
-        expected.pop("git_status", None)
         if current != expected:
             raise RuntimeError("Git delivery state changed since delivery preview.")
         return True
@@ -664,6 +743,12 @@ class AgentOrchestrator:
                 os.replace(temp_path, self.state_path)
             finally:
                 temp_path.unlink(missing_ok=True)
+            try:
+                from orchestrator.core.status import write_snapshot
+
+                write_snapshot(self)
+            except Exception as error:
+                log_warning(f"Could not update status snapshot: {error}")
 
     def request_pause(self):
         """Atomically persist a safe pause request independently of workflow state."""
@@ -679,18 +764,14 @@ class AgentOrchestrator:
             os.replace(temp_path, self.pause_request_path)
         finally:
             temp_path.unlink(missing_ok=True)
-        try:
-            from orchestrator.core.status import write_snapshot
-
-            write_snapshot(self)
-        except Exception as error:
-            log_warning(f"Could not update status snapshot: {error}")
 
     def pause_requested(self) -> bool:
         return self.pause_request_path.exists()
 
     def clear_pause_request(self):
-        self.pause_request_path.unlink(missing_ok=True)
+        """Remove a pending pause request safely when resuming workflow execution."""
+        with self.execution_lock():
+            self.pause_request_path.unlink(missing_ok=True)
 
     def check_pause_at_step_boundary(self) -> bool:
         """Persist a pause state at a workflow step boundary."""
@@ -701,20 +782,17 @@ class AgentOrchestrator:
         )
         current_state = persisted_state.get("state", "PLANNING")
         self.state["state"] = current_state
-        self.state.update(
-            {
-                "state": "WAITING_FOR_OWNER",
-                "resume_state": current_state,
-                "pass_state": current_state,
-            }
+        self.pause_for_human_review(
+            "Owner", "Pause requested by owner.", current_state, current_state
         )
-        self.save_state()
         log_warning("Safe pause requested; workflow stopped at a step boundary.")
         return True
 
     @contextmanager
     def execution_lock(self):
         """Serialize workflow execution across processes and reentrant calls."""
+        from orchestrator.core.runlock import RunLock, RunLockBusy
+
         owner = (os.getpid(), threading.get_ident())
         if self._execution_lock_owner == owner:
             self._execution_lock_depth += 1
@@ -724,20 +802,22 @@ class AgentOrchestrator:
                 self._execution_lock_depth -= 1
             return
 
-        self.execution_lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.execution_lock_path, "a+b") as lock_file:
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise RuntimeError("Workflow execution is already in progress.") from error
-            self._execution_lock_owner = owner
-            self._execution_lock_depth = 1
-            try:
-                yield
-            finally:
-                self._execution_lock_depth = 0
-                self._execution_lock_owner = None
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock = RunLock(
+            self.ai_dir, "workflow step", lock_name=self.execution_lock_path.name
+        )
+        try:
+            lock.acquire()
+        except RunLockBusy as error:
+            raise RuntimeError("Workflow execution is already in progress.") from error
+
+        self._execution_lock_owner = owner
+        self._execution_lock_depth = 1
+        try:
+            yield
+        finally:
+            self._execution_lock_depth = 0
+            self._execution_lock_owner = None
+            lock.release()
 
     def relevant_target_files(self, text: str, primary: str = "") -> list:
         """Narrow a QA/Reviewer failure report down to the files it actually
@@ -822,19 +902,7 @@ class AgentOrchestrator:
         self.save_state()
 
     def consume_pause_request(self) -> bool:
-        if not self.pause_request_path.exists():
-            return False
-        try:
-            self.pause_request_path.read_text(encoding="utf-8")
-        except OSError:
-            return False
-        self.pause_request_path.unlink(missing_ok=True)
-        current_state = self.state.get("state", "PLANNING")
-        self.pause_for_human_review(
-            "Owner", "Pause requested by owner.", current_state, current_state
-        )
-        log_info("Pause requested; the workflow stopped at a step boundary.")
-        return True
+        return self.check_pause_at_step_boundary()
 
     def escalate_to_replan_or_pause(
         self, source: str, feedback: str, resume_state: str, pass_state: str
@@ -1588,10 +1656,15 @@ class AgentOrchestrator:
 
     def cleanup_worktree(self, merge=False):
         """Cleans up the git worktree, optionally merging the changes back first."""
-        if not self.config.get("use_worktree", True) or not self.has_git:
-            return True
-
         wt_path = self.ai_dir / "worktree"
+        worktree_exists = wt_path.exists() or wt_path.is_symlink()
+        if not self.config.get("use_worktree", True) or not self.has_git:
+            if not worktree_exists:
+                return True
+            log_error(
+                "Cannot safely clean an existing worktree while worktree mode or Git is unavailable."
+            )
+            return False
 
         code, listed = self.run_command(
             ["git", "worktree", "list", "--porcelain"], cwd=self.workspace
@@ -1606,7 +1679,7 @@ class AgentOrchestrator:
             for record in listing.split("\n\n")
         )
         if not owned:
-            return not merge and not wt_path.exists()
+            return not merge and not worktree_exists
 
         if merge:
             code, _ = self.run_command(
@@ -1997,6 +2070,19 @@ class AgentOrchestrator:
             return
         while self.state["state"] not in ["COMPLETED", "WAITING_FOR_OWNER", "FAILED"]:
             if self.consume_pause_request():
+                return
+            if self.state["state"] == "WAITING_FOR_DELIVERY":
+                if self.state.get("delivery_confirmed"):
+                    return
+                try:
+                    self.step()
+                except Exception as error:
+                    failed_state = self.state.get("state", "PLANNING")
+                    self.pause_for_human_review(
+                        "Orchestrator", str(error), failed_state, failed_state
+                    )
+                    return
+                self.load_config_and_state()
                 return
             try:
                 self.step()

@@ -4,19 +4,18 @@ import sys
 import argparse
 import json
 import uuid
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from urllib.error import URLError
 from urllib.request import urlopen
-
-from http.cookies import SimpleCookie
 from pathlib import Path
 from orchestrator.core.state import (
     AgentOrchestrator,
     Colors,
+    delivery_snapshot_id,
     log_success,
     log_info,
-    log_warning,
     log_error,
     log_header,
 )
@@ -106,6 +105,68 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["task_error_signatures"] = {}
     orchestrator.state["tasks"] = []
     orchestrator.state["active_task_id"] = None
+
+
+def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
+    if not orchestrator.state_path.exists():
+        return True
+
+    try:
+        previous_state = json.loads(
+            orchestrator.state_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        log_error("Cannot read workflow state; existing artifacts were preserved.")
+        return False
+
+    if not isinstance(previous_state, dict):
+        log_error("Workflow state is invalid; existing artifacts were preserved.")
+        return False
+
+    state = previous_state.get("state")
+    if state == "COMPLETED" and orchestrator._completed_run_needs_preservation(
+        previous_state
+    ):
+        log_error(
+            "The completed workflow has not been delivered; its artifacts were preserved."
+        )
+        return False
+    if state == "PLANNING" and not orchestrator.request_path.exists():
+        return True
+    if state not in {"COMPLETED", "FAILED"}:
+        log_error(
+            f"Cannot start a new task while workflow is in progress ({state}). "
+            "Use 'stop' to request a safe pause, then 'reject' or 'reset'."
+        )
+        return False
+
+    sources = [
+        orchestrator.state_path,
+        orchestrator.request_path,
+        orchestrator.requirements_json_path,
+        orchestrator.requirements_path,
+        orchestrator.plan_path,
+        orchestrator.action_items_path,
+        orchestrator.agent_context_path,
+        orchestrator.final_report_path,
+        orchestrator.human_report_path,
+        orchestrator.qa_report_path,
+        orchestrator.reviewer_output_path,
+        orchestrator.developer_output_path,
+        orchestrator.specialist_review_path,
+        orchestrator.meeting_memory_path,
+        orchestrator.test_results_path,
+    ]
+    existing = [path for path in sources if path.exists()]
+    if not existing:
+        return True
+
+    archive_dir = orchestrator.workspace / ".ai-company-archive" / uuid.uuid4().hex
+    archive_dir.mkdir(parents=True, exist_ok=False)
+    for source in existing:
+        shutil.copy2(source, archive_dir / source.name)
+    log_info(f"Archived previous workflow reports and state to {archive_dir}")
+    return True
 
 
 def _all_available_developer_routes_failed_contract(orchestrator, task_id: str) -> bool:
@@ -233,26 +294,6 @@ def apply_approve(
             orchestrator.state.setdefault("task_error_signatures", {}).pop(
                 active_task_id, None
             )
-        ):
-            log_error(
-                "Every available Developer route for this task has failed its output contract. "
-                "Use 'reject' to re-plan, or approve/continue with --clear-route-failures to retry them."
-            )
-            return False
-        clear_task_route_failures(
-            orchestrator, active_task_id, clear_contract=clear_route_failures
-        )
-        if source in {"Developer", "Orchestrator"}:
-            for task in orchestrator.state.get("tasks", []):
-                if task.get("id") == active_task_id:
-                    task["revisions"] = 0
-                    break
-            orchestrator.state.setdefault("task_developer_calls", {})[
-                active_task_id
-            ] = 0
-            orchestrator.state.setdefault("task_error_signatures", {}).pop(
-                active_task_id, None
-            )
     orchestrator.clear_pause_request()
     orchestrator.state["state"] = resume_state
     orchestrator.state.pop("human_review_source", None)
@@ -266,7 +307,6 @@ def apply_review_decision(
     orchestrator: AgentOrchestrator, decision: str, reset_revisions: bool = False
 ) -> None:
     """Apply a pass/revise/reject decision to a WAITING_FOR_OWNER pause.
-    Pass and revise resume the workflow by clearing any pending pause request.
     `reset_revisions` (revise only, non-Architect/Manager source): clear
     code_revisions first so the auto-revise loop gets a fresh budget instead
     of immediately re-pausing if it was already at max_revisions."""
@@ -335,6 +375,70 @@ def pick_continue_decision(orchestrator: AgentOrchestrator) -> tuple[str, bool]:
     max_rev = orchestrator.config.get("max_revisions", 2)
     at_ceiling = orchestrator.state.get("code_revisions", 0) >= max_rev
     return "revise", at_ceiling
+
+
+def run_workflow(orchestrator: AgentOrchestrator) -> None:
+    orchestrator.run_to_end()
+
+
+def _show_waiting_delivery_preview(
+    orchestrator: AgentOrchestrator, preview: dict
+) -> str:
+    preview = orchestrator.present_delivery_preview(preview)
+    orchestrator.state["presented_delivery_snapshot"] = dict(preview)
+    orchestrator.save_state()
+    snapshot_id = delivery_snapshot_id(preview)
+    print(json.dumps(preview, ensure_ascii=False, indent=2))
+    log_info(
+        "Review this Git impact, then confirm with: "
+        f"python3 orchestrator.py deliver --confirm {snapshot_id}"
+    )
+    return snapshot_id
+
+
+def _deliver_waiting_workflow(
+    orchestrator: AgentOrchestrator, confirm_id: str | None
+) -> int:
+    from orchestrator.core.state import log_warning
+
+    try:
+        operation = orchestrator.delivery_operation()
+        if not orchestrator.state.get("delivery_artifacts_prepared", False):
+            orchestrator.step_waiting_for_delivery()
+        if orchestrator.state.get("workflow_mode") == "research":
+            return 0
+
+        preview = orchestrator.get_delivery_preview()
+        displayed = orchestrator.state.get("delivery_preview_presented", False)
+        current_id = delivery_snapshot_id(preview)
+        if confirm_id is None:
+            _show_waiting_delivery_preview(orchestrator, preview)
+            return 0
+        if not displayed or confirm_id != current_id:
+            _show_waiting_delivery_preview(orchestrator, preview)
+            log_warning("The preview was not confirmed or has changed; review and confirm it again.")
+            return 1
+
+        try:
+            orchestrator.confirm_delivery(preview, operation)
+        except RuntimeError:
+            fresh_preview = orchestrator.get_delivery_preview()
+            _show_waiting_delivery_preview(orchestrator, fresh_preview)
+            log_warning("Git impact changed during confirmation; review and confirm again.")
+            return 1
+
+        orchestrator.step_waiting_for_delivery()
+        if (
+            orchestrator.state.get("state") == "COMPLETED"
+            and orchestrator.state.get("delivery", {}).get("delivered")
+        ):
+            log_success("Delivery was confirmed and merged successfully.")
+            return 0
+        log_error("Delivery did not complete; inspect the preserved worktree and repair report.")
+        return 1
+    except (OSError, RuntimeError, ValueError) as error:
+        log_error(f"Delivery could not proceed safely: {error}")
+        return 1
 
 
 def ollama_available(url: str) -> bool:
@@ -612,6 +716,8 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                 )
                 return 1
         try:
+            if not archive_previous_run(orchestrator):
+                return 1
             orchestrator.clear_run_artifacts()
             orchestrator.init_project()
         except RuntimeError as error:
@@ -634,26 +740,14 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                 log_error(
                     f"Each --image must be a PNG, JPEG, or WebP file no larger than {max_image_bytes // 1024 // 1024}MB."
                 )
-                image_paths = []
-                for path in map(Path, args.image):
-                    if (
-                        not path.is_file()
-                        or path.suffix.lower() not in allowed_image_suffixes
-                        or path.stat().st_size > max_image_bytes
-                    ):
-                        log_error(
-                            f"Each --image must be a PNG, JPEG, or WebP file no larger than {max_image_bytes // 1024 // 1024}MB."
-                        )
-                        return
-                    image_paths.append(str(path.resolve()))
+                return
+            image_paths.append(str(path.resolve()))
 
-                # Save request prompt, auto-inlining any referenced .md files
-                full_prompt = inline_referenced_markdown(
-                    args.prompt, orchestrator.workspace
-                )
-                with open(orchestrator.request_path, "w", encoding="utf-8") as f:
-                    f.write(full_prompt)
-                log_success(f"Saved request to {orchestrator.request_path}")
+        # Save request prompt, auto-inlining any referenced .md files
+        full_prompt = inline_referenced_markdown(args.prompt, orchestrator.workspace)
+        with open(orchestrator.request_path, "w", encoding="utf-8") as f:
+            f.write(full_prompt)
+        log_success(f"Saved request to {orchestrator.request_path}")
 
         # Reset state to PLANNING
         orchestrator.state = {
@@ -692,22 +786,28 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             "Orchestrator initialized and ready to run. Run 'python3 orchestrator.py run' to execute."
         )
     elif args.command == "step":
-        try:
-            with orchestrator.execution_lock():
-                orchestrator.step()
-        except RuntimeError as error:
-            log_error(str(error))
+        orchestrator.step()
     elif args.command == "run":
-        orchestrator.run_to_end()
+        run_workflow(orchestrator)
     elif args.command == "pause":
         set_pause_request(orchestrator, args.cancel, args.source)
     elif args.command == "deliver":
         try:
             orchestrator.load_config_and_state()
+            if orchestrator.state.get("state") == "WAITING_FOR_DELIVERY":
+                return _deliver_waiting_workflow(orchestrator, args.confirm)
             from orchestrator.core.delivery import deliver
 
-            if args.confirm is not None and not deliver(orchestrator, args.confirm):
-                return 1
+            delivery = orchestrator.state.get("delivery", {})
+            if args.confirm is None:
+                if (
+                    orchestrator.state.get("state") != "COMPLETED"
+                    or delivery.get("delivered")
+                ):
+                    log_error("No undelivered completed workflow is available.")
+                    return 1
+                return 0 if deliver(orchestrator) is False and delivery.get("token") else 1
+            return 0 if deliver(orchestrator, args.confirm) else 1
         except (FileNotFoundError, json.JSONDecodeError) as error:
             log_error(f"Project is not ready for delivery: {error}")
             return 1
@@ -725,7 +825,7 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
         from orchestrator.gui import serve
 
         try:
-            serve(orchestrator, 8765 if port is None else port)
+            serve(orchestrator.workspace, 8765 if port is None else port)
         except ValueError as error:
             log_error(str(error))
             return 1
@@ -735,6 +835,9 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             from orchestrator.core.status import read_snapshot
 
             snapshot = read_snapshot(orchestrator.status_path)
+            if orchestrator._completed_run_needs_preservation(snapshot):
+                snapshot = dict(snapshot)
+                snapshot["state"] = "WAITING_FOR_DELIVERY"
             log_header("ORCHESTRATOR STATUS")
             print(
                 f"{'Current State:':<20}{Colors.BOLD}{snapshot.get('state', 'unknown')}{Colors.ENDC}"
@@ -788,29 +891,22 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             if not apply_approve(orchestrator, args.clear_route_failures):
                 return
             if args.run:
-                orchestrator.run_to_end()
+                run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
             )
     elif args.command == "review":
         try:
-            should_run = False
-            with orchestrator.execution_lock():
-                orchestrator.load_config_and_state()
-                if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
-                    log_error(
-                        f"Cannot review from state: {orchestrator.state.get('state')}"
-                    )
-                    return
-                apply_review_decision(
-                    orchestrator, args.decision, args.reset_revisions
+            orchestrator.load_config_and_state()
+            if orchestrator.state.get("state") != "WAITING_FOR_OWNER":
+                log_error(
+                    f"Cannot review from state: {orchestrator.state.get('state')}"
                 )
-                should_run = args.run and args.decision != "reject"
-                if should_run:
-                    orchestrator.run_to_end()
-        except RuntimeError as error:
-            log_error(str(error))
+                return
+            apply_review_decision(orchestrator, args.decision, args.reset_revisions)
+            if args.run and args.decision != "reject":
+                run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
@@ -844,42 +940,36 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                                 orchestrator, active_task_id, clear_contract=True
                             )
                     apply_review_decision(orchestrator, "revise", reset_revisions)
-            orchestrator.run_to_end()
+            run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
             )
     elif args.command == "reject":
         try:
-            with orchestrator.execution_lock():
-                orchestrator.load_config_and_state()
-                clear_run_state(orchestrator, "PLANNING")
-                orchestrator.save_state()
-                log_success(
-                    "Project sent back to PLANNING; the original request prompt was kept."
-                )
-                if args.run:
-                    orchestrator.run_to_end()
-        except RuntimeError as error:
-            log_error(str(error))
+            orchestrator.load_config_and_state()
+            clear_run_state(orchestrator, "PLANNING")
+            orchestrator.save_state()
+            log_success(
+                "Project sent back to PLANNING; the original request prompt was kept."
+            )
+            if args.run:
+                run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
             )
     elif args.command == "reset":
         try:
-            with orchestrator.execution_lock():
-                orchestrator.load_config_and_state()
-                clear_run_state(orchestrator, args.state)
-                if orchestrator.request_path.exists():
-                    orchestrator.request_path.unlink()
-                orchestrator.save_state()
+            orchestrator.load_config_and_state()
+            clear_run_state(orchestrator, args.state)
+            if orchestrator.request_path.exists():
+                orchestrator.request_path.unlink()
+            orchestrator.save_state()
             log_success(
                 f"State reset to {args.state}; the request prompt was cleared -- "
                 "run 'start' again before 'run'."
             )
-        except RuntimeError as error:
-            log_error(str(error))
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
@@ -1019,7 +1109,7 @@ _LOCKED_COMMANDS = {
 
 
 def main():
-    from orchestrator.core.runlock import RunLock, RunLockBusy
+    from orchestrator.core.runlock import RunLockBusy
 
     command = sys.argv[1] if len(sys.argv) > 1 else None
     locked = (
@@ -1032,16 +1122,19 @@ def main():
 
     orchestrator = AgentOrchestrator(Path(os.getcwd()))
     try:
-        with RunLock(orchestrator.ai_dir, command):
+        with orchestrator.execution_lock():
             return _run_cli(orchestrator)
-    except RunLockBusy as error:
-        holder = error.holder_info
-        pid = holder.get("pid", "?")
-        started = holder.get("started_at", "unknown time")
-        active_command = holder.get("command", "unknown command")
-        log_error(
-            f"Another command is running: {active_command} (PID {pid}, started {started})."
-        )
+    except RuntimeError as error:
+        if isinstance(error.__cause__, RunLockBusy):
+            holder = error.__cause__.holder_info
+            pid = holder.get("pid", "?")
+            started = holder.get("started_at", "unknown time")
+            active_command = holder.get("command", "unknown command")
+            log_error(
+                f"Another command is running: {active_command} (PID {pid}, started {started})."
+            )
+        else:
+            log_error(str(error))
         return 1
 
 

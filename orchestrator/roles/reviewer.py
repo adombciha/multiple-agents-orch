@@ -126,11 +126,14 @@ class ReviewerAgent(BaseAgent):
 
         if is_approved:
             log_success("Code changes APPROVED by Reviewer!")
-            self.orchestrator.state["state"] = "COMPLETED"
-            if (
+            requires_delivery = (
                 self.orchestrator.config.get("require_delivery_confirmation", True)
                 and self.orchestrator.state.get("workflow_mode") != "research"
-            ):
+            )
+            self.orchestrator.state["state"] = (
+                "WAITING_FOR_DELIVERY" if requires_delivery else "COMPLETED"
+            )
+            if requires_delivery:
                 self.orchestrator.state["delivery"] = {
                     "delivered": False,
                     "report_done": False,

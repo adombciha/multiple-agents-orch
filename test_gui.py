@@ -81,12 +81,65 @@ def make_git_delivery_service(workspace):
 
     service = gui.GuiService(workspace)
     service.orchestrator.init_project()
+    service.orchestrator.config["use_worktree"] = False
+    service.orchestrator.config_path.write_text(
+        json.dumps(service.orchestrator.config, indent=2), encoding="utf-8"
+    )
     service.orchestrator.state.update(
-        {"state": "WAITING_FOR_DELIVERY", "workflow_mode": "delivery"}
+        {
+            "state": "WAITING_FOR_DELIVERY",
+            "workflow_mode": "delivery",
+            "delivery_artifacts_prepared": True,
+            "changelog_written": True,
+        }
+    )
+    service.orchestrator.final_report_path.write_text(
+        "final report\n", encoding="utf-8"
     )
     service.orchestrator.save_state()
     (workspace / "app.py").write_text("feature\n", encoding="utf-8")
     service.orchestrator.run_to_end = Mock()
+    return service
+
+
+def make_worktree_delivery_service(workspace):
+    def git(*args):
+        return subprocess.run(
+            ["git", *args],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-b", "master")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test User")
+    (workspace / ".gitignore").write_text(".ai-company-*\n", encoding="utf-8")
+    (workspace / "app.py").write_text("base\n", encoding="utf-8")
+    git("add", ".gitignore", "app.py")
+    git("commit", "-m", "initial")
+
+    service = gui.GuiService(workspace)
+    orchestrator = service.orchestrator
+    orchestrator.init_project()
+    orchestrator.setup_worktree()
+    orchestrator.state.update(
+        {
+            "state": "WAITING_FOR_DELIVERY",
+            "workflow_mode": "delivery",
+            "delivery_artifacts_prepared": True,
+            "changelog_written": True,
+        }
+    )
+    orchestrator.final_report_path.write_text(
+        "final report\n", encoding="utf-8"
+    )
+    (orchestrator.ai_dir / "worktree" / "app.py").write_text(
+        "feature\n", encoding="utf-8"
+    )
+    orchestrator.save_state()
+    service._start_worker = start_worker_inline(service)
     return service
 
 
@@ -255,13 +308,13 @@ def test_delivery_first_click_presents_git_impact_and_second_click_confirms(tmp_
     assert presented["git"]["tracked_files"] == {"app.py": "feature\n"}
     assert presented["git"]["source_commit"]
     assert presented["git"]["target_commit"]
-    assert presented["git"]["scheduled_operation"] == "merge"
+    assert presented["git"]["scheduled_operation"] == "confirm_without_merge"
     assert service.orchestrator.state["delivery_confirmed"] is False
 
-    service.delivery(True, presented["delivery_snapshot_id"])
+    result = service.delivery(True, presented["delivery_snapshot_id"])
 
-    assert service.orchestrator.state["delivery_confirmed"] is True
-    service.orchestrator.run_to_end.assert_called_once_with()
+    assert result["state"] == "COMPLETED"
+    service.orchestrator.run_to_end.assert_not_called()
 
 
 def test_delivery_confirmation_requires_the_presented_snapshot_id(tmp_path):
@@ -287,6 +340,136 @@ def test_delivery_requires_new_confirmation_when_git_impact_changes(tmp_path):
     updated = service.orchestrator.get_delivery_preview()
     assert updated != first["git"]
     assert updated["tracked_files"] == {"app.py": "changed feature\n"}
+
+
+def test_gui_delivery_confirmation_merges_worktree_and_reaches_completed(tmp_path):
+    service = make_worktree_delivery_service(tmp_path)
+    run_to_end = Mock()
+    service.orchestrator.run_to_end = run_to_end
+
+    presented = service.delivery(False)
+    result = service.delivery(True, presented["delivery_snapshot_id"])
+
+    assert result["state"] == "COMPLETED"
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "feature\n"
+    assert service.orchestrator.state["delivery"]["delivered"] is True
+    run_to_end.assert_not_called()
+
+
+def test_gui_delivery_prepares_final_artifacts_before_presenting_snapshot(
+    tmp_path, monkeypatch
+):
+    service = make_worktree_delivery_service(tmp_path)
+    orchestrator = service.orchestrator
+    orchestrator.state.update(
+        {
+            "delivery_artifacts_prepared": False,
+            "changelog_written": False,
+        }
+    )
+    orchestrator.request_path.write_text("request", encoding="utf-8")
+    orchestrator.requirements_path.write_text("requirements", encoding="utf-8")
+    orchestrator.final_report_path.unlink()
+    orchestrator.save_state()
+    orchestrator.manager.call_manager = Mock(return_value="summary")
+    orchestrator.assistant.generate_meeting_memory = Mock(return_value="memory")
+    orchestrator.assistant.generate_changelog = Mock(return_value="change")
+    orchestrator.manager._review_worker_weights = Mock()
+    monkeypatch.setattr(
+        "orchestrator.roles.manager.brain.remember", Mock()
+    )
+
+    present = orchestrator.present_delivery_preview
+
+    def assert_prepared(preview):
+        assert orchestrator.state["delivery_artifacts_prepared"] is True
+        assert orchestrator.state["changelog_written"] is True
+        assert orchestrator.final_report_path.read_text(
+            encoding="utf-8"
+        ).startswith("summary")
+        assert "change" in (
+            orchestrator.ai_dir / "worktree" / "CHANGELOG.md"
+        ).read_text(encoding="utf-8")
+        return present(preview)
+
+    monkeypatch.setattr(
+        orchestrator, "present_delivery_preview", assert_prepared
+    )
+
+    result = service.delivery(False)
+
+    assert result["delivery_confirmation_required"] is True
+    assert orchestrator.state["delivery_preview_presented"] is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["source_branch", "target_branch", "index"],
+)
+def test_gui_delivery_snapshot_rejects_branch_and_index_changes(
+    tmp_path, mutation
+):
+    service = make_worktree_delivery_service(tmp_path)
+    presented = service.delivery(False)
+    worktree = service.orchestrator.ai_dir / "worktree"
+
+    if mutation == "source_branch":
+        subprocess.run(
+            ["git", "branch", "-m", "delivery-source"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    elif mutation == "target_branch":
+        subprocess.run(
+            ["git", "checkout", "-b", "delivery-target"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        subprocess.run(
+            ["git", "add", "app.py"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    assert service.orchestrator.get_delivery_preview() != presented["git"]
+
+    with pytest.raises(RuntimeError, match="does not match the displayed snapshot"):
+        service.delivery(True, presented["delivery_snapshot_id"])
+
+
+def test_delivery_file_content_records_symlink_without_following_target(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = tmp_path / "linked.txt"
+    link.symlink_to(outside)
+
+    try:
+        orchestrator = AgentOrchestrator(tmp_path)
+        content = orchestrator._delivery_file_content(link)
+        assert content == f"symlink:{outside}"
+        assert content != "secret"
+    finally:
+        outside.unlink()
+
+
+def test_delivery_file_contents_rejects_symlinked_parent_outside_worktree(tmp_path):
+    worktree = tmp_path / "worktree"
+    outside = tmp_path / "outside"
+    worktree.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    (worktree / "linked-dir").symlink_to(outside, target_is_directory=True)
+    orchestrator = AgentOrchestrator(tmp_path)
+
+    with pytest.raises(RuntimeError, match="escapes the source worktree"):
+        orchestrator._delivery_file_contents(worktree, ["linked-dir/secret.txt"])
 
 
 def test_http_task_runs_async_and_status_is_readable_during_execution(tmp_path):
@@ -481,8 +664,8 @@ def test_http_delivery_persists_git_impact_for_status_and_requires_confirmation(
         {"confirm": True, "snapshot_id": presented["delivery_snapshot_id"]},
     )
 
-    assert confirmed["delivery_confirmed"] is True
-    assert service.orchestrator.run_to_end.call_count == 1
+    assert confirmed["state"] == "COMPLETED"
+    service.orchestrator.run_to_end.assert_not_called()
     assert confirm_handler.send_response.call_args.args[0] == gui.HTTPStatus.OK
 
 
@@ -745,6 +928,25 @@ def test_local_gui_creates_server_for_valid_port_and_closes_it(
     assert created[0].closed is True
 
 
+def test_gui_cli_entrypoint_uses_formal_web_server(monkeypatch, tmp_path):
+    serve = Mock()
+    monkeypatch.setattr(gui, "serve", serve)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "orchestrator-gui",
+            "--workspace",
+            str(tmp_path),
+            "--port",
+            "8765",
+        ],
+    )
+
+    gui.main()
+
+    serve.assert_called_once_with(tmp_path, 8765)
+
+
 def test_local_gui_checks_host_origin_token_and_action_lock():
     service = SimpleNamespace(
         csrf_token="csrf-token",
@@ -829,9 +1031,7 @@ def test_gui_approve_clears_pause_request_before_resuming(monkeypatch):
     service = make_service("WAITING_FOR_OWNER")
     service._load = Mock()
     start_worker = start_worker_inline(service)
-    apply_approve = Mock(
-        side_effect=lambda orchestrator: orchestrator.clear_pause_request()
-    )
+    apply_approve = Mock(return_value=True)
     monkeypatch.setattr(gui, "apply_approve", apply_approve)
 
     result = service.approve()
@@ -840,3 +1040,145 @@ def test_gui_approve_clears_pause_request_before_resuming(monkeypatch):
     service.orchestrator.clear_pause_request.assert_called_once_with()
     apply_approve.assert_called_once_with(service.orchestrator)
     start_worker.assert_called_once()
+
+
+def test_gui_continue_owner_review_clears_pause_request_once(monkeypatch):
+    service = make_service("WAITING_FOR_OWNER")
+    service.orchestrator.state["human_review_source"] = "QA"
+    service._load = Mock()
+    start_worker = start_worker_inline(service)
+    apply_review_decision = Mock(
+        side_effect=lambda orchestrator, *_args: orchestrator.clear_pause_request()
+    )
+    monkeypatch.setattr(gui, "apply_review_decision", apply_review_decision)
+
+    result = service.continue_task()
+
+    assert result["state"] == "WAITING_FOR_OWNER"
+    service.orchestrator.clear_pause_request.assert_called_once_with()
+    apply_review_decision.assert_called_once_with(
+        service.orchestrator, "revise", False
+    )
+    start_worker.assert_called_once()
+
+
+def test_archive_previous_run_preserves_undelivered_worktree_then_archives(tmp_path):
+    orchestrator = AgentOrchestrator(tmp_path)
+    orchestrator.ai_dir.mkdir(parents=True, exist_ok=True)
+    orchestrator.state_path.write_text(
+        json.dumps({"state": "COMPLETED", "delivery": {"delivered": False}}),
+        encoding="utf-8",
+    )
+    (orchestrator.ai_dir / "worktree").mkdir()
+
+    assert gui.archive_previous_run(orchestrator) is False
+    assert not (tmp_path / ".ai-company-archive").exists()
+
+    (orchestrator.ai_dir / "worktree").rmdir()
+    orchestrator.state_path.write_text(
+        json.dumps({"state": "COMPLETED", "delivery": {"delivered": True}}),
+        encoding="utf-8",
+    )
+    orchestrator.request_path.write_text("old request", encoding="utf-8")
+    orchestrator.plan_path.write_text("old plan", encoding="utf-8")
+    orchestrator.final_report_path.write_text("done", encoding="utf-8")
+
+    assert gui.archive_previous_run(orchestrator) is True
+    archive = next((tmp_path / ".ai-company-archive").iterdir())
+    assert (archive / "state.json").exists()
+    assert (archive / "request.md").read_text(encoding="utf-8") == "old request"
+    assert (archive / "implementation_plan.md").read_text(encoding="utf-8") == "old plan"
+    assert (archive / "final_report.md").read_text(encoding="utf-8") == "done"
+
+
+def test_orchestrator_cli_gui_entrypoint_uses_the_new_service(monkeypatch, tmp_path):
+    from orchestrator import main as orchestrator_main
+
+    serve = Mock()
+    monkeypatch.setattr(gui, "serve", serve)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv", ["orchestrator.py", "gui", "--port", "8765"]
+    )
+
+    orchestrator_main.main()
+
+    serve.assert_called_once_with(tmp_path, 8765)
+
+
+def test_cli_delivery_requires_displayed_snapshot_and_merges_only_fresh_preview(
+    tmp_path, monkeypatch, capsys
+):
+    from orchestrator import main as orchestrator_main
+    from orchestrator.core.state import delivery_snapshot_id
+
+    service = make_worktree_delivery_service(tmp_path)
+    orchestrator = service.orchestrator
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        orchestrator_main, "AgentOrchestrator", lambda _workspace: orchestrator
+    )
+    monkeypatch.setattr("sys.argv", ["orchestrator.py", "deliver"])
+
+    assert orchestrator_main.main() == 0
+    first_preview = dict(orchestrator.state["delivery_preview"])
+    first_id = delivery_snapshot_id(first_preview)
+    assert orchestrator.state["delivery_preview_presented"] is True
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "base\n"
+    assert first_id in capsys.readouterr().out
+
+    worktree = orchestrator.ai_dir / "worktree"
+    (worktree / "app.py").write_text("updated feature\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv", ["orchestrator.py", "deliver", "--confirm", first_id]
+    )
+
+    assert orchestrator_main.main() == 1
+    updated_preview = dict(orchestrator.state["delivery_preview"])
+    updated_id = delivery_snapshot_id(updated_preview)
+    assert updated_id != first_id
+    assert orchestrator.state["delivery_preview_presented"] is True
+    assert orchestrator.state.get("delivery_confirmed", False) is False
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "base\n"
+    assert updated_id in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        "sys.argv", ["orchestrator.py", "deliver", "--confirm", updated_id]
+    )
+    assert orchestrator_main.main() == 0
+
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "updated feature\n"
+    assert orchestrator.state["state"] == "COMPLETED"
+    assert orchestrator.state["delivery"]["delivered"] is True
+
+
+def test_cli_start_archives_completed_run_before_clearing_reports(
+    tmp_path, monkeypatch
+):
+    from orchestrator import main as orchestrator_main
+
+    orchestrator = AgentOrchestrator(tmp_path)
+    orchestrator.init_project()
+    orchestrator.state = {
+        "state": "COMPLETED",
+        "delivery": {"delivered": True},
+    }
+    orchestrator.save_state()
+    orchestrator.final_report_path.write_text("previous result", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        orchestrator_main,
+        "AgentOrchestrator",
+        lambda _workspace: orchestrator,
+    )
+    monkeypatch.setattr(orchestrator_main, "configure_ollama", lambda _app: None)
+    monkeypatch.setattr(
+        "sys.argv", ["orchestrator.py", "start", "new test task"]
+    )
+
+    orchestrator_main.main()
+
+    archive = next((tmp_path / ".ai-company-archive").iterdir())
+    assert (archive / "final_report.md").read_text(encoding="utf-8") == "previous result"
+    assert orchestrator.state["state"] == "PLANNING"
+    assert orchestrator.request_path.read_text(encoding="utf-8") == "new test task"

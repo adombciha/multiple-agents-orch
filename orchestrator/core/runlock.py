@@ -20,8 +20,8 @@ class RunLockBusy(RuntimeError):
 
 class RunLock:
 
-    def __init__(self, ai_dir: Path, command: str):
-        self.path = ai_dir / "run.lock"
+    def __init__(self, ai_dir: Path, command: str, lock_name: str = "run.lock"):
+        self.path = ai_dir / lock_name
         self.command = command
         self._file = None
         self._fd = None
@@ -53,7 +53,7 @@ class RunLock:
                 raise RunLockBusy(current or {"command": "unknown"}) from error
             self._file.seek(0)
             self._file.truncate()
-            json.dump(holder, self._file)
+            self._file.write(json.dumps(holder))
             self._file.flush()
             os.fsync(self._file.fileno())
             return

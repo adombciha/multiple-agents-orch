@@ -249,30 +249,10 @@ class ManagerAgent(BaseAgent):
             self.orchestrator.save_state()
             return
 
+        operation = self.orchestrator.delivery_operation()
         wt_path = self.orchestrator.ai_dir / "worktree"
-        has_pending_worktree = (
-            self.orchestrator.config.get("use_worktree", True)
-            and wt_path.exists()
-            and self.orchestrator.has_git
-        )
-        if (
-            self.orchestrator.state.get("changelog_written")
-            and self.orchestrator.state.get("delivery_confirmed")
-            and not has_pending_worktree
-        ):
-            self.orchestrator.state["state"] = "COMPLETED"
-            for key in (
-                "presented_delivery_snapshot",
-                "delivery_preview",
-                "delivery_preview_presented",
-                "delivery_confirmed",
-            ):
-                self.orchestrator.state.pop(key, None)
-            self.orchestrator.save_state()
-            log_success("Delivery was already completed; skipping duplicate finalization.")
-            return
-
-        diff_stat, diff_patch, _ = self._inspect_delivery_state()
+        diff_stat, diff_patch, git_status = self._inspect_delivery_state()
+        artifacts_prepared_now = False
         if not self.orchestrator.state.get("delivery_artifacts_prepared", False):
             with open(self.orchestrator.request_path, "r", encoding="utf-8") as f:
                 request = f.read()
@@ -288,6 +268,9 @@ Requirements:
 
 Git Diff Stat:
 {diff_stat}
+
+Git Status:
+{git_status}
 
 Write in the same language as the original request. Use exactly these Markdown sections:
 ## Outcome
@@ -366,22 +349,36 @@ Be specific: name changed files, cite available test evidence, and distinguish c
 
             self._review_worker_weights(usage)
             self.orchestrator.state["delivery_artifacts_prepared"] = True
+            artifacts_prepared_now = True
+            self.orchestrator.save_state()
+
+        if artifacts_prepared_now and isinstance(
+            self.orchestrator.state.get("delivery_preview"), dict
+        ):
+            for key in (
+                "presented_delivery_snapshot",
+                "delivery_preview",
+                "delivery_preview_presented",
+                "delivery_confirmed",
+            ):
+                self.orchestrator.state.pop(key, None)
             self.orchestrator.save_state()
 
         create_preview = self.orchestrator.create_delivery_preview
 
         preview = self.orchestrator.state.get("delivery_preview")
-        if not isinstance(preview, dict):
-            create_preview("merge")
+        if not self.orchestrator.state.get("delivery_preview_presented", False):
+            create_preview(operation)
+            preview = self.orchestrator.state.get("delivery_preview")
             log_info("Prepared the persistent delivery snapshot.")
             log_warning(
                 "Review the complete Git impact with 'preview' or the GUI before confirming delivery."
             )
             return
 
-        if not self.orchestrator.state.get("delivery_preview_presented", False):
+        if not isinstance(preview, dict):
             log_warning(
-                "The saved Git impact has not been presented. Review it with 'preview' or the GUI before confirming."
+                "The saved Git impact is unavailable. Review it with 'preview' or the GUI before confirming."
             )
             return
 
@@ -392,23 +389,33 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             return
 
         try:
-            self.orchestrator.validate_delivery_preview(preview, "merge")
+            self.orchestrator.validate_delivery_preview(preview, operation)
         except RuntimeError as error:
             log_warning(f"Delivery snapshot is no longer valid: {error}")
-            create_preview("merge")
+            create_preview(operation)
             log_warning(
                 "The Git impact changed. Review the refreshed snapshot with 'preview' or the GUI before confirming again."
             )
             return
 
         log_info("Confirmed delivery snapshot is valid; attempting the scheduled Git merge.")
-        if not self.orchestrator.cleanup_worktree(merge=True):
+        if not self.orchestrator.cleanup_worktree(merge=operation == "merge"):
             log_warning(
                 "Delivery failed during Git merge. Preserving the feature worktree and queuing repair."
             )
+            for key in (
+                "presented_delivery_snapshot",
+                "delivery_preview",
+                "delivery_preview_presented",
+                "delivery_confirmed",
+            ):
+                self.orchestrator.state.pop(key, None)
             self.orchestrator.queue_worktree_repair_task()
             return
 
+        delivery = self.orchestrator.state.setdefault("delivery", {})
+        delivery["delivered"] = True
+        delivery["delivered_at"] = datetime.now(timezone.utc).isoformat()
         self.orchestrator.state["state"] = "COMPLETED"
         for key in (
             "presented_delivery_snapshot",
@@ -423,6 +430,7 @@ Be specific: name changed files, cite available test evidence, and distinguish c
     def step_completed(self):
         from orchestrator.core.state import (
             log_header,
+            log_info,
             log_success,
             log_warning,
         )
