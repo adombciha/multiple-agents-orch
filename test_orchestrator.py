@@ -2607,6 +2607,25 @@ def test_invalid_python_edit_reports_parse_error_without_writing(
     assert target.read_text(encoding="utf-8") == "value = 1\n"
 
 
+def test_file_edit_rejects_nested_marker_without_writing(initialized_orchestrator):
+    target = initialized_orchestrator.workspace / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    output = (
+        "[FILE_EDIT_START: app.py]\n[OLD]\nvalue = 1\n"
+        "[NEW]\nvalue = 2\n[NEW]\n[FILE_EDIT_END: app.py]"
+    )
+    errors = []
+
+    assert (
+        initialized_orchestrator.developer.parse_and_write_files(
+            output, ["app.py"], dry_run=True, validation_errors=errors
+        )
+        == []
+    )
+    assert errors == ["Skipping edit with nested OLD/NEW marker: app.py"]
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+
 def test_markdown_section_blocks_replace_only_named_section(initialized_orchestrator):
     readme = initialized_orchestrator.workspace / "README.md"
     readme.write_text(

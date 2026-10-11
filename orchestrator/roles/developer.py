@@ -698,6 +698,9 @@ class DeveloperAgent(BaseAgent):
             filepath_str = filepath_str.strip()
             old = old.strip("\n")
             new = new.strip("\n")
+            if re.search(r"(?m)^\s*\[(?:OLD|NEW)\]\s*$", old + "\n" + new):
+                reject(f"Skipping edit with nested OLD/NEW marker: {filepath_str}")
+                continue
             if allowed is not None and str(Path(filepath_str)) not in allowed:
                 reject(f"Skipping file not declared by task contract: {filepath_str}")
                 continue
@@ -1201,6 +1204,8 @@ class DeveloperAgent(BaseAgent):
                         "Return exact file edit blocks for every declared target file. "
                         "Put the complete existing text to replace in [OLD] and the complete replacement text in [NEW]. "
                         "[OLD] must be copied verbatim from the current file contents above and must appear there exactly once; "
+                        "Put [OLD] and [NEW] on their own lines exactly once per block; never copy these markers into either payload. "
+                        "If the requested text is not present verbatim, choose a smaller exact span from CURRENT_FILE. "
                         "include at least one block per target file, repeat the block for independent changes, "
                         "and leave every other part of each file untouched. "
                         "Do not return the complete file, other files, analysis, Markdown fences, or explanations.\n"
