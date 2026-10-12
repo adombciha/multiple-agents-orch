@@ -5483,9 +5483,7 @@ def test_manager_no_worktree_delivery_records_success_after_confirmation(
         delivery_preview_presented=True,
         delivery_confirmed=True,
     )
-    app.manager._inspect_delivery_state = Mock(
-        return_value=("No Git impact", "", "")
-    )
+    app.manager._inspect_delivery_state = Mock(return_value=("No Git impact", "", ""))
     app.validate_delivery_preview = Mock(return_value=True)
     app.cleanup_worktree = Mock(return_value=True)
 
@@ -7270,6 +7268,7 @@ def _init_gui_delivery_git_repo(root: Path):
     import subprocess
 
     root.mkdir(exist_ok=True)
+
     def git(*args):
         return subprocess.run(
             ["git", *args],

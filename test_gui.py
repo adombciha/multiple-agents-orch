@@ -132,9 +132,7 @@ def make_worktree_delivery_service(workspace):
             "changelog_written": True,
         }
     )
-    orchestrator.final_report_path.write_text(
-        "final report\n", encoding="utf-8"
-    )
+    orchestrator.final_report_path.write_text("final report\n", encoding="utf-8")
     (orchestrator.ai_dir / "worktree" / "app.py").write_text(
         "feature\n", encoding="utf-8"
     )
@@ -227,6 +225,7 @@ def test_submit_starts_worker_with_initial_workflow_state(tmp_path, monkeypatch)
         save_state=Mock(),
     )
     service.orchestrator = orchestrator
+
     def start_worker(prepare=None):
         with orchestrator.execution_lock():
             if prepare:
@@ -234,7 +233,9 @@ def test_submit_starts_worker_with_initial_workflow_state(tmp_path, monkeypatch)
         return True
 
     service._start_worker = Mock(side_effect=start_worker)
-    monkeypatch.setattr(gui, "inline_referenced_markdown", lambda prompt, workspace: prompt)
+    monkeypatch.setattr(
+        gui, "inline_referenced_markdown", lambda prompt, workspace: prompt
+    )
 
     result = service._new_task("run the offline GUI workflow")
 
@@ -375,26 +376,22 @@ def test_gui_delivery_prepares_final_artifacts_before_presenting_snapshot(
     orchestrator.assistant.generate_meeting_memory = Mock(return_value="memory")
     orchestrator.assistant.generate_changelog = Mock(return_value="change")
     orchestrator.manager._review_worker_weights = Mock()
-    monkeypatch.setattr(
-        "orchestrator.roles.manager.brain.remember", Mock()
-    )
+    monkeypatch.setattr("orchestrator.roles.manager.brain.remember", Mock())
 
     present = orchestrator.present_delivery_preview
 
     def assert_prepared(preview):
         assert orchestrator.state["delivery_artifacts_prepared"] is True
         assert orchestrator.state["changelog_written"] is True
-        assert orchestrator.final_report_path.read_text(
-            encoding="utf-8"
-        ).startswith("summary")
+        assert orchestrator.final_report_path.read_text(encoding="utf-8").startswith(
+            "summary"
+        )
         assert "change" in (
             orchestrator.ai_dir / "worktree" / "CHANGELOG.md"
         ).read_text(encoding="utf-8")
         return present(preview)
 
-    monkeypatch.setattr(
-        orchestrator, "present_delivery_preview", assert_prepared
-    )
+    monkeypatch.setattr(orchestrator, "present_delivery_preview", assert_prepared)
 
     result = service.delivery(False)
 
@@ -406,9 +403,7 @@ def test_gui_delivery_prepares_final_artifacts_before_presenting_snapshot(
     "mutation",
     ["source_branch", "target_branch", "index"],
 )
-def test_gui_delivery_snapshot_rejects_branch_and_index_changes(
-    tmp_path, mutation
-):
+def test_gui_delivery_snapshot_rejects_branch_and_index_changes(tmp_path, mutation):
     service = make_worktree_delivery_service(tmp_path)
     presented = service.delivery(False)
     worktree = service.orchestrator.ai_dir / "worktree"
@@ -634,9 +629,7 @@ def test_http_delivery_persists_git_impact_for_status_and_requires_confirmation(
         "X-CSRF-Token": service.csrf_token,
     }
 
-    present_handler = make_handler(
-        "POST", dict(headers), "/api/deliver", service
-    )
+    present_handler = make_handler("POST", dict(headers), "/api/deliver", service)
     presented = post_json(present_handler, {"confirm": False})
 
     assert presented["delivery_confirmation_required"] is True
@@ -656,9 +649,7 @@ def test_http_delivery_persists_git_impact_for_status_and_requires_confirmation(
     assert current["git"] == presented["git"]
     assert current["delivery_confirmed"] is False
 
-    confirm_handler = make_handler(
-        "POST", dict(headers), "/api/deliver", service
-    )
+    confirm_handler = make_handler("POST", dict(headers), "/api/deliver", service)
     confirmed = post_json(
         confirm_handler,
         {"confirm": True, "snapshot_id": presented["delivery_snapshot_id"]},
@@ -698,6 +689,8 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     assert "Git impact" in page
     assert "1 file changed" in page
     assert "snapshot_id:deliverySnapshotId" in page
+    assert "document.activeElement === promptInput || promptInput.value" in page
+    assert "setTimeout(refreshWhenIdle, 3000)" in page
 
 
 def test_render_page_escapes_script_injection_from_tasks_reports_and_review():
@@ -879,9 +872,7 @@ def test_http_post_rejects_invalid_csrf_before_dispatch():
 
 
 @pytest.mark.parametrize("port", [0, -1, 65536, True, "8765"])
-def test_local_gui_rejects_invalid_port_before_binding(
-    tmp_path, monkeypatch, port
-):
+def test_local_gui_rejects_invalid_port_before_binding(tmp_path, monkeypatch, port):
     server_factory = Mock()
     service_factory = Mock()
     monkeypatch.setattr(gui, "ThreadingHTTPServer", server_factory)
@@ -894,13 +885,12 @@ def test_local_gui_rejects_invalid_port_before_binding(
     service_factory.assert_not_called()
 
 
-def test_local_gui_creates_server_for_valid_port_and_closes_it(
-    tmp_path, monkeypatch
-):
+def test_local_gui_creates_server_for_valid_port_and_closes_it(tmp_path, monkeypatch):
     created = []
     service = object()
 
     class FakeServer:
+
         def __init__(self, address, handler):
             self.address = address
             self.handler = handler
@@ -1011,9 +1001,7 @@ def test_completed_gui_run_keeps_delivery_gate_across_reload():
             },
         }
     )
-    service.orchestrator._completed_run_needs_preservation = Mock(
-        return_value=True
-    )
+    service.orchestrator._completed_run_needs_preservation = Mock(return_value=True)
     service._reports = Mock(return_value={})
     service.status = gui.GuiService.status.__get__(service, gui.GuiService)
 
@@ -1056,9 +1044,7 @@ def test_gui_continue_owner_review_clears_pause_request_once(monkeypatch):
 
     assert result["state"] == "WAITING_FOR_OWNER"
     service.orchestrator.clear_pause_request.assert_called_once_with()
-    apply_review_decision.assert_called_once_with(
-        service.orchestrator, "revise", False
-    )
+    apply_review_decision.assert_called_once_with(service.orchestrator, "revise", False)
     start_worker.assert_called_once()
 
 
@@ -1087,7 +1073,9 @@ def test_archive_previous_run_preserves_undelivered_worktree_then_archives(tmp_p
     archive = next((tmp_path / ".ai-company-archive").iterdir())
     assert (archive / "state.json").exists()
     assert (archive / "request.md").read_text(encoding="utf-8") == "old request"
-    assert (archive / "implementation_plan.md").read_text(encoding="utf-8") == "old plan"
+    assert (archive / "implementation_plan.md").read_text(
+        encoding="utf-8"
+    ) == "old plan"
     assert (archive / "final_report.md").read_text(encoding="utf-8") == "done"
 
 
@@ -1097,9 +1085,7 @@ def test_orchestrator_cli_gui_entrypoint_uses_the_new_service(monkeypatch, tmp_p
     serve = Mock()
     monkeypatch.setattr(gui, "serve", serve)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        "sys.argv", ["orchestrator.py", "gui", "--port", "8765"]
-    )
+    monkeypatch.setattr("sys.argv", ["orchestrator.py", "gui", "--port", "8765"])
 
     orchestrator_main.main()
 
@@ -1172,13 +1158,13 @@ def test_cli_start_archives_completed_run_before_clearing_reports(
         lambda _workspace: orchestrator,
     )
     monkeypatch.setattr(orchestrator_main, "configure_ollama", lambda _app: None)
-    monkeypatch.setattr(
-        "sys.argv", ["orchestrator.py", "start", "new test task"]
-    )
+    monkeypatch.setattr("sys.argv", ["orchestrator.py", "start", "new test task"])
 
     orchestrator_main.main()
 
     archive = next((tmp_path / ".ai-company-archive").iterdir())
-    assert (archive / "final_report.md").read_text(encoding="utf-8") == "previous result"
+    assert (archive / "final_report.md").read_text(
+        encoding="utf-8"
+    ) == "previous result"
     assert orchestrator.state["state"] == "PLANNING"
     assert orchestrator.request_path.read_text(encoding="utf-8") == "new test task"

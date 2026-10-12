@@ -282,7 +282,11 @@ class AgentOrchestrator:
             )
         if self.ai_dir.exists():
             for path in self.ai_dir.iterdir():
-                if path.name in {"config.json", "run.lock", self.execution_lock_path.name}:
+                if path.name in {
+                    "config.json",
+                    "run.lock",
+                    self.execution_lock_path.name,
+                }:
                     continue
                 if path.is_dir() and not path.is_symlink():
                     shutil.rmtree(path)
@@ -387,7 +391,9 @@ class AgentOrchestrator:
                 loaded_config = json.load(f)
         else:
             if not self.state_path.exists():
-                raise FileNotFoundError("Project not initialized. Please run 'init' first.")
+                raise FileNotFoundError(
+                    "Project not initialized. Please run 'init' first."
+                )
             loaded_config = {}
         self.explicit_backends = set(loaded_config.get("backends", {}))
 
@@ -506,7 +512,9 @@ class AgentOrchestrator:
     def delivery_operation(self) -> str:
         if self.config.get("use_worktree", True):
             return "merge"
-        if (self.ai_dir / "worktree").exists() or (self.ai_dir / "worktree").is_symlink():
+        if (self.ai_dir / "worktree").exists() or (
+            self.ai_dir / "worktree"
+        ).is_symlink():
             raise RuntimeError(
                 "An existing worktree cannot be ignored while worktree mode is disabled."
             )
@@ -546,7 +554,9 @@ class AgentOrchestrator:
             raise ValueError("Delivery operation is required.")
 
         source_cwd = self._delivery_workspace()
-        source_commit = self._checked_git_output(["rev-parse", "HEAD"], source_cwd).strip()
+        source_commit = self._checked_git_output(
+            ["rev-parse", "HEAD"], source_cwd
+        ).strip()
         source_branch = self._checked_git_output(
             ["rev-parse", "--abbrev-ref", "HEAD"], source_cwd
         ).strip()
@@ -562,9 +572,7 @@ class AgentOrchestrator:
         diff_stat = self._checked_git_output(
             ["diff", "--stat", self.base_branch], source_cwd
         )
-        git_status = self._checked_git_output(
-            ["status", "--short"], source_cwd
-        )
+        git_status = self._checked_git_output(["status", "--short"], source_cwd)
         tracked_paths = self._checked_git_output(
             ["diff", "--name-only", "--no-renames", "-z", self.base_branch],
             source_cwd,
@@ -645,7 +653,9 @@ class AgentOrchestrator:
         else:
             stored = deepcopy(stored)
         if preview is not None and preview != stored:
-            raise RuntimeError("Presented delivery preview does not match the persisted snapshot.")
+            raise RuntimeError(
+                "Presented delivery preview does not match the persisted snapshot."
+            )
         self.state["delivery_preview_presented"] = True
         self.state["delivery_confirmed"] = False
         self.save_state()
@@ -664,7 +674,9 @@ class AgentOrchestrator:
         if not self.state.get("delivery_preview_presented", False):
             raise RuntimeError("Delivery preview has not been presented.")
         if preview is not None and preview != stored:
-            raise RuntimeError("Delivery preview does not match the persisted snapshot.")
+            raise RuntimeError(
+                "Delivery preview does not match the persisted snapshot."
+            )
         if operation is not None and operation != stored.get("scheduled_operation"):
             raise RuntimeError("Scheduled delivery operation changed.")
 
@@ -676,11 +688,11 @@ class AgentOrchestrator:
         if self._delivery_state_fingerprint(persisted_state) != stored.get(
             "state_fingerprint"
         ):
-            raise RuntimeError("Persisted workflow state changed since delivery preview.")
+            raise RuntimeError(
+                "Persisted workflow state changed since delivery preview."
+            )
 
-        current = self._build_delivery_preview(
-            self.delivery_operation()
-        )
+        current = self._build_delivery_preview(self.delivery_operation())
         expected = deepcopy(stored)
         if current != expected:
             raise RuntimeError("Git delivery state changed since delivery preview.")

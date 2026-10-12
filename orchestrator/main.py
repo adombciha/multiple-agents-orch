@@ -112,9 +112,7 @@ def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
         return True
 
     try:
-        previous_state = json.loads(
-            orchestrator.state_path.read_text(encoding="utf-8")
-        )
+        previous_state = json.loads(orchestrator.state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         log_error("Cannot read workflow state; existing artifacts were preserved.")
         return False
@@ -416,7 +414,9 @@ def _deliver_waiting_workflow(
             return 0
         if not displayed or confirm_id != current_id:
             _show_waiting_delivery_preview(orchestrator, preview)
-            log_warning("The preview was not confirmed or has changed; review and confirm it again.")
+            log_warning(
+                "The preview was not confirmed or has changed; review and confirm it again."
+            )
             return 1
 
         try:
@@ -424,17 +424,20 @@ def _deliver_waiting_workflow(
         except RuntimeError:
             fresh_preview = orchestrator.get_delivery_preview()
             _show_waiting_delivery_preview(orchestrator, fresh_preview)
-            log_warning("Git impact changed during confirmation; review and confirm again.")
+            log_warning(
+                "Git impact changed during confirmation; review and confirm again."
+            )
             return 1
 
         orchestrator.step_waiting_for_delivery()
-        if (
-            orchestrator.state.get("state") == "COMPLETED"
-            and orchestrator.state.get("delivery", {}).get("delivered")
-        ):
+        if orchestrator.state.get("state") == "COMPLETED" and orchestrator.state.get(
+            "delivery", {}
+        ).get("delivered"):
             log_success("Delivery was confirmed and merged successfully.")
             return 0
-        log_error("Delivery did not complete; inspect the preserved worktree and repair report.")
+        log_error(
+            "Delivery did not complete; inspect the preserved worktree and repair report."
+        )
         return 1
     except (OSError, RuntimeError, ValueError) as error:
         log_error(f"Delivery could not proceed safely: {error}")
@@ -800,13 +803,14 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
 
             delivery = orchestrator.state.get("delivery", {})
             if args.confirm is None:
-                if (
-                    orchestrator.state.get("state") != "COMPLETED"
-                    or delivery.get("delivered")
+                if orchestrator.state.get("state") != "COMPLETED" or delivery.get(
+                    "delivered"
                 ):
                     log_error("No undelivered completed workflow is available.")
                     return 1
-                return 0 if deliver(orchestrator) is False and delivery.get("token") else 1
+                return (
+                    0 if deliver(orchestrator) is False and delivery.get("token") else 1
+                )
             return 0 if deliver(orchestrator, args.confirm) else 1
         except (FileNotFoundError, json.JSONDecodeError) as error:
             log_error(f"Project is not ready for delivery: {error}")

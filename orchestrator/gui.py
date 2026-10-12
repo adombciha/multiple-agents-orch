@@ -118,6 +118,7 @@ _delivery_snapshot_id = delivery_snapshot_id
 
 
 class GuiService:
+
     def __init__(self, workspace: Path):
         self.workspace = workspace.resolve()
         self.orchestrator = AgentOrchestrator(self.workspace)
@@ -273,12 +274,8 @@ class GuiService:
             "pause_requested": pause_requested,
             "pause_status": pause_status,
             "delivery_confirmed": bool(state.get("delivery_confirmed")),
-            "delivery_preview_presented": bool(
-                state.get("delivery_preview_presented")
-            ),
-            "presented_delivery_snapshot": state.get(
-                "presented_delivery_snapshot", {}
-            ),
+            "delivery_preview_presented": bool(state.get("delivery_preview_presented")),
+            "presented_delivery_snapshot": state.get("presented_delivery_snapshot", {}),
             "delivery_snapshot_id": (
                 _delivery_snapshot_id(preview)
                 if isinstance(preview, dict) and preview
@@ -495,10 +492,9 @@ class GuiService:
                     raise RuntimeError("Workflow is not waiting for delivery.")
                 operation = self.orchestrator.delivery_operation()
                 preview = self.orchestrator.get_delivery_preview()
-                if (
-                    not self.orchestrator.state.get("delivery_preview_presented")
-                    or snapshot_id != _delivery_snapshot_id(preview)
-                ):
+                if not self.orchestrator.state.get(
+                    "delivery_preview_presented"
+                ) or snapshot_id != _delivery_snapshot_id(preview):
                     raise RuntimeError(
                         "Git impact changed; the confirmed snapshot does not match the displayed snapshot. Review it again."
                     )
@@ -611,7 +607,15 @@ document.getElementById('task-form').onsubmit = async (event) => {{
   const prompt = new FormData(event.target).get('prompt');
   await post('/api/task', {{prompt}});
 }};
-setTimeout(() => location.reload(), 3000);
+function refreshWhenIdle() {{
+  const promptInput = document.querySelector('#task-form textarea');
+  if (document.activeElement === promptInput || promptInput.value) {{
+    setTimeout(refreshWhenIdle, 3000);
+    return;
+  }}
+  location.reload();
+}}
+setTimeout(refreshWhenIdle, 3000);
 </script>
 </body>
 </html>"""
@@ -660,9 +664,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _send_json(
-        self, value: object, status: HTTPStatus = HTTPStatus.OK
-    ) -> None:
+    def _send_json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = _json_bytes(value)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -748,8 +750,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _cookie(self) -> str:
         return (
-            f"gui_csrf={self.service.csrf_token}; Path=/; HttpOnly; "
-            "SameSite=Strict"
+            f"gui_csrf={self.service.csrf_token}; Path=/; HttpOnly; " "SameSite=Strict"
         )
 
     def log_message(self, format, *args):
@@ -928,11 +929,7 @@ def make_handler(orchestrator, token: str, port: int):
 
 
 def serve(workspace, port: int = 8765):
-    if (
-        isinstance(port, bool)
-        or not isinstance(port, int)
-        or not 1 <= port <= 65535
-    ):
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
     service = GuiService(Path(workspace))
     server = ThreadingHTTPServer((HOST, port), RequestHandler)

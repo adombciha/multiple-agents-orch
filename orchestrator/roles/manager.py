@@ -398,7 +398,9 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             )
             return
 
-        log_info("Confirmed delivery snapshot is valid; attempting the scheduled Git merge.")
+        log_info(
+            "Confirmed delivery snapshot is valid; attempting the scheduled Git merge."
+        )
         if not self.orchestrator.cleanup_worktree(merge=operation == "merge"):
             log_warning(
                 "Delivery failed during Git merge. Preserving the feature worktree and queuing repair."
