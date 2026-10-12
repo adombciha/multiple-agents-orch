@@ -21,6 +21,7 @@ from orchestrator.main import (
     apply_approve,
     apply_review_decision,
     archive_previous_run,
+    clear_run_state,
     inline_referenced_markdown,
 )
 
@@ -449,6 +450,18 @@ class GuiService:
                 raise RuntimeError("A workflow worker is already running.")
         return self.status()
 
+    def reset(self) -> dict:
+        with self._operation():
+            if self._worker_is_running():
+                raise RuntimeError("A workflow worker is already running.")
+            with self.orchestrator.execution_lock():
+                self._load()
+                clear_run_state(self.orchestrator, "PLANNING")
+                if self.orchestrator.request_path.exists():
+                    self.orchestrator.request_path.unlink()
+                self.orchestrator.save_state()
+        return self.status()
+
     def delivery(self, confirm: bool, snapshot_id: str | None = None) -> dict:
         with self._operation():
             if self._worker_is_running():
@@ -585,6 +598,7 @@ button{{margin:.25rem;padding:.5rem 1rem}} textarea{{width:100%;min-height:8rem}
 <button onclick="post('/api/continue')">繼續</button>
 <button onclick="post('/api/approve')">通過審核</button>
 <button onclick="post('/api/review',{{decision:'revise'}})">審核未通過，優先修訂</button>
+<button onclick="if (window.confirm('重置會清除已存任務內容並清理目前 worktree，且需要重新提交任務。確定重置？')) post('/api/reset')">重置任務</button>
 <button onclick="post('/api/deliver')">展示 Git 影響</button>
 <button onclick="post('/api/deliver',{{confirm:true,snapshot_id:deliverySnapshotId}})">確認二次交付</button>
 <div id="git">{git_html}</div>
@@ -724,6 +738,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/continue",
             "/api/approve",
             "/api/review",
+            "/api/reset",
             "/api/deliver",
         }:
             self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
@@ -740,6 +755,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 result = self.service.approve()
             elif path == "/api/review":
                 result = self.service.review(str(body.get("decision", "")))
+            elif path == "/api/reset":
+                result = self.service.reset()
             else:
                 result = self.service.delivery(
                     bool(body.get("confirm", False)), body.get("snapshot_id")

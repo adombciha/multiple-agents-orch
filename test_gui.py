@@ -691,6 +691,8 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     assert "snapshot_id:deliverySnapshotId" in page
     assert "document.activeElement === promptInput || promptInput.value" in page
     assert "setTimeout(refreshWhenIdle, 3000)" in page
+    assert "post('/api/reset')" in page
+    assert "window.confirm('重置會清除已存任務內容並清理目前 worktree" in page
 
 
 def test_render_page_escapes_script_injection_from_tasks_reports_and_review():
@@ -783,6 +785,83 @@ def test_post_submit_route_works_with_an_offline_mock_handler():
 
     service._new_task.assert_called_once_with("offline")
     assert json.loads(handler.wfile.getvalue())["state"] == "PLANNING"
+
+
+def test_post_reset_route_calls_existing_reset_service():
+    service = SimpleNamespace(
+        csrf_token="csrf-token",
+        reset=Mock(return_value={"state": "PLANNING"}),
+    )
+    handler = make_handler(
+        "POST",
+        {
+            "Host": "127.0.0.1:8765",
+            "Origin": "http://127.0.0.1:8765",
+            "Cookie": "gui_csrf=csrf-token",
+            "X-CSRF-Token": "csrf-token",
+        },
+        "/api/reset",
+        service,
+    )
+
+    response = post_json(handler, {})
+
+    service.reset.assert_called_once_with()
+    assert response["state"] == "PLANNING"
+
+
+def test_gui_reset_reuses_reset_logic_and_clears_saved_prompt(monkeypatch):
+    service = make_service("FAILED")
+    service.worker = None
+    service.worker_lock = threading.Lock()
+    service.operation_lock = threading.Lock()
+    service.status = Mock(return_value={"state": "PLANNING"})
+    service.orchestrator.request_path = SimpleNamespace(
+        exists=Mock(return_value=True), unlink=Mock()
+    )
+    clear_run_state = Mock()
+    monkeypatch.setattr(gui, "clear_run_state", clear_run_state)
+
+    result = service.reset()
+
+    clear_run_state.assert_called_once_with(service.orchestrator, "PLANNING")
+    service.orchestrator.request_path.unlink.assert_called_once_with()
+    service.orchestrator.save_state.assert_called_once_with()
+    assert result["state"] == "PLANNING"
+
+
+def test_gui_reset_rejects_while_worker_is_running():
+    service = make_service("IMPLEMENTING")
+    service.worker = Mock()
+    service.worker.is_alive.return_value = True
+    service.worker_lock = threading.Lock()
+    service.operation_lock = threading.Lock()
+
+    with pytest.raises(RuntimeError, match="worker is already running"):
+        service.reset()
+
+    service.orchestrator.load_config_and_state.assert_not_called()
+
+
+def test_gui_reset_preserves_prompt_when_worktree_cleanup_fails(monkeypatch):
+    service = make_service("FAILED")
+    service.worker = None
+    service.worker_lock = threading.Lock()
+    service.operation_lock = threading.Lock()
+    service.orchestrator.request_path = SimpleNamespace(
+        exists=Mock(return_value=True), unlink=Mock()
+    )
+    monkeypatch.setattr(
+        gui,
+        "clear_run_state",
+        Mock(side_effect=RuntimeError("Git worktree cleanup failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="worktree cleanup failed"):
+        service.reset()
+
+    service.orchestrator.request_path.unlink.assert_not_called()
+    service.orchestrator.save_state.assert_not_called()
 
 
 @pytest.mark.parametrize(
