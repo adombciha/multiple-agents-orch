@@ -229,10 +229,20 @@ class DeveloperAgent(BaseAgent):
             else planning_input
         )
         request_text_for_file_detection = _REFERENCE_BLOCK_RE.sub("", request_text)
+        target_file_requirements = "\n".join(
+            line
+            for line in requirements.splitlines()
+            if re.search(
+                r"預計影響|影響檔案|目標檔案|"
+                r"target files|affected files|files to (?:modify|change)",
+                line,
+                re.IGNORECASE,
+            )
+        )
         requested_files = []
         for name in re.findall(
             r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])",
-            request_text_for_file_detection,
+            f"{request_text_for_file_detection}\n{target_file_requirements}",
             re.IGNORECASE,
         ):
             path = Path(name)

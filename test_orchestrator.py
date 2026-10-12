@@ -3687,6 +3687,48 @@ def test_developing_plan_ignores_markdown_paths_inside_reference_block(
     assert initialized_orchestrator.state["tasks"][0]["id"] == "T1"
 
 
+def test_developing_plan_uses_declared_requirement_files_for_markdown_inventory(
+    initialized_orchestrator, monkeypatch
+):
+    initialized_orchestrator.requirements_path.write_text(
+        "- 預計影響 README_en.md。\n" "- 驗證時執行 verify_alignment.py。\n",
+        encoding="utf-8",
+    )
+    initialized_orchestrator.request_path.write_text(
+        "Update GUI instructions in the language README.\n\n"
+        "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->\n"
+        "## README_ru.md\n\n# Справка\n\n## Установка\n\n"
+        "<!-- REFERENCE-ONLY:END -->\n",
+        encoding="utf-8",
+    )
+    readme = initialized_orchestrator.workspace / "README_en.md"
+    readme.write_text(
+        "# Multi-Agent Orchestrator\n\n## Requirements and installation\n",
+        encoding="utf-8",
+    )
+    manager = Mock(
+        return_value=(
+            '{"tasks": [{"id": "README-INSTALL", '
+            '"description": "update installation guidance", '
+            '"target_files": ["README_en.md"], '
+            '"section_heading": "## Requirements and installation", '
+            '"rd_level": "middle", "qa_level": "middle"}], '
+            '"staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}}}'
+        )
+    )
+    monkeypatch.setattr(initialized_orchestrator, "call_manager", manager)
+
+    initialized_orchestrator.step_developing_plan()
+
+    prompt_sent_to_manager = manager.call_args.args[0]
+    assert (
+        '"README_en.md": ["# Multi-Agent Orchestrator", '
+        '"## Requirements and installation"]' in prompt_sent_to_manager
+    )
+    assert "README_ru.md" not in prompt_sent_to_manager
+    assert prompt_sent_to_manager.count("verify_alignment.py") == 1
+
+
 def test_developing_plan_ignores_markdown_path_referenced_in_original_request_text(
     initialized_orchestrator, monkeypatch
 ):
