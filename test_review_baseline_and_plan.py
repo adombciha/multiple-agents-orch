@@ -165,7 +165,9 @@ def test_combined_code_task_survives_replan_and_implementation(
 ):
     app = initialized_orchestrator
     files = ["live_answer.py", "test_live_answer.py"]
-    description = "Implement both files as one task, including tests"
+    description = (
+        "Inspect existing implementation first, then implement both files and tests"
+    )
     app.request_path.write_text("Only add live_answer.py and test_live_answer.py.")
     app.requirements_path.write_text(
         "Only allowed to add live_answer.py and test_live_answer.py. Combine both into one task."
@@ -213,3 +215,109 @@ def test_combined_code_task_survives_replan_and_implementation(
     assert app.state["tasks"][0]["id"] == "COMBINED"
     assert app.state["tasks"][0]["status"] == "completed"
     assert all((app.workspace / path).is_file() for path in files)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "Inspect existing implementation first",
+        "Review current behavior",
+        "檢查既有實作",
+        "驗證現況",
+    ],
+)
+def test_plan_preserves_inspection_led_implementation_and_review_notes(
+    initialized_orchestrator, monkeypatch, prefix
+):
+    app = initialized_orchestrator
+    request = (
+        "只允許修改 orchestrator/gui.py 與 test_gui_refresh.py。\n"
+        "開始修改前列出影響、風險，經 owner 核准後實作。\n"
+        "更新失敗時保留上次時間與交付確認；模擬 DOM 不代表真實瀏覽器測試。"
+    )
+    app.request_path.write_text(request)
+    app.requirements_path.write_text(request)
+    app.state["pending_plan_feedback"] = (
+        "Include invalid-response, HTTP failure and recovery cases."
+    )
+    notes = {
+        "current_state": [
+            "Inspection is pending; inspect existing refresh before editing."
+        ],
+        "impact": ["Only GUI refresh and its offline regression tests."],
+        "expected_changes": [
+            "Timestamp updates only after validated state is applied."
+        ],
+        "risks": ["Keep task input, focus, reports and delivery confirmation intact."],
+        "verification": [
+            ".venv/bin/python -m pytest -q test_gui_refresh.py",
+            ".venv/bin/python -m pytest -q -p no:cacheprovider",
+            "Cover network/HTTP/invalid-response errors, initial state and recovery; simulated DOM only.",
+        ],
+    }
+    task = {
+        "id": "task-1",
+        "description": prefix + "; enhance refresh and add regression tests.",
+        "target_files": ["orchestrator/gui.py", "test_gui_refresh.py"],
+        "rd_level": "middle",
+        "qa_level": "middle",
+        "complexity": "moderate",
+    }
+    manager = Mock(
+        return_value=json.dumps(
+            {
+                "tasks": [task],
+                "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}},
+                "specialists": [],
+                "plan_notes": notes,
+            }
+        )
+    )
+    monkeypatch.setattr(app, "call_manager", manager)
+
+    app.step_developing_plan()
+
+    assert app.state["state"] == "REVIEWING_PLAN"
+    assert app.state["tasks"][0]["description"] == task["description"]
+    plan = app.plan_path.read_text()
+    assert request in plan
+    for items in notes.values():
+        assert all(item in plan for item in items)
+    assert "wait for explicit owner approval" in plan
+    assert "HTTP failure and recovery" in manager.call_args.args[0]
+    assert "plan_notes" in manager.call_args.args[0]
+    assert app.state["plan_requires_owner_approval"] is True
+    monkeypatch.setattr(app, "consult_specialists", Mock(return_value=""))
+    monkeypatch.setattr(
+        app, "call_agent", Mock(return_value='{"status":"APPROVED","feedback":[]}')
+    )
+
+    app.step_reviewing_plan()
+
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert app.state["resume_state"] == "IMPLEMENTING"
+    assert app.state["pass_state"] == "IMPLEMENTING"
+    assert all(t["status"] == "pending" for t in app.state["tasks"])
+    from orchestrator.main import apply_approve
+
+    assert apply_approve(app)
+    assert app.state["state"] == "IMPLEMENTING"
+
+
+@pytest.mark.parametrize("targets", [None, [], ["../outside.py"], ["/tmp/outside.py"]])
+def test_plan_rejects_unscoped_tasks_without_description_heuristics(
+    initialized_orchestrator, monkeypatch, targets
+):
+    app = initialized_orchestrator
+    app.requirements_path.write_text("Implement the requested feature.")
+    task = {"id": "T1", "description": "Inspect requirements and implement feature"}
+    if targets is not None:
+        task["target_files"] = targets
+    monkeypatch.setattr(
+        app, "call_manager", Mock(return_value=json.dumps({"tasks": [task]}))
+    )
+
+    app.step_developing_plan()
+
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert not app.state["tasks"]

@@ -70,6 +70,15 @@ class ArchitectAgent(BaseAgent):
 
         if is_approved:
             log_success("Implementation plan APPROVED by Architect!")
+            if self.orchestrator.state.get("plan_requires_owner_approval"):
+                self.orchestrator.pause_for_human_review(
+                    "Architect",
+                    "Architect approved the plan. The original request requires owner approval before implementation.\n\n"
+                    + plan,
+                    "IMPLEMENTING",
+                    "IMPLEMENTING",
+                )
+                return
             self.orchestrator.state["state"] = "IMPLEMENTING"
             self.orchestrator.save_state()
         else:

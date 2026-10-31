@@ -91,8 +91,29 @@ TASK_PLAN_SCHEMA = {
         "tasks": {"type": "array", "items": {"type": "object"}},
         "staffing": {"type": "object"},
         "specialists": {"type": "array", "items": {"type": "object"}},
+        "plan_notes": {
+            "type": "object",
+            "properties": {
+                key: {"type": "array", "minItems": 1, "items": {"type": "string"}}
+                for key in (
+                    "current_state",
+                    "impact",
+                    "expected_changes",
+                    "risks",
+                    "verification",
+                )
+            },
+            "required": [
+                "current_state",
+                "impact",
+                "expected_changes",
+                "risks",
+                "verification",
+            ],
+            "additionalProperties": False,
+        },
     },
-    "required": ["tasks", "staffing", "specialists"],
+    "required": ["tasks", "staffing", "specialists", "plan_notes"],
     "additionalProperties": True,
 }
 
@@ -363,6 +384,16 @@ class DeveloperAgent(BaseAgent):
             existing_tasks_rule = f"\n\nThis is a plan revision, not a fresh start -- these tasks already exist from the current plan (some may already be 'completed'):\n{json.dumps(existing_tasks_summary, ensure_ascii=False)}\n\nFor every existing task whose status is 'completed' and whose files are not implicated by the feedback above, copy its 'id' and 'description' byte-for-byte unchanged into the new plan so it is recognized as already done and is not re-implemented or re-tested. Only add new tasks, or change the id/description of tasks that must actually change to address the feedback. Do not regenerate the whole plan from scratch."
         parse_prompt = f"""Read these project requirements:\n\n{planning_input}\n\nCreate a JSON object with:\n- 'tasks': a flat array of coding tasks. Each has 'id', 'description', non-empty 'target_files' (relative paths), 'status': 'pending', 'complexity' ('routine', 'moderate', or 'complex'), plus independent 'rd_level' and 'qa_level' fields ('junior', 'middle', or 'senior'). Include only tasks that modify one or more project files. Never emit planning, inventory, inspection, research, or verification-only tasks. {markdown_task_rule} {file_coverage_rule} Assign isolated repetitive implementation to junior RD, ordinary known-pattern features to middle RD, and architecture, cross-module, security, migration, ambiguity, or design work to senior RD. Set QA level independently based on the testing risk. The Workload below includes today's 'roster': only assign rd_level/qa_level values whose role has status 'available'; if the intended level is 'offline', pick the nearest available level instead. Prefer a level with a higher 'weight' (staff) or 'rating' (vendor) when otherwise equally suited to the task.\n- 'staffing': an allocation based on task count/scope, available capacity, capabilities, and workload below. Include only workers required by the rd_level and qa_level assignments.\n- 'specialists': only include relevant roles: 'sales' for business scope, 'security' for auth/secrets/payment/PII, 'ra' for compliance, 'sre' for monitoring, 'devops' for CI/CD/deployment/containers/rollback, 'uiux' for UI/user flows/accessibility, 'uiux_visual_review' when screenshots/mockups need review, 'fae' for customer environments/hardware/SDK validation, and 'integration' for APIs/protocols/third-party systems. Each item has 'role' and a short 'reason'.\n\nExisting Markdown heading inventory:\n{json.dumps(markdown_headings, ensure_ascii=False)}\n\nAvailable capacity:\n{json.dumps(capacity)}\n\nCapabilities:\n{json.dumps(capabilities)}\n\nWorkload:\n{json.dumps(workload)}{existing_tasks_rule}\n\nThe staffing object must contain rd and qa, each with integer senior, middle, and junior counts. Respond ONLY with valid JSON."""
 
+        parse_prompt += (
+            "\nAlso return plan_notes with non-empty string arrays: current_state, impact, "
+            "expected_changes, risks, verification. Preserve the original request's constraints "
+            "and every revision feedback item in these notes and the implementation tasks. "
+            "Distinguish verified observations from inspection still needed; never claim to have "
+            "inspected code or run tests without evidence. Describe inspection as a prerequisite "
+            "within an implementation task, not a separate read-only task. Include concrete "
+            "targeted and full regression commands using the existing project environment, "
+            "required failure/recovery cases, and verification limitations. Do not invent test results."
+        )
         parsed_items_raw = self.call_manager(
             parse_prompt,
             "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
@@ -378,32 +409,11 @@ class DeveloperAgent(BaseAgent):
             tasks = parsed if isinstance(parsed, list) else parsed["tasks"]
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a JSON array")
-            planning_prefixes = (
-                "gather ",
-                "inventory ",
-                "inspect ",
-                "review ",
-                "verify ",
-                "validate ",
-                "produce ",
-                "research ",
-                "盤點",
-                "檢查",
-                "審查",
-                "驗證",
-                "蒐集",
-                "研究",
-            )
-            tasks = [
-                task
-                for task in tasks
-                if not str(task.get("description", ""))
-                .lstrip()
-                .lower()
-                .startswith(planning_prefixes)
-            ]
             if not tasks:
                 raise ValueError("Manager returned no file-change tasks")
+            for task in tasks:
+                if not isinstance(task, dict):
+                    raise ValueError("each task must be an object")
             if docs_only or whole_file_docs:
                 files = requested_files
                 allowed = set(files)
@@ -482,7 +492,11 @@ class DeveloperAgent(BaseAgent):
                     not isinstance(target_files, list)
                     or not target_files
                     or not all(
-                        isinstance(path, str) and path and not path.startswith("/")
+                        isinstance(path, str)
+                        and path
+                        and not Path(path).is_absolute()
+                        and self.orchestrator.workspace
+                        in (self.orchestrator.workspace / path).resolve().parents
                         for path in target_files
                     )
                 ):
@@ -596,6 +610,43 @@ class DeveloperAgent(BaseAgent):
             plan = "# Implementation Plan\n\n## Target Files\n" + "".join(
                 f"- `{path}`\n" for path in target_files
             )
+            plan += (
+                "\n## Original Scope and Acceptance Criteria\n"
+                + _REFERENCE_BLOCK_RE.sub("", request_text).strip()
+                + "\n"
+            )
+            notes = parsed.get("plan_notes", {}) if isinstance(parsed, dict) else {}
+            if not isinstance(notes, dict):
+                raise ValueError("plan_notes must be an object")
+            for key, title in (
+                ("current_state", "Current State and Inspection"),
+                ("impact", "Impact"),
+                ("expected_changes", "Expected Behavior Changes"),
+                ("risks", "Risks"),
+                ("verification", "Acceptance Checks"),
+            ):
+                items = notes.get(key)
+                if items is None:
+                    continue
+                if (
+                    not isinstance(items, list)
+                    or not items
+                    or not all(isinstance(item, str) and item.strip() for item in items)
+                ):
+                    raise ValueError(f"plan_notes.{key} requires non-empty strings")
+                plan += f"\n## {title}\n" + "".join(f"- {item}\n" for item in items)
+            requires_owner_approval = bool(
+                re.search(
+                    r"(?:經|等|待)[^\n。]{0,40}(?:owner|我|人工|使用者)[^\n。]{0,20}(?:核准|批准|同意)|(?:owner|user|human) approval|wait for (?:my|owner) approval",
+                    request_text,
+                    re.IGNORECASE,
+                )
+            )
+            plan += "\n## Approval Gate\n" + (
+                "- After Architect approval, wait for explicit owner approval before IMPLEMENTING.\n"
+                if requires_owner_approval
+                else "- Architect must approve the plan before IMPLEMENTING.\n"
+            )
             plan += "\n## Implementation Steps\n" + "".join(
                 f"- {task['description']}\n" for task in tasks
             )
@@ -637,6 +688,9 @@ class DeveloperAgent(BaseAgent):
                 if task_signature(t) in existing_completed:
                     t["status"] = "completed"
             self.orchestrator.state["tasks"] = tasks
+            self.orchestrator.state["plan_requires_owner_approval"] = (
+                requires_owner_approval
+            )
             self.orchestrator.state.pop("pending_plan_feedback", None)
             self.orchestrator.save_state()
             self.orchestrator.write_agent_context()
@@ -1126,7 +1180,7 @@ class DeveloperAgent(BaseAgent):
             task_description = task.get("implementation_scope") or task["description"]
             log_info(f"Implementing Task {task['id']}: {task_description}")
             description = task_description.lstrip().lower()
-            if description.startswith(
+            if not task.get("target_files") and description.startswith(
                 (
                     "inventory ",
                     "inspect ",
