@@ -105,6 +105,7 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["task_error_signatures"] = {}
     orchestrator.state["tasks"] = []
     orchestrator.state["active_task_id"] = None
+    orchestrator.state.pop("pending_plan_feedback", None)
 
 
 def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
@@ -313,6 +314,11 @@ def apply_review_decision(
     elif decision == "revise":
         if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
             next_state = "DEVELOPING_PLAN"
+            feedback = orchestrator.state.get("pending_plan_feedback", "")
+            latest = orchestrator.state.get("human_review_details", "")
+            orchestrator.state["pending_plan_feedback"] = "\n\n".join(
+                dict.fromkeys(item for item in (feedback, latest) if item)
+            )
             orchestrator.state["plan_revisions"] = 0
         else:
             next_state = "IMPLEMENTING"

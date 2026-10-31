@@ -26,7 +26,7 @@ python3 -m venv .venv
 
 ```text
 PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
-→ TESTING → REVIEWING_CODE → COMPLETED
+→ TESTING → REVIEWING_CODE → WAITING_FOR_DELIVERY → COMPLETED
 ```
 
 PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進行 plan review。RD 實作任務，QA 執行設定的 test command 並報告結果，Reviewer 評估需求、計畫、測試、specialist 結果和 Git diff，Assistant 在完成後建立 `CHANGELOG.md`。
@@ -37,42 +37,42 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 編輯 `.ai-company/config.json` 前先執行 `python3 orchestrator.py init`。缺少的鍵會使用 `orchestrator/core/config.py` 中的預設值。
 
-| Key | 用途與預設行為 |
-| --- | --- |
-| `ollama_url`、`ollama_model` | Ollama endpoint 與預設 model（`http://localhost:11434`、`gemma4:latest`）。 |
-| `ollama_keep_alive` | Ollama model 在回覆後保留於記憶體的時間；預設 `0`，每次回覆後立即卸載以釋放 VRAM。 |
-| `test_command`、`max_revisions` | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。 |
-| `backends` | 分配給各 role 的 backend。 |
-| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | legacy model 清單及每個 role 的主要 model/backend 路由。 |
-| `role_model_routes` | 每個既有 role 的跨 backend model 回退鏈；依表格順序嘗試，quota 耗盡的 backend 會在本次 workflow 跳過。 |
-| `use_ponytail`、`use_worktree` | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。 |
-| `backend_escalation_path`、`staffing_limits` | backend 升級路徑及 RD/QA staffing 限制。 |
-| `telemetry_enabled`、`llm_usage_log` | LiteLLM token metadata 記錄開關與 JSONL 路徑；預設記錄到 workflow 目錄的 `llm_usage.jsonl`，不保存 prompt/output。 |
+| Key                                                                     | 用途與預設行為                                                                                                     |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ollama_url`、`ollama_model`                                            | Ollama endpoint 與預設 model（`http://localhost:11434`、`gemma4:latest`）。                                        |
+| `ollama_keep_alive`                                                     | Ollama model 在回覆後保留於記憶體的時間；預設 `0`，每次回覆後立即卸載以釋放 VRAM。                                 |
+| `test_command`、`max_revisions`                                         | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。                                |
+| `backends`                                                              | 分配給各 role 的 backend。                                                                                         |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | legacy model 清單及每個 role 的主要 model/backend 路由。                                                           |
+| `role_model_routes`                                                     | 每個既有 role 的跨 backend model 回退鏈；依表格順序嘗試，quota 耗盡的 backend 會在本次 workflow 跳過。             |
+| `use_ponytail`、`use_worktree`                                          | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。                                                       |
+| `backend_escalation_path`、`staffing_limits`                            | backend 升級路徑及 RD/QA staffing 限制。                                                                           |
+| `telemetry_enabled`、`llm_usage_log`                                    | LiteLLM token metadata 記錄開關與 JSONL 路徑；預設記錄到 workflow 目錄的 `llm_usage.jsonl`，不保存 prompt/output。 |
 
 ## 建議角色與模型路由
 
-下表是依目前本機實測結果整理的目標路由。模型回退會在主要模型不可用時依序嘗試；quota 耗盡或本 run 失敗的 route 會被跳過。實際啟用路由以 `orchestrator/core/config.py` 為準。
+下表保留早期本機實測的路由範例，不代表目前安裝模型或執行順序。執行時以現有 config、可用模型探索與 Tev1 排序為準；不要因範例列出某個模型就下載或固定使用它。
 
-| 角色 | 何時 invoke | 主要模型 | 回退 1 | 回退 2 |
-| --- | --- | --- | --- | --- |
-| PM | 每次任務 | Codex `auto` | AGY `auto:gemini-flash-medium` | `qwen3:8b` |
-| Architect | 每次任務 | Codex `auto` | AGY `auto:gemini-flash-medium` | `gemma4:latest` |
-| RD Senior | 跨模組／架構／高風險實作 | Codex `auto` (`low`) | `gpt-oss:20b` | `granite4.1:8b` |
-| RD Middle | 一般功能實作 | `granite4.1:8b` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| RD Junior | 重複、明確、小修改 | `gemma4:latest` | `qwen2.5-coder:7b` | `codegemma:7b` |
-| QA Senior | 安全、架構、複雜流程 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
-| QA Middle | 整合與一般功能驗證 | `gemma4:latest` | `qwen2.5-coder:7b` | — |
-| QA Junior | 格式、文件、基本 regression | `gemma4:latest` | `codegemma:7b` | `qwen2.5-coder:7b` |
-| Reviewer | 最終程式碼審查 | Codex `auto` | AGY `auto:gemini-flash-medium` | `gemma4:latest` |
-| Security | auth、secrets、PII、payment、攻擊面 | `deepseek-coder:6.7b` | `gemma4:latest` | `qwen2.5-coder:7b` |
-| DevOps | CI/CD、Docker、release、rollback、pipeline | `granite4.1:8b` | `qwen2.5-coder:7b` | `gemma4:latest` |
-| RA | 法規、合規、產業規範 | AGY `auto:gemini-flash-medium` | `qwen3:8b` | `gemma4:latest` |
-| Sales | 競品、商業需求、客戶價值 | AGY `auto:gemini-flash-medium` | `qwen3:8b` | `gemma4:latest` |
-| UI/UX | UI、流程、a11y、wireframe | `granite4.1:8b` | `gemma4:latest` | — |
-| UI/UX Visual Review | 有 screenshot／mockup 時 | `qwen3-vl:4b` | — | — |
-| FAE | 客戶環境、SDK、設備、驗收 | `granite4.1:8b` | `gemma4:latest` | — |
-| Integration | 外部 API、設備協定、第三方平台 | `deepseek-coder:6.7b` | `granite4.1:8b` | `gemma4:latest` |
-| Assistant | changelog、摘要、文件整理 | `granite4.1:8b` | `gemma4:latest` | `ministral-3:3b` |
+| 角色                | 何時 invoke                                | 主要模型                       | 回退 1                         | 回退 2             |
+| ------------------- | ------------------------------------------ | ------------------------------ | ------------------------------ | ------------------ |
+| PM                  | 每次任務                                   | Codex `auto`                   | AGY `auto:gemini-flash-medium` | `qwen3:8b`         |
+| Architect           | 每次任務                                   | Codex `auto`                   | AGY `auto:gemini-flash-medium` | `gemma4:latest`    |
+| RD Senior           | 跨模組／架構／高風險實作                   | Codex `auto` (`low`)           | `gpt-oss:20b`                  | `granite4.1:8b`    |
+| RD Middle           | 一般功能實作                               | `granite4.1:8b`                | `codegemma:7b`                 | `qwen2.5-coder:7b` |
+| RD Junior           | 重複、明確、小修改                         | `gemma4:latest`                | `qwen2.5-coder:7b`             | `codegemma:7b`     |
+| QA Senior           | 安全、架構、複雜流程                       | `gemma4:latest`                | `qwen2.5-coder:7b`             | —                  |
+| QA Middle           | 整合與一般功能驗證                         | `gemma4:latest`                | `qwen2.5-coder:7b`             | —                  |
+| QA Junior           | 格式、文件、基本 regression                | `gemma4:latest`                | `codegemma:7b`                 | `qwen2.5-coder:7b` |
+| Reviewer            | 最終程式碼審查                             | Codex `auto`                   | AGY `auto:gemini-flash-medium` | `gemma4:latest`    |
+| Security            | auth、secrets、PII、payment、攻擊面        | `deepseek-coder:6.7b`          | `gemma4:latest`                | `qwen2.5-coder:7b` |
+| DevOps              | CI/CD、Docker、release、rollback、pipeline | `granite4.1:8b`                | `qwen2.5-coder:7b`             | `gemma4:latest`    |
+| RA                  | 法規、合規、產業規範                       | AGY `auto:gemini-flash-medium` | `qwen3:8b`                     | `gemma4:latest`    |
+| Sales               | 競品、商業需求、客戶價值                   | AGY `auto:gemini-flash-medium` | `qwen3:8b`                     | `gemma4:latest`    |
+| UI/UX               | UI、流程、a11y、wireframe                  | `granite4.1:8b`                | `gemma4:latest`                | —                  |
+| UI/UX Visual Review | 有 screenshot／mockup 時                   | `qwen3-vl:4b`                  | —                              | —                  |
+| FAE                 | 客戶環境、SDK、設備、驗收                  | `granite4.1:8b`                | `gemma4:latest`                | —                  |
+| Integration         | 外部 API、設備協定、第三方平台             | `deepseek-coder:6.7b`          | `granite4.1:8b`                | `gemma4:latest`    |
+| Assistant           | changelog、摘要、文件整理                  | `granite4.1:8b`                | `gemma4:latest`                | `ministral-3:3b`   |
 
 模型分析不能取代實體硬體、客戶環境或實際部署驗證。涉及設備、客戶或 pipeline 發布時，FAE、Integration 和 DevOps 的輸出應列出需由人或執行環境確認的項目。
 
@@ -99,6 +99,7 @@ agy models
 ### 動態模型路由
 
 針對本機 Ollama 角色執行，系統採用 `tev1:4b` 專門透過 Ollama `/v1/systemone` 端點作為決策路由器（絕對不透過 `/api/chat` 作為任務執行者）：
+
 - **端點模型探索**：透過已設定的 Ollama 端點（`/api/tags`）動態探索本機已安裝模型，絕不自動 pull 或刪除模型。
 - **隱私與精簡摘要**：在候選模型間選型時，僅傳送角色名稱、精簡任務摘要與候選模型特點描述，絕不將完整任務 prompt 傳送給路由器。
 - **結果驗證與安全回退**：驗證選型結果、信心分數與每個已安裝候選模型的機率，依機率由高至低嘗試本機模型。低信心會記錄，但有效排序仍可使用；端點或路由器不可用、回覆無效時，則使用本機模型的固定順序。
@@ -112,23 +113,23 @@ agy models
 
 Automatic review 與 owner review 使用不同的 result 名稱和 transition。
 
-| 產生者 | Result | 影響 |
-| --- | --- | --- |
-| QA | `PASSED` | 從 `TESTING` 繼續到 `REVIEWING_CODE`。 |
-| QA | `FAILED` | 建立 QA fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。 |
-| Reviewer | `APPROVED` | 繼續完成流程。 |
-| Reviewer | `REJECTED` | 建立 reviewer fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。 |
-| Architect | plan revision | 修訂計畫直到 `max_revisions`；之後繼續到 `IMPLEMENTING`，不會建立 human review。 |
+| 產生者    | Result        | 影響                                                                                              |
+| --------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| QA        | `PASSED`      | 從 `TESTING` 繼續到 `REVIEWING_CODE`。                                                            |
+| QA        | `FAILED`      | 建立 QA fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。       |
+| Reviewer  | `APPROVED`    | 繼續完成流程。                                                                                    |
+| Reviewer  | `REJECTED`    | 建立 reviewer fix task 並返回 `IMPLEMENTING`；達到 `max_revisions` 後暫停在 `WAITING_FOR_OWNER`。 |
+| Architect | plan revision | 修訂計畫直到 `max_revisions`，再暫停於 `WAITING_FOR_OWNER`，等待擁有者明確決策。                  |
 
 `max_revisions` 預設是 `2`，但實際值由目前 `.ai-company/config.json` 控制。QA 和 Reviewer 失敗會增加 `code_revisions`；達到 retry limit 後才建立 owner review。AI backend failure、test command 非零 exit status 或其他 command error 屬於 execution failure，不等同於 owner 明確作出的 `reject` decision。
 
 在 `WAITING_FOR_OWNER` 中使用 `approve` 或 `review`：
 
-| Decision | 含義 | 後續行為 |
-| --- | --- | --- |
-| `pass` | 接受儲存的通過路徑。 | 從記錄的 `pass_state` 恢復，然後可選擇使用 `--run` 繼續。 |
-| `revise` | 請求再次實作。 | 增加 `code_revisions`，新增 `HUMAN-REVIEW-N`，並移到 `IMPLEMENTING`；不受之前 automatic retry threshold 阻擋。 |
-| `reject` | 拒絕本次 workflow 結果。 | 移到 `FAILED`；正常執行停止。 |
+| Decision | 含義                     | 後續行為                                                                                                       |
+| -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `pass`   | 接受儲存的通過路徑。     | 從記錄的 `pass_state` 恢復，然後可選擇使用 `--run` 繼續。                                                      |
+| `revise` | 請求再次實作。           | 增加 `code_revisions`，新增 `HUMAN-REVIEW-N`，並移到 `IMPLEMENTING`；不受之前 automatic retry threshold 阻擋。 |
+| `reject` | 拒絕本次 workflow 結果。 | 移到 `FAILED`；正常執行停止。                                                                                  |
 
 `approve` 是暫停的通過路徑的快捷方式。成功的 `review` 輸出可透過以下內容識別：
 
@@ -138,22 +139,40 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 
 使用 `python3 orchestrator.py status` 查看目前 state 和 revision counters。`--run` 只有在所選 decision 留下可執行 workflow 時才繼續；`reject` 後不會執行。
 
+## 可靠操作與失敗恢復
+
+`python3 orchestrator.py pause` 在步驟結束後暫停；`python3 orchestrator.py deliver` 展示交付快照。頂層 `python3 orchestrator.py reject` 會清理 worktree 並回到規劃，與結束流程的 `review reject` 不同，兩者都應明確決定後才使用。
+
+QA 回覆首行必須是 `QA_STATUS: PASSED` 或 `QA_STATUS: FAILED`；否決須附失敗證據及修正要求。無效回覆只重試修正一次，仍無效時以 `QA_RESPONSE` 暫停，繼續時重跑 `TESTING`；不建立缺陷任務，也不扣 Developer 分數。測試非零退出碼仍會阻止通過。
+
+GUI 依目前狀態提供審核修訂、明確接受通過路徑、重試目前任務或於步驟結束後停止。清除失敗路由須另行確認，可能增加 token 消耗。操作受理後可能仍在背景準備；重試前請查看狀態及錯誤。交付必須先展示 Git 影響，再二次確認；一般繼續不會合併。
+
+Architect／Manager 的修訂理由會跨重啟保留，直到新計畫成功保存；重試額度與審核意見分開記錄。
+
+```bash
+python3 orchestrator.py gui
+python3 orchestrator.py status
+python3 orchestrator.py continue --clear-route-failures
+```
+
+參閱[GUI 操作](docs/chairman-gui.md)及[流程狀態](docs/workflow-fsm.md)。`python3 verify_alignment.py` 檢查共用可執行範例、程式碼區塊及本機／共用連結，不代表翻譯語意正確或遠端連結可用。離線 CI 使用 Python 3.12／3.13 驗證臨時 Git worktree 與實際交付；真實模型相容性需另外實測。
+
 ## CLI 參考
 
 執行 `python3 orchestrator.py --help` 查看目前 command list。以下每條命令都從 repository root 執行；除 `init`、`start` 和 `--help` 外，其他命令都需要已初始化的 `.ai-company/` 目錄。
 
-| Command | Syntax | 必填 arguments | 選填 arguments / 預設值 | Output、前置條件與範例 |
-| --- | --- | --- | --- | --- |
-| Help | `python3 orchestrator.py --help` | None | `-h`、`--help` | 輸出 commands 並結束。`python3 orchestrator.py --help` |
-| `init` | `python3 orchestrator.py init` | None | None | 建立 `.ai-company/config.json` 和 state files。`python3 orchestrator.py init` |
-| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | 初始化、儲存 request 並重設為 `PLANNING`；不會執行 agents。`python3 orchestrator.py start "Add a command and tests"` |
-| `step` | `python3 orchestrator.py step` | None | None | 執行一個 state-machine step；可能需要選定的 AI CLIs、Ollama 和 Git worktree。`python3 orchestrator.py step` |
-| `run` | `python3 orchestrator.py run` | None | None | 執行直到 `COMPLETED`、`WAITING_FOR_OWNER` 或 `FAILED`。`python3 orchestrator.py run` |
-| `status` | `python3 orchestrator.py status` | None | None | 輸出 state、revision counters、選定 backends、test command 和 action items。`python3 orchestrator.py status` |
-| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`：approval 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；從記錄的 state 恢復。`python3 orchestrator.py approve --run` |
-| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 後繼續；預設關閉 | 僅在 `WAITING_FOR_OWNER` 有效；輸出 recorded-decision message。`python3 orchestrator.py review revise --run` |
-| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`；預設 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合併，並儲存選定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`agy`。`developer` 和 `qa` 會更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
+| Command       | Syntax                                                        | 必填 arguments                           | 選填 arguments / 預設值                                   | Output、前置條件與範例                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Help          | `python3 orchestrator.py --help`                              | None                                     | `-h`、`--help`                                            | 輸出 commands 並結束。`python3 orchestrator.py --help`                                                                                                                                                                                                                                   |
+| `init`        | `python3 orchestrator.py init`                                | None                                     | None                                                      | 建立 `.ai-company/config.json` 和 state files。`python3 orchestrator.py init`                                                                                                                                                                                                            |
+| `start`       | `python3 orchestrator.py start <prompt>`                      | `prompt`: development request            | None                                                      | 初始化、儲存 request 並重設為 `PLANNING`；不會執行 agents。`python3 orchestrator.py start "Add a command and tests"`                                                                                                                                                                     |
+| `step`        | `python3 orchestrator.py step`                                | None                                     | None                                                      | 執行一個 state-machine step；可能需要選定的 AI CLIs、Ollama 和 Git worktree。`python3 orchestrator.py step`                                                                                                                                                                              |
+| `run`         | `python3 orchestrator.py run`                                 | None                                     | None                                                      | 執行直到 `COMPLETED`、`WAITING_FOR_OWNER` 或 `FAILED`。`python3 orchestrator.py run`                                                                                                                                                                                                     |
+| `status`      | `python3 orchestrator.py status`                              | None                                     | None                                                      | 輸出 state、revision counters、選定 backends、test command 和 action items。`python3 orchestrator.py status`                                                                                                                                                                             |
+| `approve`     | `python3 orchestrator.py approve [--run]`                     | None                                     | `--run`：approval 後繼續；預設關閉                        | 僅在 `WAITING_FOR_OWNER` 有效；從記錄的 state 恢復。`python3 orchestrator.py approve --run`                                                                                                                                                                                              |
+| `review`      | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 後繼續；預設關閉           | 僅在 `WAITING_FOR_OWNER` 有效；輸出 recorded-decision message。`python3 orchestrator.py review revise --run`                                                                                                                                                                             |
+| `reset`       | `python3 orchestrator.py reset [--state STATE]`               | None                                     | `--state STATE`；預設 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合併，並儲存選定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN`                                                                                                                                                    |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>`        | `role`、`backend`                        | None                                                      | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`agy`。`developer` 和 `qa` 會更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
 
 每個 subcommand 也支援 `--help`，例如 `python3 orchestrator.py review --help`。無效的 role/backend/decision 值會被 argparse 拒絕。`.ai-company/` 缺失時，`status`、`approve`、`review`、`reset` 和 `set-backend` 會報告需要初始化；`approve` 和 `review` 也會拒絕非 `WAITING_FOR_OWNER` state。
 
@@ -230,14 +249,14 @@ python3 orchestrator.py review reject
 
 ### New CLI commands
 
-| Command | Description |
-| --- | --- |
-| `weights` | 顯示目前 internal staff 的信任權重 |
-| `weights set <role> <level> <value>` | 手動覆寫權重 |
-| `roster` | 顯示今日可用的 RD/QA role（staff 與 vendor） |
-| `vendors` | 顯示 paid-vendor scorecard |
-| `brain search <query>` | 搜尋 internal company memory |
-| `brain prune [--keep N]` | 清理舊的 memory，只保留最近的 N 筆 |
+| Command                              | Description                                  |
+| ------------------------------------ | -------------------------------------------- |
+| `weights`                            | 顯示目前 internal staff 的信任權重           |
+| `weights set <role> <level> <value>` | 手動覆寫權重                                 |
+| `roster`                             | 顯示今日可用的 RD/QA role（staff 與 vendor） |
+| `vendors`                            | 顯示 paid-vendor scorecard                   |
+| `brain search <query>`               | 搜尋 internal company memory                 |
+| `brain prune [--keep N]`             | 清理舊的 memory，只保留最近的 N 筆           |
 
 ### New configuration keys
 

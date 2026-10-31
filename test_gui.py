@@ -61,6 +61,14 @@ def start_worker_inline(service):
     return service._start_worker
 
 
+def finish_worker(service):
+    worker = service.worker
+    if worker:
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    return service.status()
+
+
 def make_git_delivery_service(workspace):
     def git(*args):
         return subprocess.run(
@@ -251,8 +259,11 @@ def test_new_task_is_rejected_while_another_task_is_running():
     service = make_service("RUNNING")
     service._state = Mock(return_value={"state": "RUNNING"})
 
-    with pytest.raises(RuntimeError, match="already running"):
-        service._new_task("second task")
+    service._new_task("second task")
+    worker = service.worker
+    if worker:
+        worker.join(timeout=2)
+    assert "already running" in service.worker_status["error"]
 
 
 def test_worker_runs_to_decision_and_clears_worker_reference():
@@ -313,7 +324,7 @@ def test_delivery_first_click_presents_git_impact_and_second_click_confirms(tmp_
     assert service.orchestrator.state["delivery_confirmed"] is False
 
     result = service.delivery(True, presented["delivery_snapshot_id"])
-
+    result = finish_worker(service)
     assert result["state"] == "COMPLETED"
     service.orchestrator.run_to_end.assert_not_called()
 
@@ -322,8 +333,9 @@ def test_delivery_confirmation_requires_the_presented_snapshot_id(tmp_path):
     service = make_git_delivery_service(tmp_path)
     service.delivery(False)
 
-    with pytest.raises(RuntimeError, match="does not match the displayed snapshot"):
-        service.delivery(True)
+    service.delivery(True)
+    result = finish_worker(service)
+    assert "does not match the displayed snapshot" in result["worker_status"]["error"]
 
     assert service.orchestrator.state["delivery_confirmed"] is False
 
@@ -333,8 +345,9 @@ def test_delivery_requires_new_confirmation_when_git_impact_changes(tmp_path):
     first = service.delivery(False)
     (tmp_path / "app.py").write_text("changed feature\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="Git impact changed"):
-        service.delivery(True, first["delivery_snapshot_id"])
+    service.delivery(True, first["delivery_snapshot_id"])
+    result = finish_worker(service)
+    assert "Git impact changed" in result["worker_status"]["error"]
 
     assert service.orchestrator.state["delivery_confirmed"] is False
     assert service.orchestrator.state["delivery_preview_presented"] is False
@@ -655,7 +668,7 @@ def test_http_delivery_persists_git_impact_for_status_and_requires_confirmation(
         {"confirm": True, "snapshot_id": presented["delivery_snapshot_id"]},
     )
 
-    assert confirmed["state"] == "COMPLETED"
+    assert finish_worker(service)["state"] == "COMPLETED"
     service.orchestrator.run_to_end.assert_not_called()
     assert confirm_handler.send_response.call_args.args[0] == gui.HTTPStatus.OK
 
@@ -664,6 +677,8 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     page = gui.render_page(
         {
             "state": "WAITING_FOR_DELIVERY",
+            "delivery_preview_presented": True,
+            "delivery_snapshot_id": "snapshot",
             "worker_running": False,
             "pause_requested": False,
             "review": {"reason": "Reviewer requested revision"},
@@ -691,8 +706,8 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     assert "snapshot_id:deliverySnapshotId" in page
     assert "document.activeElement === promptInput || promptInput.value" in page
     assert "setTimeout(refreshWhenIdle, 3000)" in page
-    assert "post('/api/reset')" in page
-    assert "window.confirm('重置會清除已存任務內容並清理目前 worktree" in page
+    assert "重置任務</button>" in page
+    assert "重置會清除已存任務內容並清理目前 worktree" in page
 
 
 def test_render_page_escapes_script_injection_from_tasks_reports_and_review():

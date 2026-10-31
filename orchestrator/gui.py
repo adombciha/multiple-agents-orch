@@ -4,11 +4,13 @@ import argparse
 import hmac
 import html
 import json
+import os
 import re
 import secrets
 import subprocess
 import sys
 import threading
+import tempfile
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -23,6 +25,7 @@ from orchestrator.main import (
     archive_previous_run,
     clear_run_state,
     inline_referenced_markdown,
+    pick_continue_decision,
 )
 
 from orchestrator.core.runlock import RunLock
@@ -162,19 +165,21 @@ class GuiService:
         started: threading.Event | None = None,
         startup_error: list[Exception] | None = None,
     ) -> None:
-        prepared = False
         try:
             with self.orchestrator.execution_lock():
-                if prepare:
-                    prepare()
-                prepared = True
+                self._write_worker_status("preparing")
                 if started:
                     started.set()
+                if prepare:
+                    prepare()
+                self._write_worker_status("running")
                 if self.orchestrator.state.get("state") != "COMPLETED":
                     self.orchestrator.run_to_end()
+                self._write_worker_status("idle")
         except Exception as error:
-            if not prepared and startup_error is not None:
+            if started and not started.is_set() and startup_error is not None:
                 startup_error.append(error)
+            self._write_worker_status("failed", str(error))
             if started:
                 started.set()
         finally:
@@ -195,10 +200,34 @@ class GuiService:
             )
             self.worker.start()
         if not started.wait(10):
-            raise RuntimeError("Workflow worker did not acquire the execution lock.")
+            return True
         if startup_error:
             raise RuntimeError(f"Could not start workflow: {startup_error[0]}")
         return True
+
+    def _write_worker_status(self, phase: str, error: str = "") -> None:
+        self.worker_status = {"phase": phase, "error": error}
+        ai_dir = getattr(self.orchestrator, "ai_dir", None)
+        if ai_dir is None:
+            return
+        temporary = None
+        try:
+            ai_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=ai_dir, delete=False
+            ) as handle:
+                temporary = Path(handle.name)
+                json.dump(self.worker_status, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, ai_dir / "gui_worker.json")
+        except OSError as failure:
+            self.worker_status["error"] = (
+                f"{error}\nCould not persist GUI worker status: {failure}".strip()
+            )
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _reports(self) -> dict[str, str]:
         files = {
@@ -231,6 +260,23 @@ class GuiService:
             for task in tasks
         )
         worker_running = self._worker_is_running()
+        if not worker_running and getattr(self.orchestrator, "ai_dir", None):
+            worker_running = bool(RunLock.read_holder(self.orchestrator.ai_dir))
+        runtime = dict(getattr(self, "worker_status", {}))
+        if not runtime:
+            try:
+                runtime = json.loads(
+                    (self.orchestrator.ai_dir / "gui_worker.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (AttributeError, OSError, ValueError):
+                runtime = {}
+        if not worker_running and runtime.get("phase") in {"preparing", "running"}:
+            runtime = {
+                "phase": "failed",
+                "error": "Previous GUI worker stopped; inspect the saved state before continuing.",
+            }
         pause_requested = self.orchestrator.pause_requested()
         pause_status = (
             "目前步驟完成後暫停"
@@ -287,6 +333,15 @@ class GuiService:
             "next_action": next_action,
             "reports": reports,
             "worker_running": worker_running,
+            "worker_status": runtime,
+            "can_submit": not worker_running
+            and (
+                state.get("state") in {"COMPLETED", "FAILED"}
+                or (
+                    state.get("state", "PLANNING") == "PLANNING"
+                    and not self.orchestrator.request_path.exists()
+                )
+            ),
         }
 
     @contextmanager
@@ -307,7 +362,10 @@ class GuiService:
 
         def prepare():
             state = self._state()
-            if state.get("state") not in {"PLANNING", "COMPLETED", "FAILED"}:
+            if state.get("state") not in {"PLANNING", "COMPLETED", "FAILED"} or (
+                state.get("state") == "PLANNING"
+                and self.orchestrator.request_path.exists()
+            ):
                 raise RuntimeError(
                     "A task is already running or waiting for a decision."
                 )
@@ -372,7 +430,7 @@ class GuiService:
         self.orchestrator.request_pause()
         return self.status()
 
-    def continue_task(self) -> dict:
+    def continue_task(self, clear_route_failures: bool = False) -> dict:
         def prepare():
             self._load()
             state = self.orchestrator.state.get("state")
@@ -383,16 +441,16 @@ class GuiService:
             if state == "WAITING_FOR_DELIVERY":
                 raise RuntimeError("Delivery confirmation is required.")
             if state == "WAITING_FOR_OWNER":
-                source = self.orchestrator.state.get("human_review_source")
-                if source in {"Architect", "Manager", "Reviewer", "QA"}:
-                    max_revisions = self.orchestrator.config.get("max_revisions", 2)
+                decision, reset_revisions = pick_continue_decision(self.orchestrator)
+                if decision == "revise":
                     apply_review_decision(
                         self.orchestrator,
                         "revise",
-                        self.orchestrator.state.get("code_revisions", 0)
-                        >= max_revisions,
+                        reset_revisions,
                     )
-                elif not apply_approve(self.orchestrator):
+                elif not apply_approve(
+                    self.orchestrator, clear_route_failures=clear_route_failures
+                ):
                     raise RuntimeError(
                         "Developer route contract failures must be cleared before retry."
                     )
@@ -569,6 +627,72 @@ def render_page(status: dict) -> str:
         if git
         else ""
     )
+    current = status.get("state", "PLANNING")
+    busy = status.get("worker_running", False)
+    buttons = []
+
+    def button(label, action, body=None, confirmation=None):
+        script = f"post('/api/{action}', {json.dumps(body or {})})"
+        if confirmation:
+            script = f"if(window.confirm({json.dumps(confirmation, ensure_ascii=False)})) {script}"
+        buttons.append(
+            f'<button onclick="{_safe_text(script)}">{_safe_text(label)}</button>'
+        )
+
+    if busy:
+        if not status.get("pause_requested"):
+            button("目前步驟完成後停止", "stop")
+    elif current == "WAITING_FOR_OWNER":
+        source = review.get("source")
+        if source in {"Architect", "Manager", "Reviewer", "QA"}:
+            button("依審核意見修訂", "continue")
+            button(
+                "接受目前結果並繼續",
+                "review",
+                {"decision": "pass"},
+                "此操作會覆核本次否決並沿通過路徑繼續，確定接受？",
+            )
+        else:
+            button(
+                "重試 QA 驗證" if source == "QA_RESPONSE" else "繼續目前任務",
+                "continue",
+            )
+            if source in {"Developer", "Orchestrator"}:
+                button(
+                    "清除失敗路由並重試",
+                    "continue",
+                    {"clear_route_failures": True},
+                    "將重新嘗試已因回覆格式失敗的模型，可能再次消耗額度。確定重試？",
+                )
+    elif current == "WAITING_FOR_DELIVERY":
+        button("展示 Git 影響", "deliver")
+        if status.get("delivery_preview_presented") and status.get(
+            "delivery_snapshot_id"
+        ):
+            buttons.append(
+                "<button onclick=\"post('/api/deliver', {confirm:true,snapshot_id:deliverySnapshotId})\">確認二次交付</button>"
+            )
+    elif current not in {"COMPLETED", "FAILED"}:
+        button("繼續執行", "continue")
+    if not busy:
+        button(
+            "重置任務",
+            "reset",
+            confirmation="重置會清除已存任務內容並清理目前 worktree，且需要重新提交任務。確定重置？",
+        )
+    can_submit = (
+        not busy and current in {"PLANNING", "COMPLETED", "FAILED"} and not tasks
+    )
+    if current in {"COMPLETED", "FAILED"} and not busy:
+        can_submit = True
+    can_submit = status.get("can_submit", can_submit)
+    runtime = status.get("worker_status", {})
+    phase = {
+        "preparing": "準備中",
+        "running": "執行中",
+        "failed": "執行失敗",
+        "idle": "已停止於決策點",
+    }.get(runtime.get("phase"), "等待操作")
     return f"""<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -589,24 +713,22 @@ button{{margin:.25rem;padding:.5rem 1rem}} textarea{{width:100%;min-height:8rem}
 <p>進度：{_safe_text(progress.get("completed_tasks", 0))}/{_safe_text(progress.get("total_tasks", len(tasks)))} tasks</p>
 <p>審核原因：{_safe_text(review.get("reason", ""))}</p>
 <p>下一動作：{_safe_text(status.get("next_action", ""))}</p>
+<p role="status">執行狀態：{_safe_text(phase)}</p>
+<p role="alert">{_safe_text(runtime.get("error", ""))}</p>
 <h2>Tasks</h2><ul>{task_html}</ul>
-<form id="task-form">
+<form id="task-form" {'' if can_submit else 'hidden'}>
 <textarea name="prompt" placeholder="輸入新任務"></textarea><br>
 <button>提交任務</button>
 </form>
-<button onclick="post('/api/stop')">停止</button>
-<button onclick="post('/api/continue')">繼續</button>
-<button onclick="post('/api/approve')">通過審核</button>
-<button onclick="post('/api/review',{{decision:'revise'}})">審核未通過，優先修訂</button>
-<button onclick="if (window.confirm('重置會清除已存任務內容並清理目前 worktree，且需要重新提交任務。確定重置？')) post('/api/reset')">重置任務</button>
-<button onclick="post('/api/deliver')">展示 Git 影響</button>
-<button onclick="post('/api/deliver',{{confirm:true,snapshot_id:deliverySnapshotId}})">確認二次交付</button>
+<div id="actions">{''.join(buttons)}</div>
 <div id="git">{git_html}</div>
 <h2>報告</h2>{report_html}
 <script>
 const csrf = {json.dumps(status.get("csrf", ""))};
 const deliverySnapshotId = {json.dumps(status.get("delivery_snapshot_id", ""))};
 async function post(url, body={{}}) {{
+  document.querySelectorAll('button').forEach(button => button.disabled = true);
+  try {{
   const response = await fetch(url, {{
     method:'POST', credentials:'same-origin',
     headers:{{'Content-Type':'application/json','X-CSRF-Token':csrf}},
@@ -615,6 +737,9 @@ async function post(url, body={{}}) {{
   const data = await response.json();
   if (!response.ok) alert(data.error || '操作失敗');
   location.reload();
+  }} catch(error) {{
+    alert('連線中斷，請重新載入確認狀態後再操作。');
+  }}
 }}
 document.getElementById('task-form').onsubmit = async (event) => {{
   event.preventDefault();
@@ -622,6 +747,10 @@ document.getElementById('task-form').onsubmit = async (event) => {{
   await post('/api/task', {{prompt}});
 }};
 function refreshWhenIdle() {{
+  if (document.querySelector('button:disabled')) {{
+    setTimeout(refreshWhenIdle, 3000);
+    return;
+  }}
   const promptInput = document.querySelector('#task-form textarea');
   if (document.activeElement === promptInput || promptInput.value) {{
     setTimeout(refreshWhenIdle, 3000);
@@ -680,12 +809,15 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, value: object, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = _json_bytes(value)
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(payload)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _read_json(self) -> dict:
         try:
@@ -718,7 +850,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if self.command != "HEAD":
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
             return
         if path == "/api/status":
             self._send_json(self._result(self.service.status()))
@@ -750,7 +885,14 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/stop":
                 result = self.service.stop()
             elif path == "/api/continue":
-                result = self.service.continue_task()
+                clear = body.get("clear_route_failures", False)
+                if not isinstance(clear, bool):
+                    raise ValueError("clear_route_failures must be a boolean.")
+                result = (
+                    self.service.continue_task(clear_route_failures=True)
+                    if clear
+                    else self.service.continue_task()
+                )
             elif path == "/api/approve":
                 result = self.service.approve()
             elif path == "/api/review":

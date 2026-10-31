@@ -199,7 +199,10 @@ class DeveloperAgent(BaseAgent):
             requirements = f.read()
 
         planning_input = requirements
-        if (
+        pending_feedback = self.orchestrator.state.get("pending_plan_feedback")
+        if pending_feedback:
+            planning_input += f"\n\nPrevious plan review feedback:\n{pending_feedback}"
+        elif (
             self.orchestrator.state["plan_revisions"] > 0
             and self.orchestrator.reviewer_output_path.exists()
         ):
@@ -612,6 +615,7 @@ class DeveloperAgent(BaseAgent):
                 if task_signature(t) in existing_completed:
                     t["status"] = "completed"
             self.orchestrator.state["tasks"] = tasks
+            self.orchestrator.state.pop("pending_plan_feedback", None)
             self.orchestrator.save_state()
             self.orchestrator.write_agent_context()
             with open(self.orchestrator.action_items_path, "w", encoding="utf-8") as f:

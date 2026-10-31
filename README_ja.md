@@ -22,7 +22,7 @@ python3 -m venv .venv
 
 ```text
 PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
-→ TESTING → REVIEWING_CODE → COMPLETED
+→ TESTING → REVIEWING_CODE → WAITING_FOR_DELIVERY → COMPLETED
 ```
 
 PM は要件を分析して任意の specialists を配置します。その結果は Architect の plan review に渡されます。RD はタスクを実装し、QA は設定済みの test command を実行して結果を報告します。Reviewer は要件、計画、tests、specialist の結果、Git diff を評価し、Assistant は完了時に `CHANGELOG.md` を作成します。
@@ -33,15 +33,15 @@ PM は要件を分析して任意の specialists を配置します。その結�
 
 `.ai-company/config.json` を編集する前に `python3 orchestrator.py init` を実行してください。存在しない key には `orchestrator/core/config.py` のデフォルト値が使用されます。
 
-| Key | 用途とデフォルト動作 |
-| --- | --- |
-| `ollama_url`, `ollama_model` | Ollama endpoint とデフォルト model（`http://localhost:11434`、`gemma4:latest`）。 |
-| `test_command`, `max_revisions` | QA command と自動 plan/code revision の上限。デフォルトは `python3 -m pytest -q` と `2` です。 |
-| `backends` | roles に割り当てる backend。 |
-| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | model のリストと role ごとの model/backend routing。 |
-| `use_ponytail`, `use_worktree` | 簡潔な prompting と Git-worktree isolation。デフォルトはそれぞれ `false` と `true` です。 |
-| `backend_escalation_path`, `staffing_limits` | backend escalation と RD/QA staffing の上限。 |
-| `telemetry_enabled`, `llm_usage_log` | LiteLLM の token metadata 記録と JSONL path。デフォルトは workflow directory の `llm_usage.jsonl` で、prompt/output は保存しません。 |
+| Key                                                                     | 用途とデフォルト動作                                                                                                                 |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `ollama_url`, `ollama_model`                                            | Ollama endpoint とデフォルト model（`http://localhost:11434`、`gemma4:latest`）。                                                    |
+| `test_command`, `max_revisions`                                         | QA command と自動 plan/code revision の上限。デフォルトは `python3 -m pytest -q` と `2` です。                                       |
+| `backends`                                                              | roles に割り当てる backend。                                                                                                         |
+| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | model のリストと role ごとの model/backend routing。                                                                                 |
+| `use_ponytail`, `use_worktree`                                          | 簡潔な prompting と Git-worktree isolation。デフォルトはそれぞれ `false` と `true` です。                                            |
+| `backend_escalation_path`, `staffing_limits`                            | backend escalation と RD/QA staffing の上限。                                                                                        |
+| `telemetry_enabled`, `llm_usage_log`                                    | LiteLLM の token metadata 記録と JSONL path。デフォルトは workflow directory の `llm_usage.jsonl` で、prompt/output は保存しません。 |
 
 ## 自動モデル選択
 
@@ -54,6 +54,7 @@ agy models
 ### 動的モデルルーティング
 
 ローカル Ollama の実行では、`tev1:4b` を Ollama の `/v1/systemone` endpoint 経由の判断専用ルーターとして使用します（`/api/chat` のタスク実行モデルとしては使用しません）。
+
 - **モデルの検出**：設定済み Ollama endpoint の `/api/tags` からインストール済みモデルを動的に検出します。モデルの pull や削除は行いません。
 - **プライバシー**：候補選択には role、短いタスク要約、候補モデルの説明のみを送信し、完全な task prompt はルーターに送信しません。
 - **検証と fallback**：選択結果、confidence、インストール済み候補それぞれの確率を検証し、確率の高い順にローカルモデルを試します。低 confidence は記録しますが、有効な順位付けは使用します。endpoint／ルーターが利用できない場合や応答が無効な場合は、ローカルモデルの固定順序を使用します。
@@ -63,23 +64,23 @@ agy models
 
 Automatic review と owner review は異なる result 名と transition を使用します。
 
-| 生成元 | Result | 効果 |
-| --- | --- | --- |
-| QA | `PASSED` | `TESTING` から `REVIEWING_CODE` へ進みます。 |
-| QA | `FAILED` | QA fix task を作成して `IMPLEMENTING` に戻ります。`max_revisions` 到達時は `WAITING_FOR_OWNER` で停止します。 |
-| Reviewer | `APPROVED` | 完了まで進みます。 |
-| Reviewer | `REJECTED` | reviewer fix task を作成して `IMPLEMENTING` に戻ります。`max_revisions` 到達時は `WAITING_FOR_OWNER` で停止します。 |
-| Architect | plan revision | `max_revisions` まで計画を修正し、その後は human review を作成せず `IMPLEMENTING` に進みます。 |
+| 生成元    | Result        | 効果                                                                                                                |
+| --------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| QA        | `PASSED`      | `TESTING` から `REVIEWING_CODE` へ進みます。                                                                        |
+| QA        | `FAILED`      | QA fix task を作成して `IMPLEMENTING` に戻ります。`max_revisions` 到達時は `WAITING_FOR_OWNER` で停止します。       |
+| Reviewer  | `APPROVED`    | 完了まで進みます。                                                                                                  |
+| Reviewer  | `REJECTED`    | reviewer fix task を作成して `IMPLEMENTING` に戻ります。`max_revisions` 到達時は `WAITING_FOR_OWNER` で停止します。 |
+| Architect | plan revision | `max_revisions` まで計画を修正し、その後は `WAITING_FOR_OWNER` で所有者の明示的な判断を待ちます。                   |
 
 `max_revisions` のデフォルトは `2` ですが、実際の値は現在の `.ai-company/config.json` が制御します。QA と Reviewer の失敗は `code_revisions` を増やし、retry limit 到達が owner review を作成する条件です。AI backend failure、test-command の非ゼロ exit status、その他の command error は execution failure です。owner による明示的な `reject` decision とは異なります。
 
 `WAITING_FOR_OWNER` では `approve` または `review` を使用します。
 
-| Decision | 意味 | 後続の動作 |
-| --- | --- | --- |
-| `pass` | 保存済みの通過パスを受け入れます。 | 記録済みの `pass_state` から再開し、必要なら `--run` で続行します。 |
-| `revise` | もう一度の実装を要求します。 | `code_revisions` を増やし、`HUMAN-REVIEW-N` を追加して `IMPLEMENTING` に移動します。以前の automatic retry threshold には妨げられません。 |
-| `reject` | この workflow 結果を拒否します。 | `FAILED` に移動し、通常の実行は停止します。 |
+| Decision | 意味                               | 後続の動作                                                                                                                                |
+| -------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `pass`   | 保存済みの通過パスを受け入れます。 | 記録済みの `pass_state` から再開し、必要なら `--run` で続行します。                                                                       |
+| `revise` | もう一度の実装を要求します。       | `code_revisions` を増やし、`HUMAN-REVIEW-N` を追加して `IMPLEMENTING` に移動します。以前の automatic retry threshold には妨げられません。 |
+| `reject` | この workflow 結果を拒否します。   | `FAILED` に移動し、通常の実行は停止します。                                                                                               |
 
 `approve` は停止中の通過パス用のショートカットです。成功した `review` output は次の内容で識別できます。
 
@@ -89,22 +90,40 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 
 現在の state と revision counts は `python3 orchestrator.py status` で確認します。`--run` は選択した decision の後に実行可能な workflow が残る場合だけ loop を続け、`reject` の後は実行しません。
 
+## 操作と障害からの復帰
+
+`python3 orchestrator.py pause` はステップ終了後に停止します。`python3 orchestrator.py deliver` は交付スナップショットを表示します。トップレベルの `python3 orchestrator.py reject` は worktree を削除して計画に戻ります。実行を終了する `review reject` とは異なるため、明示的に判断してください。
+
+QA 応答の先頭行は `QA_STATUS: PASSED` または `QA_STATUS: FAILED` とし、否決には失敗の証拠と修正内容が必要です。無効な応答は一度だけ訂正を要求し、それでも無効なら `QA_RESPONSE` として一時停止します。続行時は `TESTING` を再実行し、不具合タスクの追加や Developer の減点は行いません。テストの終了コードが非ゼロなら合格にはなりません。
+
+GUI は状態に応じて、審査に基づく修正、明示的な承認、現在のタスクの再試行、ステップ終了後の停止を提示します。失敗した経路を消去して再試行する操作は別途確認が必要で、token を追加消費する可能性があります。操作受付後もバックグラウンドで準備中の場合があります。再試行前に状態とエラーを確認してください。交付は Git の影響表示後に二度目の確認が必要です。通常の続行ではマージしません。
+
+Architect／Manager の修正理由は再起動後も保持し、新しい計画の保存成功後に消費します。試行回数とは独立して管理します。
+
+```bash
+python3 orchestrator.py gui
+python3 orchestrator.py status
+python3 orchestrator.py continue --clear-route-failures
+```
+
+[GUI 操作](docs/chairman-gui.md)と[状態遷移](docs/workflow-fsm.md)を参照してください。`python3 verify_alignment.py` は共通の実行例、コードフェンス、ローカル／共通リンクを検査します。翻訳の意味や外部 URL の到達性は保証しません。オフライン CI は Python 3.12／3.13 で一時 Git worktree と実際の交付を検証します。実モデルの互換性は別途確認が必要です。
+
 ## CLI リファレンス
 
 現在の command list は `python3 orchestrator.py --help` で確認します。以下の command はすべて repository root から実行します。`init`、`start`、`--help` 以外は初期化済みの `.ai-company/` directory が必要です。
 
-| コマンド | 構文 | 必須 arguments | 任意 arguments / デフォルト | 出力、前提条件、例 |
-| --- | --- | --- | --- | --- |
-| Help | `python3 orchestrator.py --help` | None | `-h`, `--help` | commands を出力して終了します。`python3 orchestrator.py --help` |
-| `init` | `python3 orchestrator.py init` | None | None | `.ai-company/config.json` と state files を作成します。`python3 orchestrator.py init` |
-| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | 初期化して request を保存し、`PLANNING` に reset します。agents は実行しません。`python3 orchestrator.py start "Add a command and tests"` |
-| `step` | `python3 orchestrator.py step` | None | None | state-machine step を 1 回実行します。選択した AI CLIs、Ollama、Git worktree support が必要になる場合があります。`python3 orchestrator.py step` |
-| `run` | `python3 orchestrator.py run` | None | None | `COMPLETED`、`WAITING_FOR_OWNER`、`FAILED` まで実行します。`python3 orchestrator.py run` |
-| `status` | `python3 orchestrator.py status` | None | None | state、revision counters、選択済み backends、test command、action items を出力します。`python3 orchestrator.py status` |
-| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: approval 後に続行、デフォルトは off | `WAITING_FOR_OWNER` でのみ有効です。記録済み state から再開します。`python3 orchestrator.py approve --run` |
-| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`、`revise`、`reject` | `--run`: `pass` または `revise` 後に続行、デフォルトは off | `WAITING_FOR_OWNER` でのみ有効です。recorded-decision message を出力します。`python3 orchestrator.py review revise --run` |
-| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`: デフォルトは `PLANNING`、string state value を受理 | revision/runtime routing data を消去し、worktree を merge せず削除して、選択した state を保存します。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | config の `backends` を更新します。roles: `manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends: `ollama`、`codex`、`agy`。`developer` と `qa` は senior/middle/junior routes を更新します。`python3 orchestrator.py set-backend reviewer agy` |
+| コマンド      | 構文                                                          | 必須 arguments                         | 任意 arguments / デフォルト                                         | 出力、前提条件、例                                                                                                                                                                                                                                                                                      |
+| ------------- | ------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Help          | `python3 orchestrator.py --help`                              | None                                   | `-h`, `--help`                                                      | commands を出力して終了します。`python3 orchestrator.py --help`                                                                                                                                                                                                                                         |
+| `init`        | `python3 orchestrator.py init`                                | None                                   | None                                                                | `.ai-company/config.json` と state files を作成します。`python3 orchestrator.py init`                                                                                                                                                                                                                   |
+| `start`       | `python3 orchestrator.py start <prompt>`                      | `prompt`: development request          | None                                                                | 初期化して request を保存し、`PLANNING` に reset します。agents は実行しません。`python3 orchestrator.py start "Add a command and tests"`                                                                                                                                                               |
+| `step`        | `python3 orchestrator.py step`                                | None                                   | None                                                                | state-machine step を 1 回実行します。選択した AI CLIs、Ollama、Git worktree support が必要になる場合があります。`python3 orchestrator.py step`                                                                                                                                                         |
+| `run`         | `python3 orchestrator.py run`                                 | None                                   | None                                                                | `COMPLETED`、`WAITING_FOR_OWNER`、`FAILED` まで実行します。`python3 orchestrator.py run`                                                                                                                                                                                                                |
+| `status`      | `python3 orchestrator.py status`                              | None                                   | None                                                                | state、revision counters、選択済み backends、test command、action items を出力します。`python3 orchestrator.py status`                                                                                                                                                                                  |
+| `approve`     | `python3 orchestrator.py approve [--run]`                     | None                                   | `--run`: approval 後に続行、デフォルトは off                        | `WAITING_FOR_OWNER` でのみ有効です。記録済み state から再開します。`python3 orchestrator.py approve --run`                                                                                                                                                                                              |
+| `review`      | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`、`revise`、`reject` | `--run`: `pass` または `revise` 後に続行、デフォルトは off          | `WAITING_FOR_OWNER` でのみ有効です。recorded-decision message を出力します。`python3 orchestrator.py review revise --run`                                                                                                                                                                               |
+| `reset`       | `python3 orchestrator.py reset [--state STATE]`               | None                                   | `--state STATE`: デフォルトは `PLANNING`、string state value を受理 | revision/runtime routing data を消去し、worktree を merge せず削除して、選択した state を保存します。`python3 orchestrator.py reset --state DEVELOPING_PLAN`                                                                                                                                            |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>`        | `role`、`backend`                      | None                                                                | config の `backends` を更新します。roles: `manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends: `ollama`、`codex`、`agy`。`developer` と `qa` は senior/middle/junior routes を更新します。`python3 orchestrator.py set-backend reviewer agy` |
 
 各 subcommand も `--help` をサポートします。例: `python3 orchestrator.py review --help`。無効な role/backend/decision の値は argparse に拒否されます。`.ai-company/` がない場合、`status`、`approve`、`review`、`reset`、`set-backend` は初期化が必要だと報告します。`approve` と `review` は `WAITING_FOR_OWNER` 以外の state も拒否します。
 
@@ -181,14 +200,14 @@ python3 orchestrator.py review reject
 
 ### New CLI commands
 
-| Command | Description |
-| --- | --- |
-| `weights` | 現在の internal staff trust weight を表示します。 |
-| `weights set <role> <level> <value>` | weight を手動で上書きします。 |
-| `roster` | 今日利用可能な RD/QA role（staff と vendor）を表示します。 |
-| `vendors` | paid-vendor scorecard を表示します。 |
-| `brain search <query>` | internal company memory を検索します。 |
-| `brain prune [--keep N]` | 古い memory を削除し、最新の N 件だけを保持します。 |
+| Command                              | Description                                                |
+| ------------------------------------ | ---------------------------------------------------------- |
+| `weights`                            | 現在の internal staff trust weight を表示します。          |
+| `weights set <role> <level> <value>` | weight を手動で上書きします。                              |
+| `roster`                             | 今日利用可能な RD/QA role（staff と vendor）を表示します。 |
+| `vendors`                            | paid-vendor scorecard を表示します。                       |
+| `brain search <query>`               | internal company memory を検索します。                     |
+| `brain prune [--keep N]`             | 古い memory を削除し、最新の N 件だけを保持します。        |
 
 ### New configuration keys
 

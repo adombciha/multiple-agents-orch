@@ -49,6 +49,25 @@ _MISSING_DEPENDENCY_SIGNALS = re.compile(
 )
 
 
+def qa_verdict(report: str) -> str | None:
+    if not isinstance(report, str):
+        return None
+    lines = [line.strip() for line in report.splitlines() if line.strip()]
+    if not lines or lines[0] not in {"QA_STATUS: PASSED", "QA_STATUS: FAILED"}:
+        return None
+    if any(line.startswith("QA_STATUS:") for line in lines[1:]):
+        return None
+    if lines[0].endswith("FAILED") and not any(
+        line
+        and not line.startswith(
+            ("DEPENDENCY_INSTALL_NEEDED:", "TEST_COMMAND_SUGGESTION:")
+        )
+        for line in lines[1:]
+    ):
+        return None
+    return lines[0].split(": ", 1)[1]
+
+
 class QAAgent(BaseAgent):
 
     def step_testing(self):
@@ -138,6 +157,7 @@ class QAAgent(BaseAgent):
         tasks = self.orchestrator.state.get("tasks", [])
         qa_workers, qa_assignments = self.orchestrator.allocate_workers("qa", tasks)
         qa_reports = []
+        invalid_workers = []
         for worker_id, level in qa_workers:
             assigned_tasks = [
                 {
@@ -174,13 +194,23 @@ class QAAgent(BaseAgent):
                 if level == "middle"
                 else "You are a Junior Quality Assurance Engineer. Verify routine task behavior and obvious regressions; flag design risks for senior QA."
             )
-            qa_reports.append(
-                (
-                    worker_id,
-                    level,
-                    self.call_agent(f"qa_{level}", qa_prompt, system_prompt),
+            report = self.call_agent(f"qa_{level}", qa_prompt, system_prompt)
+            if qa_verdict(report) is None:
+                log_warning(
+                    f"Invalid QA response from {worker_id}; requesting one correction."
                 )
-            )
+                report = self.call_agent(
+                    f"qa_{level}",
+                    qa_prompt
+                    + "\n\nYour previous response did not satisfy the QA contract. "
+                    "Start with QA_STATUS: PASSED or QA_STATUS: FAILED. "
+                    "For FAILED, cite the observed failure, affected file/test and required fix. "
+                    "Do not summarize the project or invent defects.",
+                    system_prompt,
+                )
+            if qa_verdict(report) is None:
+                invalid_workers.append(worker_id)
+            qa_reports.append((worker_id, level, report))
         qa_report = "\n\n".join(
             f"## {worker_id} ({level})\n{report}"
             for worker_id, level, report in qa_reports
@@ -196,6 +226,18 @@ class QAAgent(BaseAgent):
         log_success(
             f"QA report generated and saved to {self.orchestrator.qa_report_path}"
         )
+
+        if invalid_workers or not qa_reports:
+            self.orchestrator.state.pop("qa_dissenting_levels", None)
+            self.orchestrator.pause_for_human_review(
+                "QA_RESPONSE",
+                f"QA output contract failed after one correction: {', '.join(invalid_workers) or 'no assigned QA workers'}. "
+                f"No code defect was established by these responses. Test exit code: {code}. "
+                "Retry TESTING after checking the QA backend.\n\n" + qa_report[:2000],
+                "TESTING",
+                "TESTING",
+            )
+            return
 
         test_command_suggestion = _extract_marker(qa_reports, "TEST_COMMAND_SUGGESTION")
         if test_command_suggestion:
@@ -234,18 +276,7 @@ class QAAgent(BaseAgent):
             return
 
         def passed(report):
-            lines = [line.strip() for line in report.splitlines() if line.strip()]
-            status = next(
-                (
-                    line
-                    for line in lines[:3] + lines[-3:]
-                    if re.fullmatch(
-                        r"QA_STATUS:\s*(PASSED|FAILED)", line, re.IGNORECASE
-                    )
-                ),
-                "",
-            )
-            return status.upper() == "QA_STATUS: PASSED"
+            return qa_verdict(report) == "PASSED"
 
         qa_weights = self.orchestrator.config.get("worker_weights", {}).get("qa", {})
         weighted_votes = sum(

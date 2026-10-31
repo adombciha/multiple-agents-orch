@@ -4744,7 +4744,9 @@ def test_step_testing_failed_command_cannot_pass_on_qa_response(
         initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed"))
     )
     monkeypatch.setattr(
-        initialized_orchestrator, "call_agent", Mock(return_value="PASSED\nok")
+        initialized_orchestrator,
+        "call_agent",
+        Mock(return_value="QA_STATUS: PASSED\nok"),
     )
 
     initialized_orchestrator.step_testing()
@@ -4820,7 +4822,11 @@ def test_step_testing_failed_revises_until_max(initialized_orchestrator, monkeyp
         initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed"))
     )
     monkeypatch.setattr(
-        initialized_orchestrator, "call_agent", Mock(return_value="FAILED\nfix it")
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\napp.py fails the test; fix the assertion mismatch."
+        ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
@@ -4876,7 +4882,11 @@ def test_step_testing_failed_narrows_target_files_to_ones_the_report_names(
         Mock(return_value=(1, "FAILED tests/test_app.py - app.py is broken")),
     )
     monkeypatch.setattr(
-        initialized_orchestrator, "call_agent", Mock(return_value="QA_STATUS: FAILED")
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\napp.py is broken according to tests/test_app.py."
+        ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
@@ -4915,7 +4925,11 @@ def test_step_testing_failed_at_max_revisions_escalates_then_pauses(
         initialized_orchestrator, "run_command", Mock(return_value=(1, "tests failed"))
     )
     monkeypatch.setattr(
-        initialized_orchestrator, "call_agent", Mock(return_value="FAILED\nfix it")
+        initialized_orchestrator,
+        "call_agent",
+        Mock(
+            return_value="QA_STATUS: FAILED\napp.py fails the test; fix the assertion mismatch."
+        ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 

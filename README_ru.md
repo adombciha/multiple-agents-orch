@@ -26,7 +26,7 @@ python3 -m venv .venv
 
 ```text
 PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
-→ TESTING → REVIEWING_CODE → COMPLETED
+→ TESTING → REVIEWING_CODE → WAITING_FOR_DELIVERY → COMPLETED
 ```
 
 PM анализирует требования и при необходимости привлекает специалистов. Их вывод передаётся Architect для проверки плана. RD реализует задачи, QA запускает настроенную команду тестов и сообщает результаты, Reviewer оценивает требования, план, тесты, выводы специалистов и Git diff, а Assistant после завершения создаёт `CHANGELOG.md`.
@@ -37,15 +37,15 @@ PM анализирует требования и при необходимос�
 
 Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Missing keys use the defaults in `orchestrator/core/config.py`.
 
-| Key | Purpose and default behavior |
-| --- | --- |
-| `ollama_url`, `ollama_model` | Ollama endpoint and default model (`http://localhost:11434`, `gemma4:latest`). |
-| `test_command`, `max_revisions` | QA command and automatic plan/code revision limit; defaults are `python3 -m pytest -q` and `2`. |
-| `backends` | Backend assigned to roles. |
-| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing. |
-| `use_ponytail`, `use_worktree` | Minimalist prompting and Git-worktree isolation; both default to `false` and `true` respectively. |
-| `backend_escalation_path`, `staffing_limits` | Backend escalation and RD/QA staffing limits. |
-| `telemetry_enabled`, `llm_usage_log` | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
+| Key                                                                     | Purpose and default behavior                                                                                                                  |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ollama_url`, `ollama_model`                                            | Ollama endpoint and default model (`http://localhost:11434`, `gemma4:latest`).                                                                |
+| `test_command`, `max_revisions`                                         | QA command and automatic plan/code revision limit; defaults are `python3 -m pytest -q` and `2`.                                               |
+| `backends`                                                              | Backend assigned to roles.                                                                                                                    |
+| `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing.                                                                                               |
+| `use_ponytail`, `use_worktree`                                          | Minimalist prompting and Git-worktree isolation; both default to `false` and `true` respectively.                                             |
+| `backend_escalation_path`, `staffing_limits`                            | Backend escalation and RD/QA staffing limits.                                                                                                 |
+| `telemetry_enabled`, `llm_usage_log`                                    | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
 
 ## Automatic model selection
 
@@ -58,6 +58,7 @@ agy models
 ### Динамическая маршрутизация моделей
 
 Для локального выполнения через Ollama модель `tev1:4b` используется только как маршрутизатор решений через endpoint Ollama `/v1/systemone` (она не выполняет задачи через `/api/chat`).
+
 - **Обнаружение моделей**: установленные модели динамически определяются через `/api/tags` настроенного endpoint Ollama. Модели не загружаются и не удаляются автоматически.
 - **Конфиденциальность**: маршрутизатор получает только роль, краткое описание задачи и сведения о кандидатах; полный task prompt ему не передаётся.
 - **Проверка и fallback**: проверяются выбор, confidence и вероятности для всех установленных кандидатов; локальные модели вызываются в порядке убывания вероятности. Низкая confidence записывается в журнал, но не отменяет допустимое ранжирование. Если endpoint или маршрутизатор недоступен либо ответ недопустим, используется фиксированный порядок локальных моделей.
@@ -67,23 +68,23 @@ agy models
 
 Автоматическая проверка и проверка владельцем используют разные имена результатов и переходы.
 
-| Producer | Result | Effect |
-| --- | --- | --- |
-| QA | `PASSED` | Continue from `TESTING` to `REVIEWING_CODE`. |
-| QA | `FAILED` | Create a QA fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`. |
-| Reviewer | `APPROVED` | Continue to completion. |
-| Reviewer | `REJECTED` | Create a reviewer fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`. |
-| Architect | plan revision | Revise the plan until `max_revisions`; then continue to `IMPLEMENTING`, without creating human review. |
+| Producer  | Result        | Effect                                                                                                               |
+| --------- | ------------- | -------------------------------------------------------------------------------------------------------------------- |
+| QA        | `PASSED`      | Continue from `TESTING` to `REVIEWING_CODE`.                                                                         |
+| QA        | `FAILED`      | Create a QA fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`.                 |
+| Reviewer  | `APPROVED`    | Continue to completion.                                                                                              |
+| Reviewer  | `REJECTED`    | Create a reviewer fix task and return to `IMPLEMENTING`; at `max_revisions`, pause in `WAITING_FOR_OWNER`.           |
+| Architect | plan revision | План исправляется до `max_revisions`, затем процесс переходит в `WAITING_FOR_OWNER` и ждёт явного решения владельца. |
 
 `max_revisions` defaults to `2`, but the active `.ai-company/config.json` controls it. QA and Reviewer failures increment `code_revisions`; their retry limit is the condition that creates owner review. An AI backend failure, non-zero test-command exit status, or other command error is an execution failure. It is not the same as the owner's explicit `reject` decision.
 
 In `WAITING_FOR_OWNER`, use `approve` or `review`:
 
-| Decision | Meaning | Next behavior |
-| --- | --- | --- |
-| `pass` | Accept the saved passing path. | Resume at the recorded `pass_state`, then optionally continue with `--run`. |
+| Decision | Meaning                              | Next behavior                                                                                                                              |
+| -------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pass`   | Accept the saved passing path.       | Resume at the recorded `pass_state`, then optionally continue with `--run`.                                                                |
 | `revise` | Request another implementation pass. | Increment `code_revisions`, add `HUMAN-REVIEW-N`, and move to `IMPLEMENTING`; it is not blocked by the previous automatic retry threshold. |
-| `reject` | Reject this workflow result. | Move to `FAILED`; normal execution stops. |
+| `reject` | Reject this workflow result.         | Move to `FAILED`; normal execution stops.                                                                                                  |
 
 `approve` is the shortcut for the paused passing path. Successful `review` output is identifiable as:
 
@@ -93,22 +94,40 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 
 Use `python3 orchestrator.py status` to see the current state and revision counts. `--run` continues the loop only when the selected decision leaves a runnable workflow; it does not run after `reject`.
 
+## Надёжная работа и восстановление
+
+`python3 orchestrator.py pause` останавливает процесс после шага; `python3 orchestrator.py deliver` показывает снимок для доставки. Команда верхнего уровня `python3 orchestrator.py reject` очищает worktree и возвращает к планированию. Она отличается от `review reject`, завершающей процесс; обе требуют явного решения.
+
+Первая строка ответа QA должна быть `QA_STATUS: PASSED` или `QA_STATUS: FAILED`. Отказ должен содержать свидетельство ошибки и требуемое исправление. Некорректный ответ получает одну попытку исправления, затем процесс приостанавливается с источником `QA_RESPONSE`. Продолжение повторяет `TESTING`, не создавая задачу исправления и не снижая оценку Developer. Ненулевой код завершения тестов по-прежнему запрещает успешный результат.
+
+GUI предлагает действия по текущему состоянию: исправление по замечаниям, явное принятие результата, повтор текущей задачи или остановку после шага. Очистка отказавших маршрутов требует отдельного подтверждения и может расходовать дополнительные токены. После принятия операции подготовка может продолжаться в фоне; перед повтором проверьте состояние и ошибку. Для доставки сначала просмотрите изменения Git, затем подтвердите их второй раз. Обычное продолжение не выполняет слияние.
+
+Замечания Architect／Manager сохраняются при перезапуске до успешного сохранения нового плана, независимо от счётчика попыток.
+
+```bash
+python3 orchestrator.py gui
+python3 orchestrator.py status
+python3 orchestrator.py continue --clear-route-failures
+```
+
+См. [операции GUI](docs/chairman-gui.md) и [состояния процесса](docs/workflow-fsm.md). `python3 verify_alignment.py` проверяет общие исполняемые примеры, блоки кода и локальные／общие ссылки, но не смысл перевода и не доступность внешних URL. Офлайн CI проверяет временные Git worktree и реальную доставку на Python 3.12／3.13. Совместимость реальных моделей проверяется отдельно.
+
 ## Справочник CLI
 
 Выполните `python3 orchestrator.py --help`, чтобы получить список команд. Every command below is run from the repository root; commands other than `init`, `start`, and `--help` require an initialized `.ai-company/` directory.
 
-| Command | Syntax | Required arguments | Optional arguments / defaults | Output, prerequisites, and example |
-| --- | --- | --- | --- | --- |
-| Help | `python3 orchestrator.py --help` | None | `-h`, `--help` | Prints commands and exits. `python3 orchestrator.py --help` |
-| `init` | `python3 orchestrator.py init` | None | None | Creates `.ai-company/config.json` and state files. `python3 orchestrator.py init` |
-| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | Initializes, saves the request, resets to `PLANNING`; it does not run agents. `python3 orchestrator.py start "Add a command and tests"` |
-| `step` | `python3 orchestrator.py step` | None | None | Runs one state-machine step; selected AI CLIs, Ollama, and Git worktree support may be needed. `python3 orchestrator.py step` |
-| `run` | `python3 orchestrator.py run` | None | None | Runs until `COMPLETED`, `WAITING_FOR_OWNER`, or `FAILED`. `python3 orchestrator.py run` |
-| `status` | `python3 orchestrator.py status` | None | None | Prints state, revision counters, selected backends, test command, and action items. `python3 orchestrator.py status` |
-| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`: continue after approval; default off | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run` |
-| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. `python3 orchestrator.py review revise --run` |
-| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`; default `PLANNING`, accepts a string state value | Clears revision/runtime routing data, removes the worktree without merging it, and stores the selected state. `python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`, `backend` | None | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `agy`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
+| Command       | Syntax                                                        | Required arguments                        | Optional arguments / defaults                                     | Output, prerequisites, and example                                                                                                                                                                                                                                                               |
+| ------------- | ------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Help          | `python3 orchestrator.py --help`                              | None                                      | `-h`, `--help`                                                    | Prints commands and exits. `python3 orchestrator.py --help`                                                                                                                                                                                                                                      |
+| `init`        | `python3 orchestrator.py init`                                | None                                      | None                                                              | Creates `.ai-company/config.json` and state files. `python3 orchestrator.py init`                                                                                                                                                                                                                |
+| `start`       | `python3 orchestrator.py start <prompt>`                      | `prompt`: development request             | None                                                              | Initializes, saves the request, resets to `PLANNING`; it does not run agents. `python3 orchestrator.py start "Add a command and tests"`                                                                                                                                                          |
+| `step`        | `python3 orchestrator.py step`                                | None                                      | None                                                              | Runs one state-machine step; selected AI CLIs, Ollama, and Git worktree support may be needed. `python3 orchestrator.py step`                                                                                                                                                                    |
+| `run`         | `python3 orchestrator.py run`                                 | None                                      | None                                                              | Runs until `COMPLETED`, `WAITING_FOR_OWNER`, or `FAILED`. `python3 orchestrator.py run`                                                                                                                                                                                                          |
+| `status`      | `python3 orchestrator.py status`                              | None                                      | None                                                              | Prints state, revision counters, selected backends, test command, and action items. `python3 orchestrator.py status`                                                                                                                                                                             |
+| `approve`     | `python3 orchestrator.py approve [--run]`                     | None                                      | `--run`: continue after approval; default off                     | Only valid in `WAITING_FOR_OWNER`; resumes at recorded state. `python3 orchestrator.py approve --run`                                                                                                                                                                                            |
+| `review`      | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`: `pass`, `revise`, or `reject` | `--run`: continue after `pass` or `revise`; default off           | Only valid in `WAITING_FOR_OWNER`; prints the recorded-decision message. `python3 orchestrator.py review revise --run`                                                                                                                                                                           |
+| `reset`       | `python3 orchestrator.py reset [--state STATE]`               | None                                      | `--state STATE`; default `PLANNING`, accepts a string state value | Clears revision/runtime routing data, removes the worktree without merging it, and stores the selected state. `python3 orchestrator.py reset --state DEVELOPING_PLAN`                                                                                                                            |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>`        | `role`, `backend`                         | None                                                              | Updates `backends` in config. Roles: `manager`, `architect`, `developer`, `reviewer`, `qa`, `assistant`, `ra`, `security`, `sales`, `sre`. Backends: `ollama`, `codex`, `agy`. `developer` and `qa` update their senior/middle/junior routes. `python3 orchestrator.py set-backend reviewer agy` |
 
 Each subcommand also supports `--help`, for example `python3 orchestrator.py review --help`. Invalid role/backend/decision values are rejected by argparse. `status`, `approve`, `review`, `reset`, and `set-backend` report that initialization is required when `.ai-company/` is absent; `approve` and `review` also reject states other than `WAITING_FOR_OWNER`.
 
@@ -185,14 +204,14 @@ python3 orchestrator.py review reject
 
 ### Новые команды CLI
 
-| Команда | Описание |
-| --- | --- |
-| `weights` | Показать текущие доверительные веса внутренних сотрудников |
-| `weights set <role> <level> <value>` | Вручную переопределить вес |
-| `roster` | Показать доступные сегодня роли RD/QA (сотрудники и поставщики) |
-| `vendors` | Показать карточку платных поставщиков |
-| `brain search <query>` | Выполнить поиск во внутренней памяти компании |
-| `brain prune [--keep N]` | Удалить старые записи, оставив только последние N |
+| Команда                              | Описание                                                        |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `weights`                            | Показать текущие доверительные веса внутренних сотрудников      |
+| `weights set <role> <level> <value>` | Вручную переопределить вес                                      |
+| `roster`                             | Показать доступные сегодня роли RD/QA (сотрудники и поставщики) |
+| `vendors`                            | Показать карточку платных поставщиков                           |
+| `brain search <query>`               | Выполнить поиск во внутренней памяти компании                   |
+| `brain prune [--keep N]`             | Удалить старые записи, оставив только последние N               |
 
 ### Новые ключи конфигурации
 

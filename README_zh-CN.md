@@ -22,21 +22,28 @@ python3 -m venv .venv
 
 ## Workflow 与文件
 
-replacement content below the heading
+`start` 保存请求并进入 `PLANNING`，拒绝覆盖正在进行或尚未交付的流程。默认交付流程如下：
+
+```text
+PLANNING → DEVELOPING_PLAN → REVIEWING_PLAN → IMPLEMENTING
+→ TESTING → REVIEWING_CODE → WAITING_FOR_DELIVERY → COMPLETED
+```
+
+PM 产生需求，Architect 审核计划，Developer 实作，QA 验证，Reviewer 审核代码。通过后先准备报告和 CHANGELOG，等待人工确认 Git 影响，成功交付后才标记 `COMPLETED`。研究模式不需要 Git 交付。
 
 ## 配置
 
 编辑 `.ai-company/config.json` 前先运行 `python3 orchestrator.py init`。缺少的键会使用 `orchestrator/core/config.py` 中的默认值。
 
-| Key | 用途与默认行为 |
-| --- | --- |
-| `ollama_url`、`ollama_model` | Ollama endpoint 与默认 model（`http://localhost:11434`、`gemma4:latest`）。 |
-| `test_command`、`max_revisions` | QA command 与自动 plan/code revision 上限；默认值为 `python3 -m pytest -q` 和 `2`。 |
-| `backends` | 分配给各 role 的 backend。 |
-| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 列表及每个 role 的 model/backend 路由。 |
-| `use_ponytail`、`use_worktree` | 极简提示与 Git-worktree 隔离；默认分别为 `false` 和 `true`。 |
-| `backend_escalation_path`、`staffing_limits` | backend 升级路径及 RD/QA staffing 限制。 |
-| `telemetry_enabled`、`llm_usage_log` | LiteLLM token metadata 记录开关与 JSONL 路径；默认记录到 workflow 目录的 `llm_usage.jsonl`，不保存 prompt/output。 |
+| Key                                                                     | 用途与默认行为                                                                                                     |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `ollama_url`、`ollama_model`                                            | Ollama endpoint 与默认 model（`http://localhost:11434`、`gemma4:latest`）。                                        |
+| `test_command`、`max_revisions`                                         | QA command 与自动 plan/code revision 上限；默认值为 `python3 -m pytest -q` 和 `2`。                                |
+| `backends`                                                              | 分配给各 role 的 backend。                                                                                         |
+| `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 列表及每个 role 的 model/backend 路由。                                                                      |
+| `use_ponytail`、`use_worktree`                                          | 极简提示与 Git-worktree 隔离；默认分别为 `false` 和 `true`。                                                       |
+| `backend_escalation_path`、`staffing_limits`                            | backend 升级路径及 RD/QA staffing 限制。                                                                           |
+| `telemetry_enabled`、`llm_usage_log`                                    | LiteLLM token metadata 记录开关与 JSONL 路径；默认记录到 workflow 目录的 `llm_usage.jsonl`，不保存 prompt/output。 |
 
 ## 自动选择模型
 
@@ -49,6 +56,7 @@ agy models
 ### 动态模型路由
 
 执行本地 Ollama 任务时，`tev1:4b` 仅通过 Ollama `/v1/systemone` endpoint 作为决策路由器使用，不会通过 `/api/chat` 执行任务。
+
 - **模型发现**：通过已配置的 Ollama endpoint 的 `/api/tags` 动态发现已安装模型；不会自动拉取或删除模型。
 - **隐私**：路由器只接收角色、精简任务摘要和候选模型说明，不会收到完整 task prompt。
 - **验证与回退**：验证所选模型、confidence 和每个已安装候选模型的概率，并按概率从高到低尝试本地模型。低 confidence 会被记录，但有效排序仍可使用；endpoint 或路由器不可用、结果无效时，使用本地模型的固定顺序。
@@ -58,23 +66,23 @@ agy models
 
 Automatic review 与 owner review 使用不同的 result 名称和 transition。
 
-| Producer | Result | Effect |
-| --- | --- | --- |
-| QA | `PASSED` | 从 `TESTING` 继续到 `REVIEWING_CODE`。 |
-| QA | `FAILED` | 创建 QA fix task 并返回 `IMPLEMENTING`；达到 `max_revisions` 后暂停在 `WAITING_FOR_OWNER`。 |
-| Reviewer | `APPROVED` | 继续完成流程。 |
-| Reviewer | `REJECTED` | 创建 reviewer fix task 并返回 `IMPLEMENTING`；达到 `max_revisions` 后暂停在 `WAITING_FOR_OWNER`。 |
-| Architect | plan revision | 修订计划直到 `max_revisions`；之后继续到 `IMPLEMENTING`，不会创建 human review。 |
+| Producer  | Result        | Effect                                                                                            |
+| --------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| QA        | `PASSED`      | 从 `TESTING` 继续到 `REVIEWING_CODE`。                                                            |
+| QA        | `FAILED`      | 创建 QA fix task 并返回 `IMPLEMENTING`；达到 `max_revisions` 后暂停在 `WAITING_FOR_OWNER`。       |
+| Reviewer  | `APPROVED`    | 继续完成流程。                                                                                    |
+| Reviewer  | `REJECTED`    | 创建 reviewer fix task 并返回 `IMPLEMENTING`；达到 `max_revisions` 后暂停在 `WAITING_FOR_OWNER`。 |
+| Architect | plan revision | 修订计划直到 `max_revisions`，再暂停于 `WAITING_FOR_OWNER`，等待所有者明确决策。                  |
 
 `max_revisions` 默认是 `2`，但实际值由当前 `.ai-company/config.json` 控制。QA 和 Reviewer 失败会增加 `code_revisions`；达到 retry limit 后才创建 owner review。AI backend failure、test command 非零 exit status 或其他 command error 属于 execution failure，不等同于 owner 明确作出的 `reject` decision。
 
 在 `WAITING_FOR_OWNER` 中使用 `approve` 或 `review`：
 
-| Decision | 含义 | 后续行为 |
-| --- | --- | --- |
-| `pass` | 接受保存的通过路径。 | 从记录的 `pass_state` 恢复，然后可选择使用 `--run` 继续。 |
-| `revise` | 请求再次实现。 | 增加 `code_revisions`，添加 `HUMAN-REVIEW-N`，并移到 `IMPLEMENTING`；不受之前 automatic retry threshold 阻挡。 |
-| `reject` | 拒绝本次 workflow 结果。 | 移到 `FAILED`；正常执行停止。 |
+| Decision | 含义                     | 后续行为                                                                                                       |
+| -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `pass`   | 接受保存的通过路径。     | 从记录的 `pass_state` 恢复，然后可选择使用 `--run` 继续。                                                      |
+| `revise` | 请求再次实现。           | 增加 `code_revisions`，添加 `HUMAN-REVIEW-N`，并移到 `IMPLEMENTING`；不受之前 automatic retry threshold 阻挡。 |
+| `reject` | 拒绝本次 workflow 结果。 | 移到 `FAILED`；正常执行停止。                                                                                  |
 
 `approve` 是暂停的通过路径的快捷方式。成功的 `review` 输出可通过以下内容识别：
 
@@ -84,22 +92,40 @@ Human review '<decision>' recorded; workflow moved to <STATE>.
 
 使用 `python3 orchestrator.py status` 查看当前 state 和 revision counters。`--run` 只有在所选 decision 留下可运行 workflow 时才继续；`reject` 后不会运行。
 
+## 可靠操作与失败恢复
+
+`python3 orchestrator.py pause` 在步骤结束后暂停；`python3 orchestrator.py deliver` 展示交付快照。顶层 `python3 orchestrator.py reject` 会清理 worktree 并回到规划，与结束流程的 `review reject` 不同，使用前需要明确决定。
+
+QA 回复首行必须是 `QA_STATUS: PASSED` 或 `QA_STATUS: FAILED`；否决须附失败证据和修正要求。无效回复只重试修正一次，仍无效时以 `QA_RESPONSE` 暂停，继续时重跑 `TESTING`；不创建缺陷任务，也不扣 Developer 分数。测试非零退出码仍会阻止通过。
+
+GUI 根据当前状态提供审核修订、明确接受通过路径、重试当前任务或在步骤结束后停止。清除失败路由需要单独确认，可能增加 token 消耗。操作受理后可能仍在后台准备；重试前请查看状态和错误。交付必须先展示 Git 影响，再二次确认；普通继续不会合并。
+
+Architect／Manager 的修订理由会跨重启保留，直到新计划成功保存；重试额度与审核意见分开记录。
+
+```bash
+python3 orchestrator.py gui
+python3 orchestrator.py status
+python3 orchestrator.py continue --clear-route-failures
+```
+
+参阅[GUI 操作](docs/chairman-gui.md)与[流程状态](docs/workflow-fsm.md)。`python3 verify_alignment.py` 检查共用可执行示例、代码块和本地／共用链接，不能证明翻译语义正确或远程链接可用。离线 CI 使用 Python 3.12／3.13 验证临时 Git worktree 和实际交付；真实模型兼容性需要单独实测。
+
 ## CLI reference
 
 运行 `python3 orchestrator.py --help` 查看当前 command list。以下每条命令都从 repository root 执行；除 `init`、`start` 和 `--help` 外，其他命令都需要已初始化的 `.ai-company/` 目录。
 
-| Command | Syntax | Required arguments | Optional arguments / defaults | Output, prerequisites, and example |
-| --- | --- | --- | --- | --- |
-| Help | `python3 orchestrator.py --help` | None | `-h`、`--help` | 输出 commands 并退出。`python3 orchestrator.py --help` |
-| `init` | `python3 orchestrator.py init` | None | None | 创建 `.ai-company/config.json` 和 state files。`python3 orchestrator.py init` |
-| `start` | `python3 orchestrator.py start <prompt>` | `prompt`: development request | None | 初始化、保存 request 并重置为 `PLANNING`；不会运行 agents。`python3 orchestrator.py start "Add a command and tests"` |
-| `step` | `python3 orchestrator.py step` | None | None | 执行一个 state-machine step；可能需要选定的 AI CLIs、Ollama 和 Git worktree。`python3 orchestrator.py step` |
-| `run` | `python3 orchestrator.py run` | None | None | 运行直到 `COMPLETED`、`WAITING_FOR_OWNER` 或 `FAILED`。`python3 orchestrator.py run` |
-| `status` | `python3 orchestrator.py status` | None | None | 输出 state、revision counters、选定 backends、test command 和 action items。`python3 orchestrator.py status` |
-| `approve` | `python3 orchestrator.py approve [--run]` | None | `--run`：approval 后继续；默认关闭 | 仅在 `WAITING_FOR_OWNER` 有效；从记录的 state 恢复。`python3 orchestrator.py approve --run` |
-| `review` | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 后继续；默认关闭 | 仅在 `WAITING_FOR_OWNER` 有效；输出 recorded-decision message。`python3 orchestrator.py review revise --run` |
-| `reset` | `python3 orchestrator.py reset [--state STATE]` | None | `--state STATE`；默认 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合并，并保存选定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN` |
-| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>` | `role`、`backend` | None | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`agy`。`developer` 和 `qa` 会更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
+| Command       | Syntax                                                        | Required arguments                       | Optional arguments / defaults                             | Output, prerequisites, and example                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Help          | `python3 orchestrator.py --help`                              | None                                     | `-h`、`--help`                                            | 输出 commands 并退出。`python3 orchestrator.py --help`                                                                                                                                                                                                                                   |
+| `init`        | `python3 orchestrator.py init`                                | None                                     | None                                                      | 创建 `.ai-company/config.json` 和 state files。`python3 orchestrator.py init`                                                                                                                                                                                                            |
+| `start`       | `python3 orchestrator.py start <prompt>`                      | `prompt`: development request            | None                                                      | 初始化、保存 request 并重置为 `PLANNING`；不会运行 agents。`python3 orchestrator.py start "Add a command and tests"`                                                                                                                                                                     |
+| `step`        | `python3 orchestrator.py step`                                | None                                     | None                                                      | 执行一个 state-machine step；可能需要选定的 AI CLIs、Ollama 和 Git worktree。`python3 orchestrator.py step`                                                                                                                                                                              |
+| `run`         | `python3 orchestrator.py run`                                 | None                                     | None                                                      | 运行直到 `COMPLETED`、`WAITING_FOR_OWNER` 或 `FAILED`。`python3 orchestrator.py run`                                                                                                                                                                                                     |
+| `status`      | `python3 orchestrator.py status`                              | None                                     | None                                                      | 输出 state、revision counters、选定 backends、test command 和 action items。`python3 orchestrator.py status`                                                                                                                                                                             |
+| `approve`     | `python3 orchestrator.py approve [--run]`                     | None                                     | `--run`：approval 后继续；默认关闭                        | 仅在 `WAITING_FOR_OWNER` 有效；从记录的 state 恢复。`python3 orchestrator.py approve --run`                                                                                                                                                                                              |
+| `review`      | `python3 orchestrator.py review {pass,revise,reject} [--run]` | `decision`：`pass`、`revise` 或 `reject` | `--run`：在 `pass` 或 `revise` 后继续；默认关闭           | 仅在 `WAITING_FOR_OWNER` 有效；输出 recorded-decision message。`python3 orchestrator.py review revise --run`                                                                                                                                                                             |
+| `reset`       | `python3 orchestrator.py reset [--state STATE]`               | None                                     | `--state STATE`；默认 `PLANNING`，接受 string state value | 清除 revision/runtime routing data，移除 worktree 但不合并，并保存选定 state。`python3 orchestrator.py reset --state DEVELOPING_PLAN`                                                                                                                                                    |
+| `set-backend` | `python3 orchestrator.py set-backend <role> <backend>`        | `role`、`backend`                        | None                                                      | 更新 config 中的 `backends`。roles：`manager`、`architect`、`developer`、`reviewer`、`qa`、`assistant`、`ra`、`security`、`sales`、`sre`。backends：`ollama`、`codex`、`agy`。`developer` 和 `qa` 会更新 senior/middle/junior routes。`python3 orchestrator.py set-backend reviewer agy` |
 
 每个 subcommand 也支持 `--help`，例如 `python3 orchestrator.py review --help`。无效的 role/backend/decision 值会被 argparse 拒绝。`.ai-company/` 缺失时，`status`、`approve`、`review`、`reset` 和 `set-backend` 会报告需要初始化；`approve` 和 `review` 也会拒绝非 `WAITING_FOR_OWNER` state。
 
@@ -176,14 +202,14 @@ python3 orchestrator.py review reject
 
 ### New CLI commands
 
-| Command | Description |
-| --- | --- |
-| `weights` | 显示当前 internal staff trust weights |
-| `weights set <role> <level> <value>` | 手动覆盖一个 weight |
-| `roster` | 显示今天可用的 RD/QA roles（staff 和 vendors） |
-| `vendors` | 显示 paid-vendor scorecard |
-| `brain search <query>` | 搜索 internal company memory |
-| `brain prune [--keep N]` | 清理旧 memory，仅保留最近的 N 条 |
+| Command                              | Description                                    |
+| ------------------------------------ | ---------------------------------------------- |
+| `weights`                            | 显示当前 internal staff trust weights          |
+| `weights set <role> <level> <value>` | 手动覆盖一个 weight                            |
+| `roster`                             | 显示今天可用的 RD/QA roles（staff 和 vendors） |
+| `vendors`                            | 显示 paid-vendor scorecard                     |
+| `brain search <query>`               | 搜索 internal company memory                   |
+| `brain prune [--keep N]`             | 清理旧 memory，仅保留最近的 N 条               |
 
 ### New configuration keys
 
