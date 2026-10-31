@@ -704,7 +704,9 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     assert "Git impact" in page
     assert "1 file changed" in page
     assert "snapshot_id:deliverySnapshotId" in page
-    assert "document.activeElement === promptInput || promptInput.value" in page
+    assert "location.reload" not in page
+    assert "patchRegion" in page
+    assert 'id="reports"' in page
     assert "setTimeout(refreshWhenIdle, 3000)" in page
     assert "重置任務</button>" in page
     assert "重置會清除已存任務內容並清理目前 worktree" in page

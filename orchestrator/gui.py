@@ -612,7 +612,7 @@ def render_page(status: dict) -> str:
         if isinstance(task, dict)
     )
     report_html = "".join(
-        f"<details><summary>{_safe_text(name)}</summary>"
+        f'<details data-report="{_safe_text(name)}"><summary>{_safe_text(name)}</summary>'
         f"<pre>{_report_html(value)}</pre></details>"
         for name, value in reports.items()
         if value
@@ -636,7 +636,7 @@ def render_page(status: dict) -> str:
         if confirmation:
             script = f"if(window.confirm({json.dumps(confirmation, ensure_ascii=False)})) {script}"
         buttons.append(
-            f'<button onclick="{_safe_text(script)}">{_safe_text(label)}</button>'
+            f'<button data-action="{_safe_text(action + json.dumps(body or {}, sort_keys=True))}" onclick="{_safe_text(script)}">{_safe_text(label)}</button>'
         )
 
     if busy:
@@ -674,7 +674,7 @@ def render_page(status: dict) -> str:
             "delivery_snapshot_id"
         ):
             buttons.append(
-                "<button onclick=\"post('/api/deliver', {confirm:true,snapshot_id:deliverySnapshotId})\">確認二次交付</button>"
+                '<button data-action="confirm-delivery" onclick="post(\'/api/deliver\', {confirm:true,snapshot_id:deliverySnapshotId})">確認二次交付</button>'
             )
     elif current not in {"COMPLETED", "FAILED"}:
         button("繼續執行", "continue")
@@ -710,8 +710,9 @@ button{{margin:.25rem;padding:.5rem 1rem}} textarea{{width:100%;min-height:8rem}
 .badge{{font-weight:bold}} details{{margin:1rem 0}}
 </style>
 </head>
-<body>
+<body data-csrf="{_safe_text(status.get('csrf', ''))}">
 <h1>AI Company Orchestrator</h1>
+<div id="workflow-status">
 <p>階段：{_safe_text(status.get("stage", status.get("state", "")))}</p>
 <p>狀態：<span id="state" class="badge">{_safe_text(status.get("state", ""))}</span></p>
 <p>進度：{_safe_text(progress.get("completed_tasks", 0))}/{_safe_text(progress.get("total_tasks", len(tasks)))} tasks</p>
@@ -719,18 +720,93 @@ button{{margin:.25rem;padding:.5rem 1rem}} textarea{{width:100%;min-height:8rem}
 <p>下一動作：{_safe_text(status.get("next_action", ""))}</p>
 <p role="status">執行狀態：{_safe_text(phase)}</p>
 <p role="alert">{_safe_text(runtime.get("error", ""))}</p>
-<h2>Tasks</h2><ul>{task_html}</ul>
+</div>
+<p id="refresh-error" role="status"></p>
+<h2>Tasks</h2><ul id="tasks">{task_html}</ul>
 <form id="task-form" {'' if can_submit else 'hidden'}>
 <textarea name="prompt" placeholder="輸入新任務"></textarea><br>
 <button>提交任務</button>
 </form>
 <div id="actions">{''.join(buttons)}</div>
-<div id="git">{git_html}</div>
-<h2>報告</h2>{report_html}
+<div id="git" data-snapshot-id="{_safe_text(status.get('delivery_snapshot_id', ''))}">{git_html}</div>
+<h2>報告</h2><div id="reports">{report_html}</div>
 <script>
-const csrf = {json.dumps(status.get("csrf", ""))};
-const deliverySnapshotId = {json.dumps(status.get("delivery_snapshot_id", ""))};
+let csrf = {json.dumps(status.get("csrf", ""))};
+let deliverySnapshotId = {json.dumps(status.get("delivery_snapshot_id", ""))};
+let actionPending = false;
+let refreshing = null;
+let actionVersion = 0;
+function selectedWithin(node) {{
+  const selection = window.getSelection();
+  return selection && !selection.isCollapsed &&
+    (node.contains(selection.anchorNode) || node.contains(selection.focusNode));
+}}
+function patchRegion(current, incoming) {{
+  if (selectedWithin(current)) return false;
+  if (current.innerHTML !== incoming.innerHTML) {{
+    const top = current.scrollTop, left = current.scrollLeft;
+    current.innerHTML = incoming.innerHTML;
+    current.scrollTop = top;
+    current.scrollLeft = left;
+  }}
+  return true;
+}}
+async function refresh(afterAction=false) {{
+  if (actionPending && !afterAction) return;
+  if (refreshing) {{
+    if (!afterAction) return;
+    await refreshing;
+  }}
+  refreshing = refreshPage(afterAction);
+  try {{ await refreshing; }} finally {{ refreshing = null; }}
+}}
+async function refreshPage(afterAction) {{
+  const version = actionVersion;
+  try {{
+    // Reuse server-rendered controls rather than duplicate workflow rules in JavaScript.
+    const response = await fetch('/', {{credentials:'same-origin', cache:'no-store'}});
+    if (!response.ok) throw new Error('Status request failed');
+    const incoming = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports'];
+    if (!ids.every(id => incoming.getElementById(id)) || !incoming.body.hasAttribute('data-csrf'))
+      throw new Error('Incomplete status page');
+    if ((actionPending && !afterAction) || version !== actionVersion) return;
+    const x = window.scrollX, y = window.scrollY;
+    const active = document.activeElement;
+    const action = active && active.dataset.action;
+    for (const id of ['workflow-status', 'tasks'])
+      patchRegion(document.getElementById(id), incoming.getElementById(id));
+    document.getElementById('task-form').hidden = incoming.getElementById('task-form').hidden;
+    const git = document.getElementById('git'), nextGit = incoming.getElementById('git');
+    if (patchRegion(git, nextGit)) {{
+      deliverySnapshotId = nextGit.dataset.snapshotId;
+      git.dataset.snapshotId = deliverySnapshotId;
+      patchRegion(document.getElementById('actions'), incoming.getElementById('actions'));
+    }}
+    const reports = document.getElementById('reports');
+    const panels = Array.from(incoming.getElementById('reports').children);
+    for (const panel of panels) {{
+      const current = Array.from(reports.children).find(node => node.dataset.report === panel.dataset.report);
+      if (current) patchRegion(current.querySelector('pre'), panel.querySelector('pre'));
+      else reports.appendChild(panel);
+    }}
+    for (const panel of Array.from(reports.children))
+      if (!panels.some(node => node.dataset.report === panel.dataset.report) && !selectedWithin(panel)) panel.remove();
+    csrf = incoming.body.dataset.csrf;
+    if (action && !document.contains(active)) {{
+      const replacement = Array.from(document.querySelectorAll('#actions button')).find(button => button.dataset.action === action);
+      if (replacement) replacement.focus({{preventScroll:true}});
+    }}
+    window.scrollTo(x, y);
+    document.getElementById('refresh-error').textContent = '';
+  }} catch(error) {{
+    document.getElementById('refresh-error').textContent = '無法更新狀態，保留目前畫面，稍後重試。';
+  }}
+}}
 async function post(url, body={{}}) {{
+  if (actionPending) return;
+  actionPending = true;
+  actionVersion += 1;
   document.querySelectorAll('button').forEach(button => button.disabled = true);
   try {{
   const response = await fetch(url, {{
@@ -740,9 +816,16 @@ async function post(url, body={{}}) {{
   }});
   const data = await response.json();
   if (!response.ok) alert(data.error || '操作失敗');
-  location.reload();
+  else if (url === '/api/task') {{
+    const input = document.querySelector('#task-form textarea');
+    if (input.value === body.prompt) input.value = '';
+  }}
   }} catch(error) {{
-    alert('連線中斷，請重新載入確認狀態後再操作。');
+    alert('連線中斷，請確認狀態後再操作。');
+  }} finally {{
+    await refresh(true);
+    actionPending = false;
+    document.querySelectorAll('button').forEach(button => button.disabled = false);
   }}
 }}
 document.getElementById('task-form').onsubmit = async (event) => {{
@@ -750,17 +833,9 @@ document.getElementById('task-form').onsubmit = async (event) => {{
   const prompt = new FormData(event.target).get('prompt');
   await post('/api/task', {{prompt}});
 }};
-function refreshWhenIdle() {{
-  if (document.querySelector('button:disabled')) {{
-    setTimeout(refreshWhenIdle, 3000);
-    return;
-  }}
-  const promptInput = document.querySelector('#task-form textarea');
-  if (document.activeElement === promptInput || promptInput.value) {{
-    setTimeout(refreshWhenIdle, 3000);
-    return;
-  }}
-  location.reload();
+async function refreshWhenIdle() {{
+  await refresh();
+  setTimeout(refreshWhenIdle, 3000);
 }}
 setTimeout(refreshWhenIdle, 3000);
 </script>
