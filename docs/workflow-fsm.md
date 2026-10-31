@@ -34,6 +34,8 @@ Rules:
 - All roles exclude the Argon (AGY), Fabel (Claude), and Astra (Codex) model families before cloud scoring and at CLI launch. Cached choices, explicit models, aliases, and capacity fallbacks obey the same rule. Developer Codex routes remain Luna-only. An unavailable router uses an allowed live-catalog candidate; an empty allowed catalog stops that route rather than using an implicit CLI default.
 - Only IMPLEMENTING requires file-marker blocks.
 - Manager tasks must modify project files; planning and inspection are not implementation tasks.
+- For a request restricted to explicit non-Markdown files, a Manager task grouping only allowed files is split into file-scoped tasks before coverage validation. Missing files, out-of-scope targets, and invalid tasks still fail validation; Markdown heading rules remain unchanged.
+- Code review compares task changes against the shared Git merge base and lists later target-branch changes separately. Target-only additions are not task deletions. Git evidence failures pause review, and worktree test results do not establish integration with later target commits; delivery checks remain required.
 - A rejected plan never enters IMPLEMENTING automatically.
 - Owner-requested Architect/Manager revisions retain feedback independently of retry counters until the replacement plan is saved successfully.
 - Invalid QA output is not a defect vote. One correction is allowed; exhaustion pauses at TESTING with source QA_RESPONSE, without creating a fix task or penalizing Developer. Non-zero test exit codes still block passing.

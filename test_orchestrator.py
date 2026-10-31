@@ -5012,7 +5012,9 @@ def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monke
         "run_command",
         Mock(
             side_effect=[
+                (0, "shared-base"),
                 (0, "diff"),
+                (0, "target branch changes"),
                 (0, "stdout:\n?? docs/new.md\nstderr:\n"),
                 (1, "new file contents"),
             ]
@@ -5024,7 +5026,7 @@ def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monke
     initialized_orchestrator.step_reviewing_code()
 
     assert (
-        "Git Status (includes untracked files):\nstdout:\n?? docs/new.md"
+        "Git Status (includes untracked files):\n?? docs/new.md"
         in call_agent.call_args.args[1]
     )
     assert "Untracked File Diffs:\nnew file contents" in call_agent.call_args.args[1]

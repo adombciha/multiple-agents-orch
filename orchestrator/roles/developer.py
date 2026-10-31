@@ -408,6 +408,34 @@ class DeveloperAgent(BaseAgent):
                 files = requested_files
                 allowed = set(files)
                 markdown_allowed = set(requested_markdown)
+                normalized_tasks = []
+                for task in tasks:
+                    targets = task.get("target_files")
+                    if (
+                        isinstance(targets, list)
+                        and len(targets) > 1
+                        and task.get("id")
+                        and task.get("description")
+                        and all(
+                            isinstance(path, str)
+                            and path in allowed
+                            and Path(path).suffix.lower() != ".md"
+                            for path in targets
+                        )
+                    ):
+                        normalized_tasks.extend(
+                            {
+                                **task,
+                                "id": f"{task.get('id', '')}-{index}",
+                                "target_files": [path],
+                                "description": f"Implement changes only in {path}. "
+                                + str(task.get("description", "")),
+                            }
+                            for index, path in enumerate(dict.fromkeys(targets), 1)
+                        )
+                    else:
+                        normalized_tasks.append(task)
+                tasks = normalized_tasks
                 if whole_file_docs:
                     by_file = {}
                     for task in tasks:

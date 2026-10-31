@@ -55,33 +55,59 @@ class ReviewerAgent(BaseAgent):
             else ""
         )
 
-        # Get git diff
+        # Separate task changes from commits added to the target branch later.
         if self.orchestrator.has_git:
-            _, git_diff = self.orchestrator.run_command(
-                ["git", "diff", self.orchestrator.base_branch], capture=True
-            )
-            if not git_diff.strip():
-                _, git_diff = self.orchestrator.run_command(
-                    ["git", "diff"], capture=True
+            try:
+                workspace = self.orchestrator.agent_workspace()
+                baseline = self.orchestrator._checked_git_output(
+                    ["merge-base", "HEAD", self.orchestrator.base_branch], workspace
+                ).strip()
+                if not baseline:
+                    raise RuntimeError("Git returned an empty shared baseline")
+                git_diff = self.orchestrator._checked_git_output(
+                    ["diff", baseline], workspace
                 )
-            _, git_status = self.orchestrator.run_command(
-                ["git", "status", "--short"], capture=True
-            )
-            status_lines = (
-                git_status.partition("stdout:\n")[2]
-                .partition("\nstderr:")[0]
-                .splitlines()
-            )
-            untracked_files = [
-                line[3:] for line in status_lines if line.startswith("?? ")
-            ]
-            untracked_diffs = []
-            for path in untracked_files:
-                _, diff = self.orchestrator.run_command(
-                    ["git", "diff", "--no-index", "--", "/dev/null", path], capture=True
+                target_drift = self.orchestrator._checked_git_output(
+                    ["diff", "--stat", baseline, self.orchestrator.base_branch],
+                    workspace,
                 )
-                untracked_diffs.append(diff)
-            git_evidence = f"Git Diff:\n{git_diff}\n\nGit Status (includes untracked files):\n{git_status}\n\nUntracked File Diffs:\n{'\n'.join(untracked_diffs) or 'None'}"
+                git_status = self.orchestrator._checked_git_output(
+                    ["status", "--short", "--untracked-files=all"], workspace
+                )
+                untracked_files = [
+                    line[3:]
+                    for line in git_status.splitlines()
+                    if line.startswith("?? ")
+                ]
+                untracked_diffs = []
+                for path in untracked_files:
+                    code, diff = self.orchestrator.run_command(
+                        ["git", "diff", "--no-index", "--", "/dev/null", path],
+                        capture=True,
+                    )
+                    if code not in {0, 1}:
+                        raise RuntimeError(
+                            f"Cannot read untracked diff for {path}: {diff}"
+                        )
+                    untracked_diffs.append(self.orchestrator._git_stdout(diff))
+            except RuntimeError as error:
+                self.orchestrator.pause_for_human_review(
+                    "Orchestrator",
+                    f"Git review evidence failed: {error}",
+                    "REVIEWING_CODE",
+                    "REVIEWING_CODE",
+                )
+                return
+            git_evidence = (
+                f"Shared Git baseline: {baseline}\n\nTask Git Diff (since shared baseline):\n{git_diff}\n\n"
+                f"Git Status (includes untracked files):\n{git_status}\n\n"
+                f"Untracked File Diffs:\n{'\n'.join(untracked_diffs) or 'None'}\n\n"
+                f"Target branch changes since shared baseline ({self.orchestrator.base_branch}; context only):\n"
+                f"{target_drift or 'None'}\n\n"
+                "Target branch changes are not task-authored edits or deletions. "
+                "Tests ran in the task workspace; they do not verify integration with later target commits. "
+                "Git delivery preview and merge checks remain required before delivery."
+            )
         else:
             git_evidence = "No git repository, changes are directly in workspace."
 
