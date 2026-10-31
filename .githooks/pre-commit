@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+if [ -x .venv/bin/python ]; then
+    exec .venv/bin/python scripts/format_staged.py
+fi
+exec python3 scripts/format_staged.py

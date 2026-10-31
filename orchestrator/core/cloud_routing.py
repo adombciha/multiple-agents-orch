@@ -4,12 +4,15 @@ import json
 import subprocess
 import time
 
-_codex_catalog_cache = (0.0, {})
+_codex_catalog_cache = None
 
 
 def discover_codex_models() -> dict[str, dict]:
     global _codex_catalog_cache
-    if time.monotonic() - _codex_catalog_cache[0] < 300:
+    if (
+        _codex_catalog_cache is not None
+        and time.monotonic() - _codex_catalog_cache[0] < 300
+    ):
         return _codex_catalog_cache[1]
     try:
         result = subprocess.run(

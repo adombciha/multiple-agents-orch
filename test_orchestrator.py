@@ -264,8 +264,10 @@ def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(monkeypa
     run.assert_called_once()
 
 
-def test_codex_catalog_filters_hidden_models(monkeypatch):
-    monkeypatch.setattr(cloud_routing, "_codex_catalog_cache", (0.0, {}))
+@pytest.mark.parametrize("clock_start", [0.0, 120.0, 1000.0])
+def test_codex_catalog_filters_hidden_models(monkeypatch, clock_start):
+    monkeypatch.setattr(cloud_routing, "_codex_catalog_cache", None)
+    monkeypatch.setattr(cloud_routing.time, "monotonic", Mock(return_value=clock_start))
     run = Mock(
         return_value=Mock(
             returncode=0,
@@ -290,6 +292,7 @@ def test_codex_catalog_filters_hidden_models(monkeypatch):
     monkeypatch.setattr(cloud_routing.subprocess, "run", run)
 
     assert list(cloud_routing.discover_codex_models()) == ["gpt-6.1-sol"]
+    assert list(cloud_routing.discover_codex_models()) == ["gpt-6.1-sol"]
     run.assert_called_once_with(
         ["codex", "debug", "models"],
         capture_output=True,
@@ -297,6 +300,19 @@ def test_codex_catalog_filters_hidden_models(monkeypatch):
         timeout=60,
         check=False,
     )
+
+
+def test_codex_catalog_refreshes_at_cache_expiry(monkeypatch):
+    monkeypatch.setattr(cloud_routing, "_codex_catalog_cache", (0.0, {"old-model": {}}))
+    clock = Mock(return_value=299.0)
+    monkeypatch.setattr(cloud_routing.time, "monotonic", clock)
+    run = Mock(return_value=Mock(returncode=0, stdout='{"models": []}'))
+    monkeypatch.setattr(cloud_routing.subprocess, "run", run)
+    assert cloud_routing.discover_codex_models() == {"old-model": {}}
+    run.assert_not_called()
+    clock.return_value = 300.0
+    assert cloud_routing.discover_codex_models() == {}
+    run.assert_called_once()
 
 
 def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monkeypatch):
