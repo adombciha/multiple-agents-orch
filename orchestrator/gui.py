@@ -735,6 +735,7 @@ button{{margin:.25rem;padding:.5rem 1rem}} textarea{{width:100%;min-height:8rem}
 <p role="status">執行狀態：{_safe_text(phase)}</p>
 <p role="alert">{_safe_text(runtime.get("error", ""))}</p>
 </div>
+<p id="last-refresh" role="status"></p>
 <p id="refresh-error" role="status"></p>
 <h2>Tasks</h2><ul id="tasks">{task_html}</ul>
 <form id="task-form" {'' if can_submit else 'hidden'}>
@@ -756,7 +757,7 @@ function selectedWithin(node) {{
     (node.contains(selection.anchorNode) || node.contains(selection.focusNode));
 }}
 function patchRegion(current, incoming) {{
-  if (selectedWithin(current)) return false;
+  if (selectedWithin(current) || current.contains(document.activeElement)) return false;
   if (current.innerHTML !== incoming.innerHTML) {{
     const top = current.scrollTop, left = current.scrollLeft;
     current.innerHTML = incoming.innerHTML;
@@ -784,37 +785,51 @@ async function refreshPage(afterAction) {{
     const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports'];
     if (!ids.every(id => incoming.getElementById(id)) || !incoming.body.hasAttribute('data-csrf'))
       throw new Error('Incomplete status page');
+    const panels = Array.from(incoming.getElementById('reports').children);
+    if (!incoming.getElementById('state') ||
+        !incoming.getElementById('task-form').querySelector('textarea') ||
+        !panels.every(panel => panel.dataset.report && panel.querySelector('pre')) ||
+        new Set(panels.map(panel => panel.dataset.report)).size !== panels.length)
+      throw new Error('Invalid status page');
     if ((actionPending && !afterAction) || version !== actionVersion) return;
     const x = window.scrollX, y = window.scrollY;
     const active = document.activeElement;
     const action = active && active.dataset.action;
-    for (const id of ['workflow-status', 'tasks'])
-      patchRegion(document.getElementById(id), incoming.getElementById(id));
-    document.getElementById('task-form').hidden = incoming.getElementById('task-form').hidden;
+    const statusApplied = patchRegion(document.getElementById('workflow-status'), incoming.getElementById('workflow-status'));
+    patchRegion(document.getElementById('tasks'), incoming.getElementById('tasks'));
+    const form = document.getElementById('task-form');
+    if (!form.contains(active) && !form.querySelector('textarea').value)
+      form.hidden = incoming.getElementById('task-form').hidden;
     const git = document.getElementById('git'), nextGit = incoming.getElementById('git');
-    if (patchRegion(git, nextGit)) {{
+    // Keep the displayed confirmation and its snapshot together until an explicit action.
+    const confirmingDelivery = !afterAction && Array.from(document.getElementById('actions').children)
+      .some(node => node.dataset.action === 'confirm-delivery');
+    if (!confirmingDelivery && patchRegion(git, nextGit)) {{
       deliverySnapshotId = nextGit.dataset.snapshotId;
       git.dataset.snapshotId = deliverySnapshotId;
       patchRegion(document.getElementById('actions'), incoming.getElementById('actions'));
     }}
     const reports = document.getElementById('reports');
-    const panels = Array.from(incoming.getElementById('reports').children);
     for (const panel of panels) {{
       const current = Array.from(reports.children).find(node => node.dataset.report === panel.dataset.report);
       if (current) patchRegion(current.querySelector('pre'), panel.querySelector('pre'));
       else reports.appendChild(panel);
     }}
     for (const panel of Array.from(reports.children))
-      if (!panels.some(node => node.dataset.report === panel.dataset.report) && !selectedWithin(panel)) panel.remove();
+      if (!panels.some(node => node.dataset.report === panel.dataset.report) &&
+          !panel.open && !panel.contains(active) && !selectedWithin(panel)) panel.remove();
     csrf = incoming.body.dataset.csrf;
     if (action && !document.contains(active)) {{
       const replacement = Array.from(document.querySelectorAll('#actions button')).find(button => button.dataset.action === action);
       if (replacement) replacement.focus({{preventScroll:true}});
     }}
     window.scrollTo(x, y);
-    document.getElementById('refresh-error').textContent = '';
+    if (statusApplied) {{
+      document.getElementById('last-refresh').textContent = `最後成功更新：${{new Date().toLocaleString()}}`;
+      document.getElementById('refresh-error').textContent = '';
+    }}
   }} catch(error) {{
-    document.getElementById('refresh-error').textContent = '無法更新狀態，保留目前畫面，稍後重試。';
+    document.getElementById('refresh-error').textContent = '更新失敗，正在顯示上次資料';
   }}
 }}
 async function post(url, body={{}}) {{
