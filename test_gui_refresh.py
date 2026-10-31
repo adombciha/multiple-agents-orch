@@ -1,4 +1,8 @@
-"""Execute the rendered GUI script against a small DOM double, without dependencies."""
+"""Offline simulated DOM tests executing the rendered GUI script with Node.js.
+
+These are not real browser tests: layout, native focus behavior, and HTML parsing
+are not verified. No npm packages, network access, or browser dependencies are used.
+"""
 
 import re
 import shutil
@@ -44,6 +48,8 @@ function page(version) {
   const submit = new Element('submit-' + version);
   const action = new Element('button-' + version, [], {action:'continue{}'});
   const nodes = {
+    state:new Element('state-' + version),
+    'last-refresh':new Element(),
     'workflow-status':new Element('phase-' + version), tasks:new Element('tasks-' + version),
     'task-form':new Element('form-' + version, [input, submit]),
     actions:new Element('actions-' + version, [action]),
@@ -61,6 +67,17 @@ function page(version) {
 const document = page('old');
 const next = page('new');
 const stale = page('stale');
+const invalid = page('invalid');
+let clock = Date.UTC(2026, 0, 2, 3, 4, 5);
+const timestampApplications = [];
+class LocalDate extends Date {
+  constructor(...args) { super(...(args.length ? args : [clock])); }
+  toLocaleString(...args) {
+    timestampApplications.push(document.nodes['workflow-status'].innerHTML);
+    return super.toLocaleString(...args);
+  }
+}
+const timestamp = () => '最後成功更新：' + new Date(clock).toLocaleString();
 let selection = {isCollapsed:true};
 const alerts = [], timers = [], requests = [];
 const window = {scrollX:20, scrollY:400,
@@ -68,8 +85,10 @@ const window = {scrollX:20, scrollY:400,
   scrollTo(x,y) { this.scrollX=x; this.scrollY=y; },
 };
 let request = async () => ({ok:true, text:async()=> 'new'});
-const context = vm.createContext({document, window,
-  DOMParser:class { parseFromString(key) { return key === 'stale' ? stale : next; } },
+const context = vm.createContext({document, window, Date:LocalDate,
+  DOMParser:class { parseFromString(key) {
+    return key === 'invalid' ? invalid : key === 'stale' ? stale : next;
+  } },
   fetch:(url, options) => { requests.push({url, options}); return request(url, options); },
   setTimeout:(callback,delay)=>timers.push({callback,delay}),
   alert:message=>alerts.push(message), FormData:class {},
@@ -81,6 +100,133 @@ const response = {ok:true, json:async()=>({}), text:async()=> 'new'};
 
 (async () => {
   switch (process.argv[1]) {
+    case 'initial': {
+      assert.equal(document.nodes['last-refresh'].textContent, '');
+      assert.equal(document.nodes['refresh-error'].textContent, '');
+      assert.equal(timestampApplications.length, 0);
+      assert.equal(requests.length, 0);
+      break;
+    }
+    case 'flow-network':
+    case 'flow-http':
+    case 'flow-body':
+    case 'flow-missing-region':
+    case 'flow-missing-csrf':
+    case 'flow-missing-state':
+    case 'flow-missing-input':
+    case 'flow-invalid-report':
+    case 'flow-duplicate-report': {
+      const kind = process.argv[1].slice(5);
+      if (kind === 'missing-region') delete invalid.nodes.actions;
+      if (kind === 'missing-csrf') delete invalid.body.dataset.csrf;
+      if (kind === 'missing-state') delete invalid.nodes.state;
+      if (kind === 'missing-input') invalid.nodes['task-form'].children = [];
+      if (kind === 'invalid-report') invalid.panel.children = [];
+      if (kind === 'duplicate-report')
+        invalid.nodes.reports.appendChild(new Element('duplicate', [new Element('pre')], {report:'qa'}));
+      const fail = async () => {
+        if (kind === 'network') throw Error('offline');
+        return {
+          ok:kind !== 'http',
+          text:async () => {
+            if (kind === 'body') throw Error('body interrupted');
+            return 'invalid';
+          },
+        };
+      };
+      document.input.value = '保留輸入 draft';
+      document.input.selectionStart = 2; document.input.selectionEnd = 5;
+      document.activeElement = document.input;
+      document.panel.open = true;
+      document.pre.scrollTop = 70; document.pre.scrollLeft = 5;
+      document.action.dataset.action = 'confirm-delivery';
+      const form = document.nodes['task-form'];
+      form.hidden = false;
+      next.nodes['task-form'].hidden = true;
+      stale.nodes['task-form'].hidden = true;
+      const preserved = () => {
+        assert.equal(document.nodes['task-form'], form);
+        assert.equal(form.hidden, false);
+        assert.equal(form.querySelector('textarea'), document.input);
+        assert.equal(document.input.value, '保留輸入 draft');
+        assert.equal(document.activeElement, document.input);
+        assert.equal(document.input.selectionStart, 2);
+        assert.equal(document.input.selectionEnd, 5);
+        assert.equal(document.nodes.reports.children[0], document.panel);
+        assert.equal(document.panel.open, true);
+        assert.equal(document.pre.scrollTop, 70);
+        assert.equal(document.pre.scrollLeft, 5);
+        assert.equal(document.nodes.git.innerHTML, 'impact-old');
+        assert.equal(document.nodes.git.dataset.snapshotId, 'old');
+        assert.equal(document.nodes.actions.innerHTML, 'actions-old');
+        assert.equal(document.nodes.actions.children[0], document.action);
+        assert.equal(document.action.dataset.action, 'confirm-delivery');
+        assert.equal(run('deliverySnapshotId'), 'old');
+        assert.equal(window.scrollX, 20); assert.equal(window.scrollY, 400);
+      };
+      const screen = () => [
+        ...['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports']
+          .map(id => document.nodes[id].innerHTML),
+        document.pre.innerHTML, run('csrf'), run('deliverySnapshotId'),
+      ];
+      const assertFailure = async (lastTimestamp, applications) => {
+        const before = screen();
+        const mutationCount = mutations.length;
+        clock += 60000;
+        request = fail;
+        await run('refresh()');
+        assert.equal(document.nodes['refresh-error'].textContent, '更新失敗，正在顯示上次資料');
+        assert.equal(document.nodes['last-refresh'].textContent, lastTimestamp);
+        assert.equal(timestampApplications.length, applications);
+        assert.deepEqual(screen(), before);
+        assert.equal(mutations.length, mutationCount);
+        preserved();
+      };
+      assert.equal(document.nodes['last-refresh'].textContent, '');
+      await assertFailure('', 0);
+      request = async () => response;
+      clock += 60000;
+      await run('refresh()');
+      const firstTimestamp = timestamp();
+      assert.equal(document.nodes['last-refresh'].textContent, firstTimestamp);
+      assert.equal(document.nodes['refresh-error'].textContent, '');
+      assert.equal(document.nodes.tasks.innerHTML, 'tasks-new');
+      assert.equal(document.pre.innerHTML, 'report-new');
+      assert.equal(run('csrf'), 'csrf-new');
+      assert.deepEqual(timestampApplications, ['phase-new']);
+      preserved();
+      await assertFailure(firstTimestamp, 1);
+      clock += 60000;
+      request = async () => ({ok:true, text:async () => 'stale'});
+      await run('refresh()');
+      assert.equal(document.nodes['refresh-error'].textContent, '');
+      assert.equal(document.nodes['last-refresh'].textContent, timestamp());
+      assert.notEqual(document.nodes['last-refresh'].textContent, firstTimestamp);
+      assert.equal(document.nodes.tasks.innerHTML, 'tasks-stale');
+      assert.equal(document.pre.innerHTML, 'report-stale');
+      assert.equal(run('csrf'), 'csrf-stale');
+      assert.deepEqual(timestampApplications, ['phase-new', 'phase-stale']);
+      preserved();
+      break;
+    }
+    case 'status-deferred': {
+      request = async () => { throw Error('offline'); };
+      await run('refresh()');
+      document.activeElement = document.nodes['workflow-status'];
+      request = async () => response;
+      await run('refresh()');
+      assert.equal(document.nodes['workflow-status'].innerHTML, 'phase-old');
+      assert.equal(document.nodes['last-refresh'].textContent, '');
+      assert.equal(document.nodes['refresh-error'].textContent, '更新失敗，正在顯示上次資料');
+      assert.equal(timestampApplications.length, 0);
+      document.activeElement = document.body;
+      await run('refresh()');
+      assert.equal(document.nodes['workflow-status'].innerHTML, 'phase-new');
+      assert.equal(document.nodes['last-refresh'].textContent, timestamp());
+      assert.equal(document.nodes['refresh-error'].textContent, '');
+      assert.deepEqual(timestampApplications, ['phase-new']);
+      break;
+    }
     case 'preserve': {
       document.input.value = '繁體中文 draft';
       document.input.selectionStart = 2; document.input.selectionEnd = 4;
@@ -99,7 +245,8 @@ const response = {ok:true, json:async()=>({}), text:async()=> 'new'};
     case 'delivery': {
       document.activeElement = document.action;
       await run('refresh()');
-      assert.equal(document.activeElement, next.action);
+      assert.equal(document.activeElement, document.action);
+      assert.equal(document.nodes.actions.innerHTML, 'actions-old');
       assert.equal(run('deliverySnapshotId'), 'new');
       request = async () => response;
       await run("post('/api/deliver', {confirm:true,snapshot_id:deliverySnapshotId})");
@@ -205,6 +352,17 @@ const response = {ok:true, json:async()=>({}), text:async()=> 'new'};
 @pytest.mark.parametrize(
     "case",
     [
+        "initial",
+        "flow-network",
+        "flow-http",
+        "flow-body",
+        "flow-missing-region",
+        "flow-missing-csrf",
+        "flow-missing-state",
+        "flow-missing-input",
+        "flow-invalid-report",
+        "flow-duplicate-report",
+        "status-deferred",
         "preserve",
         "delivery",
         "selection",
@@ -217,6 +375,7 @@ const response = {ok:true, json:async()=>({}), text:async()=> 'new'};
     ],
 )
 def test_gui_refresh_behavior(case):
+    """Run the production JavaScript offline against a simulated DOM."""
     node = shutil.which("node")
     if not node:
         pytest.skip(
@@ -233,3 +392,13 @@ def test_gui_refresh_behavior(case):
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("node_id", ["last-refresh", "refresh-error"])
+def test_gui_refresh_initial_markup_has_empty_accessible_status(node_id):
+    """Inspect rendered HTML without treating the DOM double as an HTML parser."""
+    page = render_page({"csrf": "csrf-old", "delivery_snapshot_id": "old"})
+    assert re.search(
+        rf'<p\b(?=[^>]*\bid="{node_id}")(?=[^>]*\brole="status")[^>]*>\s*</p>',
+        page,
+    )
