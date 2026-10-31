@@ -30,6 +30,7 @@ stateDiagram-v2
 Rules:
 
 - The shared model router only calls models and selects fallbacks.
+- AGY structured stages pass the response schema to native `--json-schema`; an empty final response is a contract failure even if the CLI reports SUCCESS. Strict JSON contract failures stop without an automatic paid fallback. File-block stages do not receive a JSON schema.
 - Only IMPLEMENTING requires file-marker blocks.
 - Manager tasks must modify project files; planning and inspection are not implementation tasks.
 - A rejected plan never enters IMPLEMENTING automatically.

@@ -1072,6 +1072,7 @@ class AgentOrchestrator:
         system_prompt: str | None = None,
         role: str = "developer",
         model: str | None = None,
+        response_schema: dict | None = None,
     ) -> str:
         from orchestrator.core import backends
 
@@ -1082,7 +1083,18 @@ class AgentOrchestrator:
             selected_model,
             prompt,
             system_prompt,
-            lambda: backends.call_agy(self, prompt, system_prompt, role, model),
+            lambda: backends.call_agy(
+                self,
+                prompt,
+                system_prompt,
+                role,
+                model,
+                **(
+                    {"response_schema": response_schema}
+                    if response_schema is not None
+                    else {}
+                ),
+            ),
         )
 
     def token_fallback_model(self, role: str, error: Exception) -> str | None:
@@ -1404,7 +1416,15 @@ class AgentOrchestrator:
                 )
             if backend == "agy":
                 return self.call_agy(
-                    request_prompt, system_prompt, role=role, model=model
+                    request_prompt,
+                    system_prompt,
+                    role=role,
+                    model=model,
+                    **(
+                        {"response_schema": response_schema}
+                        if response_schema is not None
+                        else {}
+                    ),
                 )
             raise ValueError(f"Unsupported backend in route: {backend}")
 
@@ -1621,13 +1641,34 @@ class AgentOrchestrator:
             if not backends.backend_available(self, "agy"):
                 return self.call_agent_ollama_fallback(role, prompt, system_prompt)
             try:
-                return self.call_agy(prompt, system_prompt, role=role)
+                return self.call_agy(
+                    prompt,
+                    system_prompt,
+                    role=role,
+                    **(
+                        {"response_schema": response_schema}
+                        if response_schema is not None
+                        else {}
+                    ),
+                )
             except Exception as e:
+                if response_schema is not None and isinstance(e, ResponseContractError):
+                    raise RuntimeError(
+                        f"Strict JSON contract failed for {role}: {e}"
+                    ) from e
                 fallback_model = self.token_fallback_model(role, e)
                 if fallback_model:
                     try:
                         return self.call_agy(
-                            prompt, system_prompt, role=role, model=fallback_model
+                            prompt,
+                            system_prompt,
+                            role=role,
+                            model=fallback_model,
+                            **(
+                                {"response_schema": response_schema}
+                                if response_schema is not None
+                                else {}
+                            ),
                         )
                     except Exception as retry_error:
                         e = retry_error

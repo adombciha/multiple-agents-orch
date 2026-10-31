@@ -161,6 +161,8 @@ class ManagerAgent(BaseAgent):
             "The original request below is authoritative: preserve its requested deliverables and file paths. "
             "Saved workflow status, human reports and earlier execution errors are diagnostics, not new requirements. "
             "Do not replace the requested implementation with investigation of a previous workflow failure. "
+            "Use only the supplied original request and advisory notes; do not inspect the environment, "
+            "run commands, invoke tools or ask for interactive confirmation in this requirements stage. "
             "Output only one valid JSON object matching this schema:\n"
             f"{json.dumps(REQUIREMENTS_SCHEMA)}\n"
             "Do not output Markdown, code fences, explanations, progress messages, or prose."

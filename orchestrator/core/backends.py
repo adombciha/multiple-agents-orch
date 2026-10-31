@@ -596,8 +596,9 @@ def call_agy(
     system_prompt: str | None = None,
     role: str = "developer",
     model: str | None = None,
+    response_schema: dict | None = None,
 ) -> str:
-    from orchestrator.core.state import log_info
+    from orchestrator.core.state import log_info, ResponseContractError
 
     full_prompt = ""
     if system_prompt:
@@ -615,6 +616,12 @@ def call_agy(
             "\n\nDo not edit files directly or use workspace tools. "
             "Return only the machine-readable file blocks required by the task."
         )
+    if response_schema is not None:
+        full_prompt += (
+            "\n\nThis is a structured-response stage. Use only the context supplied in this request. "
+            "Do not run commands, inspect the filesystem, invoke tools, create artifacts, "
+            "or request interactive confirmation. Return the final JSON response matching the supplied schema."
+        )
 
     cmd = ["agy", "--sandbox", "--mode", mode]
     model = model or orchestrator.get_active_model_for_role(role, "agy")
@@ -627,9 +634,14 @@ def call_agy(
     orchestrator._resolved_cloud_model = model
     if model:
         cmd.extend(["--model", model])
+    if response_schema is not None:
+        cmd.extend(["--json-schema", json.dumps(response_schema, ensure_ascii=False)])
     cmd.extend(["--input-format", "stream-json", "--output-format", "stream-json"])
 
-    log_info(f"Running agy: {' '.join(cmd)} ...")
+    display_cmd = list(cmd)
+    if response_schema is not None:
+        display_cmd[display_cmd.index("--json-schema") + 1] = "<schema>"
+    log_info(f"Running agy: {' '.join(display_cmd)} ...")
     result = subprocess.run(
         cmd,
         cwd=orchestrator.agent_workspace(),
@@ -660,6 +672,11 @@ def call_agy(
                 and final.get("status") == "SUCCESS"
                 and isinstance(final.get("response"), str)
             ):
+                if not final["response"].strip():
+                    raise ResponseContractError(
+                        "agy CLI output contract failed: SUCCESS with an empty final response. "
+                        "Inspect the AGY CLI log for denied tool confirmations or an interrupted turn."
+                    )
                 return final["response"]
             raise RuntimeError(f"agy CLI returned unsuccessful result: {final}")
     raise RuntimeError("agy CLI returned no result event")
