@@ -425,17 +425,7 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             "Confirmed delivery snapshot is valid; attempting the scheduled Git merge."
         )
         if not self.orchestrator.cleanup_worktree(merge=operation == "merge"):
-            log_warning(
-                "Delivery failed during Git merge. Preserving the feature worktree and queuing repair."
-            )
-            for key in (
-                "presented_delivery_snapshot",
-                "delivery_preview",
-                "delivery_preview_presented",
-                "delivery_confirmed",
-            ):
-                self.orchestrator.state.pop(key, None)
-            self.orchestrator.queue_worktree_repair_task()
+            self._handle_delivery_failure()
             return
 
         delivery = self.orchestrator.state.setdefault("delivery", {})
@@ -451,6 +441,46 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             self.orchestrator.state.pop(key, None)
         self.orchestrator.save_state()
         log_success("Final artifacts delivered and merged successfully.")
+
+    def _handle_delivery_failure(self):
+        from orchestrator.core.state import log_warning
+
+        for key in (
+            "presented_delivery_snapshot",
+            "delivery_preview",
+            "delivery_preview_presented",
+            "delivery_confirmed",
+        ):
+            self.orchestrator.state.pop(key, None)
+        stage = self.orchestrator.state.get("worktree_failure_stage")
+        error = self.orchestrator.state.get(
+            "worktree_merge_error", "Git delivery failed before completion."
+        )
+        if stage == "merge" and self.orchestrator.state.get("worktree_conflict_files"):
+            log_warning(
+                "Git merge conflict; preserving the worktree and queuing scoped repair."
+            )
+            self.orchestrator.queue_worktree_repair_task()
+        elif (
+            stage == "commit"
+            and self.orchestrator._checked_git_output(
+                ["diff", "--name-only"], self.orchestrator._delivery_workspace()
+            ).strip()
+        ):
+            self.orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
+            self.orchestrator.create_delivery_preview(
+                self.orchestrator.delivery_operation()
+            )
+            log_warning(
+                "Commit hook changed files. Review the refreshed Git impact and confirm again; no RD repair was queued."
+            )
+        else:
+            self.orchestrator.pause_for_human_review(
+                "Orchestrator",
+                f"Git delivery failed at {stage or 'setup/cleanup'}; worktree preserved.\n{error}",
+                "WAITING_FOR_DELIVERY",
+                "WAITING_FOR_DELIVERY",
+            )
 
     def step_completed(self):
         from orchestrator.core.state import (
@@ -631,12 +661,7 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             delivery["token"] = None
             delivery["preview"] = ""
             self.orchestrator.save_state()
-            task = self.orchestrator.queue_worktree_repair_task()
-            log_warning(
-                "Found undelivered worktree in COMPLETED state. Returning to WAITING_FOR_DELIVERY."
-            )
-            self.orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
-            self.orchestrator.save_state()
+            self._handle_delivery_failure()
             return
 
         delivery["delivered"] = True

@@ -5514,6 +5514,7 @@ def test_manager_queues_rd_task_after_worktree_merge_failure(
         "docs/litellm-telemetry.md"
     ]
     initialized_orchestrator.state["worktree_merge_error"] = "merge conflict"
+    initialized_orchestrator.state["worktree_failure_stage"] = "merge"
     monkeypatch.setattr(
         initialized_orchestrator.manager, "call_manager", Mock(return_value="summary")
     )

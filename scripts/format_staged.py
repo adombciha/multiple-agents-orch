@@ -25,32 +25,20 @@ def git_paths(*args):
     return [Path(os.fsdecode(path)) for path in output.split(b"\0") if path]
 
 
-def main():
-    root = Path(
-        subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"], text=True
-        ).strip()
-    )
-    os.chdir(root)
+def format_files(root, paths):
+    """Format working files without staging them or changing process cwd."""
     files = [
         path
-        for path in git_paths("--cached", "--diff-filter=ACMR")
+        for path in paths
         if path.suffix.lower() in PRETTIER_SUFFIXES | {".py", ".pyi"}
-        and not path.is_symlink()
+        and not (root / path).is_symlink()
     ]
     if not files:
         return 0
-    partial = set(files) & set(git_paths())
-    if partial:
-        print(
-            "Formatter stopped: these staged files also have unstaged changes. Format and stage them explicitly:",
-            file=sys.stderr,
-        )
-        for path in sorted(partial):
-            print(f"  {path}", file=sys.stderr)
-        return 1
     for path in files:
-        if not path.is_file() or not path.resolve().is_relative_to(root):
+        if not (root / path).is_file() or not (root / path).resolve().is_relative_to(
+            root
+        ):
             print(
                 f"Formatter stopped: invalid working-tree path: {path}", file=sys.stderr
             )
@@ -89,13 +77,40 @@ def main():
             *[f"./{path}" for path in paths],
         ]
     for command in commands.values():
-        result = subprocess.run(command, check=False)
+        result = subprocess.run(command, check=False, cwd=root)
         if result.returncode:
             print(
                 "Formatter failed. Review working-tree changes before retrying; the index was not updated.",
                 file=sys.stderr,
             )
             return 1
+    return 0
+
+
+def main():
+    root = Path(
+        subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"], text=True
+        ).strip()
+    )
+    os.chdir(root)
+    files = [
+        path
+        for path in git_paths("--cached", "--diff-filter=ACMR")
+        if path.suffix.lower() in PRETTIER_SUFFIXES | {".py", ".pyi"}
+        and not path.is_symlink()
+    ]
+    partial = set(files) & set(git_paths())
+    if partial:
+        print(
+            "Formatter stopped: these staged files also have unstaged changes. Format and stage them explicitly:",
+            file=sys.stderr,
+        )
+        for path in sorted(partial):
+            print(f"  {path}", file=sys.stderr)
+        return 1
+    if format_files(root, files):
+        return 1
     if set(files) & set(git_paths()):
         print(
             "Files were formatted. Review the diff, stage the formatted files, then retry the commit.",

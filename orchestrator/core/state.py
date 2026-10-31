@@ -711,15 +711,20 @@ class AgentOrchestrator:
 
         current = self._build_delivery_preview(operation)
         if current != preview:
-            self.state["delivery_preview"] = deepcopy(current)
-            self.state["delivery_preview_presented"] = False
-            self.state["delivery_confirmed"] = False
-            self.state.pop("presented_delivery_snapshot", None)
-            self.save_state()
-            preview = current
+            return self.create_delivery_preview(operation)
         return deepcopy(preview)
 
     def create_delivery_preview(self, operation: str = "merge") -> dict:
+        if self.state.get("delivery_preview") or self.state.get("delivery_confirmed"):
+            for key in (
+                "delivery_preview",
+                "delivery_confirmed",
+                "delivery_preview_presented",
+                "presented_delivery_snapshot",
+            ):
+                self.state.pop(key, None)
+            self.save_state()
+        self.prepare_delivery_formatting()
         preview = self._build_delivery_preview(operation)
         self.state["delivery_preview"] = deepcopy(preview)
         self.state["delivery_preview_presented"] = False
@@ -727,6 +732,41 @@ class AgentOrchestrator:
         self.state.pop("presented_delivery_snapshot", None)
         self.save_state()
         return deepcopy(preview)
+
+    def prepare_delivery_formatting(self):
+        """Apply this project's formatter before binding a delivery snapshot."""
+        cwd = self._delivery_workspace()
+        code, output = self.run_command(
+            ["git", "config", "--path", "--get", "core.hooksPath"], cwd=cwd
+        )
+        if code == 1:
+            return
+        if code != 0:
+            raise RuntimeError(f"Cannot inspect delivery hooks: {output}")
+        hooks = Path(self._git_stdout(output).strip())
+        hook = cwd / hooks / "pre-commit"
+        if not hook.is_file() or "scripts/format_staged.py" not in hook.read_text(
+            encoding="utf-8"
+        ):
+            return
+        from scripts.format_staged import format_files
+
+        paths = self._checked_git_output(
+            ["diff", "HEAD", "--name-only", "--diff-filter=ACMR", "-z"], cwd
+        ).split("\0")
+        paths += self._checked_git_output(
+            ["ls-files", "--others", "--exclude-standard", "-z"], cwd
+        ).split("\0")
+        try:
+            result = format_files(
+                cwd, [Path(path) for path in sorted(set(paths)) if path]
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"Delivery formatting failed: {error}") from error
+        if result:
+            raise RuntimeError(
+                "Delivery formatting failed; worktree preserved and index unchanged. Review formatter output before retrying delivery."
+            )
 
     def capture_delivery_preview(self, operation: str = "merge") -> dict:
         return self.create_delivery_preview(operation)
@@ -1799,6 +1839,12 @@ class AgentOrchestrator:
     def cleanup_worktree(self, merge=False):
         """Cleans up the git worktree, optionally merging the changes back first."""
         wt_path = self.ai_dir / "worktree"
+        for key in (
+            "worktree_failure_stage",
+            "worktree_merge_error",
+            "worktree_conflict_files",
+        ):
+            self.state.pop(key, None)
         worktree_exists = wt_path.exists() or wt_path.is_symlink()
         if not self.config.get("use_worktree", True) or not self.has_git:
             if not worktree_exists:
@@ -1853,6 +1899,9 @@ class AgentOrchestrator:
                     code, output = self.run_command(["git", "add", "."], cwd=wt_path)
                     if code != 0:
                         log_error(f"Failed to stage feature worktree: {output}")
+                        self.state.update(
+                            worktree_failure_stage="stage", worktree_merge_error=output
+                        )
                         return False
                     code, output = self.run_command(
                         ["git", "commit", "-m", "AI Auto-commit before merge"],
@@ -1860,6 +1909,9 @@ class AgentOrchestrator:
                     )
                     if code != 0:
                         log_error(f"Failed to commit feature worktree: {output}")
+                        self.state.update(
+                            worktree_failure_stage="commit", worktree_merge_error=output
+                        )
                         return False
 
                 code, output = self.run_command(
@@ -1884,6 +1936,7 @@ class AgentOrchestrator:
                         conflict_files = re.findall(r"Merge conflict in (.+)", output)
                     self.state["worktree_conflict_files"] = conflict_files
                     self.state["worktree_merge_error"] = output
+                    self.state["worktree_failure_stage"] = "merge"
                     self.run_command(["git", "merge", "--abort"], cwd=self.workspace)
                     self.save_state()
                     log_warning(
