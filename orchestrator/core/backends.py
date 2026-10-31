@@ -24,8 +24,13 @@ _tev1_routing_warning_logged = False
 
 
 def resolve_agy_model(model: str) -> str:
+    from orchestrator.core.cloud_routing import cloud_model_allowed
+
     if not model.startswith("auto:"):
-        return AGY_MODEL_ALIASES.get(model, model)
+        resolved = AGY_MODEL_ALIASES.get(model, model)
+        if not cloud_model_allowed(resolved):
+            raise RuntimeError(f"AGY model is prohibited or unresolved: {resolved!r}")
+        return resolved
 
     global _agy_models_cache
     if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 300:
@@ -57,7 +62,7 @@ def resolve_agy_model(model: str) -> str:
     matches = (
         (tuple(map(int, re.split(r"[.-]", match.group(1)))), name)
         for name in _agy_models_cache[1]
-        if (match := pattern.fullmatch(name))
+        if cloud_model_allowed(name) and (match := pattern.fullmatch(name))
     )
     try:
         return max(matches)[1]
@@ -530,15 +535,12 @@ def call_codex(
     model: str | None = None,
 ) -> str:
     from orchestrator.core.state import log_info
+    from orchestrator.core.cloud_routing import cloud_model_allowed, select_codex_model
 
     full_prompt = ""
     if system_prompt:
         full_prompt += f"System Instructions:\n{system_prompt}\n\n"
     full_prompt += prompt
-
-    temp_prompt_file = orchestrator.ai_dir / "temp_codex_prompt.txt"
-    with open(temp_prompt_file, "w", encoding="utf-8") as f:
-        f.write(full_prompt)
 
     cmd = [
         "codex",
@@ -552,16 +554,20 @@ def call_codex(
     if role.startswith("developer") and model != "auto" and not model.endswith("-luna"):
         raise RuntimeError("Developer Codex route requires a Luna model")
     effort = orchestrator.config.get("reasoning_effort", {}).get(role)
-    if model == "auto":
-        from orchestrator.core.cloud_routing import select_codex_model
-
+    if not model or model == "auto":
         model, effort = select_codex_model(orchestrator, role, prompt)
+    if not cloud_model_allowed(model):
+        raise RuntimeError(f"Codex model is prohibited or unresolved: {model!r}")
     orchestrator._resolved_cloud_model = model
     if model and model != "auto":
         cmd.extend(["-m", model])
     if effort:
         cmd.extend(["-c", f"model_reasoning_effort={effort!r}"])
     cmd.append("-")
+
+    temp_prompt_file = orchestrator.ai_dir / "temp_codex_prompt.txt"
+    with open(temp_prompt_file, "w", encoding="utf-8") as f:
+        f.write(full_prompt)
 
     log_info(f"Running Codex: {' '.join(cmd)}")
     try:
@@ -643,6 +649,7 @@ def call_agy(
     response_schema: dict | None = None,
 ) -> str:
     from orchestrator.core.state import log_info, ResponseContractError
+    from orchestrator.core.cloud_routing import cloud_model_allowed
 
     full_prompt = ""
     if system_prompt:
@@ -676,6 +683,8 @@ def call_agy(
         model = select_agy_model(orchestrator, role, prompt, model)
     if model:
         model = resolve_agy_model(model)
+    if not cloud_model_allowed(model):
+        raise RuntimeError(f"AGY model is prohibited or unresolved: {model!r}")
     orchestrator._resolved_cloud_model = model
     if model:
         cmd.extend(["--model", model])
@@ -742,6 +751,7 @@ def call_agy(
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
+    from orchestrator.core.cloud_routing import cloud_model_allowed
 
     message = str(error).lower()
     if not quota_exhausted(error) and not any(
@@ -757,8 +767,12 @@ def token_fallback_model(orchestrator, role: str, error: Exception) -> str | Non
     tiers = orchestrator.config.get("role_model_tiers", {}).get(role, [])
     if len(tiers) < 2:
         return None
-    log_warning(f"[!] Retrying {role} with {tiers[1]} after capacity failure.")
-    return tiers[1]
+    for model in tiers[1:]:
+        if model != "auto" and not cloud_model_allowed(model.removeprefix("auto:")):
+            continue
+        log_warning(f"[!] Retrying {role} with {model} after capacity failure.")
+        return model
+    return None
 
 
 def quota_exhausted(error: Exception) -> bool:

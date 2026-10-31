@@ -1,10 +1,19 @@
 """Resolve cloud CLI auto routes from their live catalogs with Tev1 scoring."""
 
 import json
+import re
 import subprocess
 import time
 
 _codex_catalog_cache = None
+
+
+def cloud_model_allowed(model: str | None) -> bool:
+    return bool(model and model != "auto" and not model.startswith("auto:")) and not {
+        "fabel",
+        "argon",
+        "astra",
+    }.intersection(re.findall(r"[a-z0-9]+", model.casefold()))
 
 
 def discover_codex_models() -> dict[str, dict]:
@@ -47,9 +56,18 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
     if cache is None:
         cache = orchestrator._cloud_route_choices = {}
     key = ("codex", role, summary)
-    if key in cache:
+    if (
+        key in cache
+        and cloud_model_allowed(cache[key][0])
+        and (not role.startswith("developer") or cache[key][0].endswith("-luna"))
+    ):
         return cache[key]
-    models = discover_codex_models()
+    cache.pop(key, None)
+    models = {
+        slug: entry
+        for slug, entry in discover_codex_models().items()
+        if cloud_model_allowed(slug)
+    }
     if role.startswith("developer"):
         models = {
             slug: entry for slug, entry in models.items() if slug.endswith("-luna")
@@ -57,7 +75,9 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
         if not models:
             raise RuntimeError("No available Luna model for Developer Codex route")
     if not models:
-        return "auto", fallback_effort
+        raise RuntimeError(
+            "No allowed Codex models available; refusing an implicit CLI default"
+        )
     descriptions = {
         slug: entry.get("description") or entry.get("display_name")
         for slug, entry in models.items()
@@ -70,11 +90,7 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
         criteria=descriptions,
         require_installed=False,
     )
-    if not ranked:
-        if role.startswith("developer"):
-            ranked = list(models)
-        else:
-            return "auto", fallback_effort
+    ranked = [slug for slug in (ranked or []) if slug in models] or list(models)
     model = ranked[0]
     efforts = {
         level["effort"]: level.get("description")
@@ -107,6 +123,8 @@ def select_agy_model(orchestrator, role: str, prompt: str, selector: str) -> str
     from orchestrator.core import backends
     from orchestrator.core.state import log_info
 
+    if not cloud_model_allowed(selector.removeprefix("auto:")):
+        raise RuntimeError(f"AGY model is prohibited or unresolved: {selector!r}")
     if not selector.startswith("auto:"):
         return selector
     family, _, fallback_effort = selector.removeprefix("auto:").rpartition("-")
@@ -117,18 +135,21 @@ def select_agy_model(orchestrator, role: str, prompt: str, selector: str) -> str
     if cache is None:
         cache = orchestrator._cloud_route_choices = {}
     key = ("agy", role, summary, selector)
-    if key in cache:
+    if key in cache and cloud_model_allowed(cache[key]):
         return cache[key]
+    cache.pop(key, None)
     candidates = []
     for effort in ("low", "medium", "high"):
         try:
             model = backends.resolve_agy_model(f"auto:{family}-{effort}")
         except RuntimeError:
             continue
-        if model not in candidates:
+        if cloud_model_allowed(model) and model not in candidates:
             candidates.append(model)
     if len(candidates) < 2:
-        return candidates[0] if candidates else selector
+        if not candidates:
+            raise RuntimeError(f"No allowed AGY model available for {selector}")
+        return candidates[0]
     ranked = backends.route_ollama_model_with_tev1(
         orchestrator,
         role,
@@ -140,8 +161,7 @@ def select_agy_model(orchestrator, role: str, prompt: str, selector: str) -> str
         },
         require_installed=False,
     )
-    if not ranked:
-        return selector
+    ranked = [model for model in (ranked or []) if model in candidates] or candidates
     log_info(f"Runtime AGY selection for {role}: {ranked[0]}.")
     cache[key] = ranked[0]
     return cache[key]

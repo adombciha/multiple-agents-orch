@@ -508,7 +508,7 @@ def test_tev1_can_choose_local_before_cloud_for_configured_role(
     agy.assert_not_called()
 
 
-def test_cloud_auto_keeps_original_selection_when_router_is_unavailable(
+def test_cloud_auto_uses_allowed_catalog_model_when_router_is_unavailable(
     initialized_orchestrator, monkeypatch
 ):
     models = {
@@ -525,7 +525,7 @@ def test_cloud_auto_keeps_original_selection_when_router_is_unavailable(
 
     assert cloud_routing.select_codex_model(
         initialized_orchestrator, "reviewer", "task"
-    ) == ("auto", "medium")
+    ) == ("gpt-6.1-sol", "medium")
 
 
 def test_cloud_usage_records_resolved_model(initialized_orchestrator, monkeypatch):

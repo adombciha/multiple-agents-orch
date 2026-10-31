@@ -31,6 +31,7 @@ Rules:
 
 - The shared model router only calls models and selects fallbacks.
 - AGY structured stages pass the response schema to native `--json-schema`; an empty final response is a contract failure even if the CLI reports SUCCESS. Strict JSON contract failures stop without an automatic paid fallback. File-block stages do not receive a JSON schema.
+- All roles exclude the Argon (AGY), Fabel (Claude), and Astra (Codex) model families before cloud scoring and at CLI launch. Cached choices, explicit models, aliases, and capacity fallbacks obey the same rule. Developer Codex routes remain Luna-only. An unavailable router uses an allowed live-catalog candidate; an empty allowed catalog stops that route rather than using an implicit CLI default.
 - Only IMPLEMENTING requires file-marker blocks.
 - Manager tasks must modify project files; planning and inspection are not implementation tasks.
 - A rejected plan never enters IMPLEMENTING automatically.
