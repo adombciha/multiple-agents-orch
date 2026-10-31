@@ -1509,6 +1509,10 @@ class AgentOrchestrator:
                         if not validation_error:
                             break
                 if validation_error:
+                    if backend == "agy" and response_schema is not None:
+                        raise backends.agy_contract_error(
+                            self, validation_error, response
+                        )
                     raise ResponseContractError(validation_error)
                 return response
             except Exception as error:

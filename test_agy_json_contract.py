@@ -8,14 +8,18 @@ import pytest
 from orchestrator.core import backends
 from orchestrator.roles.base_agent import is_strict_json_response
 from orchestrator.roles.manager import SALES_SELECTION_SCHEMA
+from orchestrator.roles.developer import TASK_PLAN_SCHEMA, is_task_plan_response
 from test_orchestrator import initialized_orchestrator, no_git, restore_default_config
 
 
-def agy_result(response):
+def agy_result(response, **fields):
     return Mock(
         returncode=0,
         stdout=json.dumps(
-            {"event": "result", "result": {"status": "SUCCESS", "response": response}}
+            {
+                "event": "result",
+                "result": {"status": "SUCCESS", "response": response, **fields},
+            }
         )
         + "\n",
         stderr="",
@@ -58,6 +62,9 @@ def test_schema_reaches_native_agy_cli_through_routing(
     prompt = json.loads(run.call_args.kwargs["input"])["message"]["content"]
     assert "Do not run commands" in prompt
     assert "request interactive confirmation" in prompt
+    assert "finish tool is permitted and must be used" in prompt
+    assert "Do not use other tools" in prompt
+    assert "invoke tools" not in prompt
     log = capsys.readouterr().out
     assert "--json-schema <schema>" in log
     assert '"additionalProperties"' not in log
@@ -83,6 +90,7 @@ def test_empty_agy_result_stops_without_fallback_and_records_failure(
             response_schema=SALES_SELECTION_SCHEMA,
         )
     run.assert_called_once()
+
     fallback.assert_not_called()
     records = [
         json.loads(line)
@@ -90,6 +98,112 @@ def test_empty_agy_result_stops_without_fallback_and_records_failure(
     ]
     assert records[-1]["success"] is False
     assert records[-1]["error_category"] == "contract"
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_native_structured_output_takes_precedence(
+    initialized_orchestrator, monkeypatch, encoded
+):
+    app = initialized_orchestrator
+    configure_routes(app)
+    data = {
+        "tasks": [{"id": "T1", "target_files": ["answer.py"]}],
+        "staffing": {},
+        "specialists": [],
+    }
+    run = Mock(
+        return_value=agy_result(
+            "Summary text that is not JSON.",
+            structured_output=json.dumps(data) if encoded else data,
+        )
+    )
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    response = app.call_role_model_routes(
+        "manager",
+        "Task",
+        response_validator=is_task_plan_response,
+        response_schema=TASK_PLAN_SCHEMA,
+    )
+    assert json.loads(response) == data
+    run.assert_called_once()
+    assert not (app.ai_dir / "diagnostics").exists()
+
+
+def test_identical_planner_and_finish_json_are_accepted(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    configure_routes(app)
+    data = {"tasks": [{"id": "T1"}], "staffing": {}, "specialists": []}
+    response = json.dumps(data, indent=2) + "\n\n" + json.dumps(data, sort_keys=True)
+    run = Mock(return_value=agy_result(response))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    assert (
+        json.loads(
+            app.call_role_model_routes(
+                "manager",
+                "Task",
+                response_validator=is_task_plan_response,
+                response_schema=TASK_PLAN_SCHEMA,
+            )
+        )
+        == data
+    )
+    run.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "response,fields",
+    [
+        ('{"use_sales": false}\n{"use_sales": true}', {}),
+        ('prefix {"use_sales": false}', {}),
+        ('{"use_sales": false} trailing explanation', {}),
+        ('```json\n{"use_sales": false}\n```', {}),
+        ('{"use_sales": false}', {"structured_output": "not JSON"}),
+        ('{"use_sales": false}', {"structured_output": {"tasks": "not an array"}}),
+    ],
+)
+def test_invalid_structured_result_stops_and_saves_private_diagnostic(
+    initialized_orchestrator, monkeypatch, response, fields
+):
+    app = initialized_orchestrator
+    configure_routes(app)
+    run = Mock(return_value=agy_result(response, **fields))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    fallback = Mock()
+    monkeypatch.setattr(app, "call_codex", fallback)
+    validator = (
+        is_task_plan_response
+        if fields.get("structured_output") == {"tasks": "not an array"}
+        else is_strict_json_response
+    )
+    with pytest.raises(
+        RuntimeError, match="Strict JSON contract failed.*Diagnostic saved to"
+    ):
+        app.call_role_model_routes(
+            "manager",
+            "Task",
+            response_validator=validator,
+            response_schema=TASK_PLAN_SCHEMA
+            if validator is is_task_plan_response
+            else SALES_SELECTION_SCHEMA,
+        )
+    run.assert_called_once()
+    fallback.assert_not_called()
+    diagnostics = list((app.ai_dir / "diagnostics").glob("agy-contract-*.json"))
+    assert len(diagnostics) == 1
+    assert diagnostics[0].stat().st_mode & 0o777 == 0o600
+    diagnostic = json.loads(diagnostics[0].read_text())
+    assert diagnostic["error"]
+    assert diagnostic["output"]
+
+
+def test_file_blocks_ignore_structured_output(initialized_orchestrator, monkeypatch):
+    app = initialized_orchestrator
+    response = "[FILE_START: answer.py]\nvalue = 1\n[FILE_END: answer.py]"
+    run = Mock(return_value=agy_result(response, structured_output={"unrelated": True}))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    assert app.call_agy("Task", model="test-model") == response
 
 
 def test_invalid_nonempty_json_still_stops_without_correction(

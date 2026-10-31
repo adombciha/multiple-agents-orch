@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 import requests
@@ -590,6 +591,49 @@ def call_codex(
         raise e
 
 
+def agy_contract_error(orchestrator, message: str, output: str):
+    from orchestrator.core.state import ResponseContractError
+
+    try:
+        directory = orchestrator.ai_dir / "diagnostics"
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="agy-contract-",
+            suffix=".json",
+            dir=directory,
+            delete=False,
+        ) as diagnostic:
+            json.dump(
+                {"error": message, "output": output}, diagnostic, ensure_ascii=False
+            )
+            message += f" Diagnostic saved to {diagnostic.name}"
+    except OSError as error:
+        message += f" Could not save diagnostic: {error}"
+    return ResponseContractError(message)
+
+
+def agy_json_response(response: str) -> str:
+    decoder = json.JSONDecoder()
+    remaining = response.strip()
+    if not remaining:
+        raise ValueError("SUCCESS with an empty final response")
+    value, end = decoder.raw_decode(remaining)
+    canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    remaining = remaining[end:].strip()
+    # AGY can concatenate the planner JSON and the identical finish-tool result.
+    while remaining:
+        repeated, end = decoder.raw_decode(remaining)
+        if (
+            json.dumps(repeated, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            != canonical
+        ):
+            raise ValueError("Conflicting JSON values in AGY final response")
+        remaining = remaining[end:].strip()
+    return canonical
+
+
 def call_agy(
     orchestrator,
     prompt: str,
@@ -619,8 +663,9 @@ def call_agy(
     if response_schema is not None:
         full_prompt += (
             "\n\nThis is a structured-response stage. Use only the context supplied in this request. "
-            "Do not run commands, inspect the filesystem, invoke tools, create artifacts, "
-            "or request interactive confirmation. Return the final JSON response matching the supplied schema."
+            "Do not run commands, inspect the filesystem, create artifacts, "
+            "or request interactive confirmation. The AGY finish tool is permitted and must be used "
+            "to submit the final JSON matching the supplied schema. Do not use other tools."
         )
 
     cmd = ["agy", "--sandbox", "--mode", mode]
@@ -667,17 +712,30 @@ def call_agy(
             continue
         if isinstance(event, dict) and event.get("event") == "result":
             final = event.get("result", {})
-            if (
-                isinstance(final, dict)
-                and final.get("status") == "SUCCESS"
-                and isinstance(final.get("response"), str)
-            ):
-                if not final["response"].strip():
-                    raise ResponseContractError(
-                        "agy CLI output contract failed: SUCCESS with an empty final response. "
-                        "Inspect the AGY CLI log for denied tool confirmations or an interrupted turn."
-                    )
-                return final["response"]
+            if isinstance(final, dict) and final.get("status") == "SUCCESS":
+                if response_schema is not None:
+                    try:
+                        if "structured_output" in final:
+                            structured = final["structured_output"]
+                            if isinstance(structured, str):
+                                structured = json.loads(structured)
+                            return json.dumps(
+                                structured, ensure_ascii=False, allow_nan=False
+                            )
+                        return agy_json_response(final.get("response", ""))
+                    except (TypeError, ValueError, AttributeError) as error:
+                        raise agy_contract_error(
+                            orchestrator,
+                            f"agy CLI output contract failed: {error}",
+                            result.stdout,
+                        ) from error
+                if isinstance(final.get("response"), str):
+                    if not final["response"].strip():
+                        raise ResponseContractError(
+                            "agy CLI output contract failed: SUCCESS with an empty final response. "
+                            "Inspect the AGY CLI log for denied tool confirmations or an interrupted turn."
+                        )
+                    return final["response"]
             raise RuntimeError(f"agy CLI returned unsuccessful result: {final}")
     raise RuntimeError("agy CLI returned no result event")
 
