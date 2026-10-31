@@ -654,7 +654,11 @@ def render_page(status: dict) -> str:
             )
         else:
             button(
-                "重試 QA 驗證" if source == "QA_RESPONSE" else "繼續目前任務",
+                "重新產生需求"
+                if source == "Requirements"
+                else "重試 QA 驗證"
+                if source == "QA_RESPONSE"
+                else "繼續目前任務",
                 "continue",
             )
             if source in {"Developer", "Orchestrator"}:

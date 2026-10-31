@@ -35,6 +35,7 @@ Rules:
 - A rejected plan never enters IMPLEMENTING automatically.
 - Owner-requested Architect/Manager revisions retain feedback independently of retry counters until the replacement plan is saved successfully.
 - Invalid QA output is not a defect vote. One correction is allowed; exhaustion pauses at TESTING with source QA_RESPONSE, without creating a fix task or penalizing Developer. Non-zero test exit codes still block passing.
+- Explicit Python/Markdown deliverables in the original request are checked before requirements are saved and before planning calls a model. Missing files pause with source Requirements; continue retries PLANNING. Reference-only material and explicitly forbidden files are not deliverables. This is a filename coverage check, not a semantic equivalence proof.
 - Reviewer approval does not merge changes. A Git preview must be explicitly confirmed with `deliver --confirm <token>`; a changed preview requires a new confirmation.
 - `run` and `continue` never bypass delivery confirmation. Research workflows complete without a Git delivery step.
 - State snapshots are written atomically; CLI writers are serialized by the shared run lock, while `pause` is recorded separately and consumed at a step boundary.

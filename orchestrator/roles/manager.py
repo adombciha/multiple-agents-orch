@@ -7,6 +7,7 @@ from orchestrator.roles.base_agent import (
     BaseAgent,
     extract_json_response,
     is_strict_json_response,
+    missing_request_files,
 )
 from orchestrator.core import scoring, brain
 
@@ -157,11 +158,14 @@ class ManagerAgent(BaseAgent):
         system_prompt = (
             "You are the Project Manager of an AI software company. "
             "Convert the request into a structured requirements object. "
+            "The original request below is authoritative: preserve its requested deliverables and file paths. "
+            "Saved workflow status, human reports and earlier execution errors are diagnostics, not new requirements. "
+            "Do not replace the requested implementation with investigation of a previous workflow failure. "
             "Output only one valid JSON object matching this schema:\n"
             f"{json.dumps(REQUIREMENTS_SCHEMA)}\n"
             "Do not output Markdown, code fences, explanations, progress messages, or prose."
         )
-        requirements_prompt = f"{request}\n\nSales Notes:\n{sales_notes or 'No sales consultation required.'}"
+        requirements_prompt = f"Original request (authoritative):\n{request}\n\nSales Notes (advisory only):\n{sales_notes or 'No sales consultation required.'}"
         requirements_json = self.call_manager(
             requirements_prompt,
             system_prompt,
@@ -169,6 +173,20 @@ class ManagerAgent(BaseAgent):
             response_schema=REQUIREMENTS_SCHEMA,
         )
         requirements_data = json.loads(requirements_json.strip())
+        missing = missing_request_files(
+            request, json.dumps(requirements_data, ensure_ascii=False)
+        )
+        if missing:
+            self.orchestrator.pause_for_human_review(
+                "Requirements",
+                f"Generated requirements omitted explicit deliverables: {', '.join(missing)}. "
+                "The original request is preserved. Retry PLANNING to regenerate requirements; "
+                "do not approve an implementation plan based on this response.\n\n"
+                + requirements_json[:2000],
+                "PLANNING",
+                "PLANNING",
+            )
+            return
         self.orchestrator.requirements_json_path.write_text(
             json.dumps(requirements_data, indent=2, ensure_ascii=False),
             encoding="utf-8",

@@ -9,6 +9,7 @@ from orchestrator.roles.base_agent import (
     BaseAgent,
     extract_json_response,
     is_strict_json_response,
+    missing_request_files,
 )
 from orchestrator.core import scoring, roster, brain
 
@@ -198,7 +199,27 @@ class DeveloperAgent(BaseAgent):
         with open(self.orchestrator.requirements_path, "r", encoding="utf-8") as f:
             requirements = f.read()
 
-        planning_input = requirements
+        request_text = (
+            self.orchestrator.request_path.read_text(encoding="utf-8")
+            if self.orchestrator.request_path.exists()
+            else requirements
+        )
+        missing = missing_request_files(request_text, requirements)
+        if missing:
+            self.orchestrator.pause_for_human_review(
+                "Requirements",
+                f"Saved requirements omitted explicit deliverables: {', '.join(missing)}. "
+                "No planning model was called. Retry PLANNING from the preserved original request.",
+                "PLANNING",
+                "PLANNING",
+            )
+            return
+        planning_input = (
+            "Original request (authoritative):\n"
+            + _REFERENCE_BLOCK_RE.sub("", request_text)
+            + "\n\nDerived requirements:\n"
+            + requirements
+        )
         pending_feedback = self.orchestrator.state.get("pending_plan_feedback")
         if pending_feedback:
             planning_input += f"\n\nPrevious plan review feedback:\n{pending_feedback}"
@@ -226,11 +247,6 @@ class DeveloperAgent(BaseAgent):
             "code_revisions": self.orchestrator.state.get("code_revisions", 0),
             "roster": roster_data,
         }
-        request_text = (
-            self.orchestrator.request_path.read_text(encoding="utf-8")
-            if self.orchestrator.request_path.exists()
-            else planning_input
-        )
         request_text_for_file_detection = _REFERENCE_BLOCK_RE.sub("", request_text)
         target_file_requirements = "\n".join(
             line

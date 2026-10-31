@@ -1,5 +1,62 @@
 from __future__ import annotations
 import json
+import re
+
+
+def declared_request_files(request: str) -> list[str]:
+    """Extract explicit Python/Markdown deliverables, excluding reference-only context."""
+    request = re.sub(
+        r"<!-- REFERENCE-ONLY:START.*?-->.*?<!-- REFERENCE-ONLY:END -->",
+        "",
+        request,
+        flags=re.DOTALL,
+    )
+    files = []
+    in_scope = False
+    listing = False
+    for line in request.replace("。", "\n").replace("；", "\n").splitlines():
+        heading = re.match(r"^\s*#{1,6}\s+(.+)", line)
+        if heading:
+            in_scope = heading.group(1).strip().lower() in {
+                "scope",
+                "files",
+                "target files",
+                "範圍",
+                "目標檔案",
+            }
+            listing = False
+            continue
+        declaration = re.search(
+            r"只(?:允許|允许)?(?:新增|修改)|僅(?:允許)?(?:新增|修改)|"
+            r"only (?:add|modify|create)|target files\s*:",
+            line,
+            re.IGNORECASE,
+        )
+        bullet = bool(re.match(r"\s*[-*]\s+", line))
+        if not line.strip():
+            continue
+        if not bullet and not declaration:
+            listing = False
+        if declaration:
+            listing = True
+        if not (declaration or bullet and (in_scope or listing)):
+            continue
+        if re.search(
+            r"不得|不要|禁止|do not|must not|never|excluded", line, re.IGNORECASE
+        ):
+            continue
+        for path in re.findall(r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])", line):
+            if not path.startswith("/") and ".." not in path.split("/"):
+                files.append(path.removeprefix("./"))
+    return list(dict.fromkeys(files))
+
+
+def missing_request_files(request: str, requirements: str) -> list[str]:
+    mentioned = set(
+        re.findall(r"[A-Za-z0-9_.\-/]+\.(?:md|py)(?![A-Za-z0-9_])", requirements)
+    )
+    return [path for path in declared_request_files(request) if path not in mentioned]
+
 
 PONYTAIL_PROMPT = (
     "\n\n[PONYTAIL RULE ACTIVE]\n"
