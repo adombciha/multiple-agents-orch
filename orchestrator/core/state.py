@@ -23,6 +23,10 @@ class ResponseContractError(RuntimeError):
     """The provider responded, but not in the format required by this call."""
 
 
+class DeliveryRepairQueued(RuntimeError):
+    """Delivery content needs an approved-scope Developer repair before retrying."""
+
+
 class DeveloperContractRetryExhausted(ResponseContractError):
     """A Developer response still failed validation after a corrective retry."""
 
@@ -590,7 +594,14 @@ class AgentOrchestrator:
             and path not in internal_paths
             and not any(path.startswith(f"{internal}/") for internal in internal_paths)
         ]
-        self._checked_git_output(["diff", "--check", self.base_branch], source_cwd)
+        try:
+            self._checked_git_output(["diff", "--check", self.base_branch], source_cwd)
+        except RuntimeError as error:
+            if self.queue_delivery_content_repair(error):
+                raise DeliveryRepairQueued(
+                    "Delivery content check failed; RD repair queued with the worktree preserved."
+                ) from error
+            raise
 
         tracked_files = self._delivery_file_contents(
             source_cwd, [path for path in tracked_paths if path]
@@ -612,6 +623,80 @@ class AgentOrchestrator:
             "workflow_state": self.state.get("state"),
             "state_fingerprint": self._delivery_state_fingerprint(),
         }
+
+    def queue_delivery_content_repair(self, error: Exception) -> bool:
+        message = str(error)
+        if not message.startswith("Git delivery check failed for diff --check "):
+            return False
+        paths = list(
+            dict.fromkeys(
+                re.findall(
+                    r"^(.+):\d+: (?:trailing whitespace|space before tab in indent|leftover conflict marker|new blank line at EOF)\.?$",
+                    message,
+                    re.MULTILINE,
+                )
+            )
+        )
+        tasks = self.state.setdefault("tasks", [])
+        allowed = {path for task in tasks for path in task.get("target_files", [])}
+        if self.state.get("changelog_written"):
+            allowed.add("CHANGELOG.md")
+        root = self.agent_workspace().resolve()
+        if not paths or any(
+            path not in allowed or not (root / path).resolve().is_relative_to(root)
+            for path in paths
+        ):
+            return False
+        repairs = [
+            task
+            for task in tasks
+            if str(task.get("id", "")).startswith("FIX-DELIVERY-")
+        ]
+        pending = next(
+            (
+                task
+                for task in repairs
+                if task.get("status") == "pending"
+                and set(task.get("target_files", [])) == set(paths)
+            ),
+            None,
+        )
+        if pending is None:
+            if len(repairs) >= int(self.config.get("max_revisions", 2)):
+                return False
+            task = {
+                "id": f"FIX-DELIVERY-{len(repairs) + 1}",
+                "description": "Fix only the reported Git content errors without changing behavior or historical entries. "
+                "Preserve the original task scope; do not run Git merge, reset, or delivery confirmation.\n"
+                + message,
+                "target_files": paths,
+                "output_contract": {
+                    "format": "file_edits",
+                    "response_must_start_with": "[FILE_EDIT_START:",
+                    "allow_prose": False,
+                },
+                "status": "pending",
+                **self.fix_task_levels(),
+            }
+            tasks.append(task)
+        self.state["state"] = "IMPLEMENTING"
+        self.state["delivery_artifacts_prepared"] = False
+        self.state.setdefault("delivery", {})["report_done"] = False
+        for key in (
+            "delivery_preview",
+            "delivery_preview_presented",
+            "delivery_confirmed",
+            "presented_delivery_snapshot",
+        ):
+            self.state.pop(key, None)
+        self.save_state()
+        self.action_items_path.write_text(
+            json.dumps(tasks, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        log_warning(
+            "Delivery content errors returned to RD; QA, review and a new delivery confirmation remain required."
+        )
+        return True
 
     def get_delivery_preview(self) -> dict:
         preview = self.state.get("delivery_preview")
@@ -2133,6 +2218,8 @@ class AgentOrchestrator:
                     return
                 try:
                     self.step()
+                except DeliveryRepairQueued:
+                    continue
                 except Exception as error:
                     failed_state = self.state.get("state", "PLANNING")
                     self.pause_for_human_review(

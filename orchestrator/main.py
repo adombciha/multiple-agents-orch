@@ -404,6 +404,7 @@ def _deliver_waiting_workflow(
     orchestrator: AgentOrchestrator, confirm_id: str | None
 ) -> int:
     from orchestrator.core.state import log_warning
+    from orchestrator.core.state import DeliveryRepairQueued
 
     try:
         operation = orchestrator.delivery_operation()
@@ -427,6 +428,8 @@ def _deliver_waiting_workflow(
 
         try:
             orchestrator.confirm_delivery(preview, operation)
+        except DeliveryRepairQueued:
+            raise
         except RuntimeError:
             fresh_preview = orchestrator.get_delivery_preview()
             _show_waiting_delivery_preview(orchestrator, fresh_preview)
@@ -444,6 +447,10 @@ def _deliver_waiting_workflow(
         log_error(
             "Delivery did not complete; inspect the preserved worktree and repair report."
         )
+        return 1
+    except DeliveryRepairQueued as error:
+        log_warning(str(error))
+        orchestrator.run_to_end()
         return 1
     except (OSError, RuntimeError, ValueError) as error:
         log_error(f"Delivery could not proceed safely: {error}")

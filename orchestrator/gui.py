@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from orchestrator.core.state import AgentOrchestrator, delivery_snapshot_id
+from orchestrator.core.state import AgentOrchestrator, DeliveryRepairQueued, delivery_snapshot_id
 from orchestrator.main import (
     apply_approve,
     apply_review_decision,
@@ -171,7 +171,10 @@ class GuiService:
                 if started:
                     started.set()
                 if prepare:
-                    prepare()
+                    try:
+                        prepare()
+                    except DeliveryRepairQueued:
+                        pass
                 self._write_worker_status("running")
                 if self.orchestrator.state.get("state") != "COMPLETED":
                     self.orchestrator.run_to_end()
@@ -521,6 +524,15 @@ class GuiService:
         return self.status()
 
     def delivery(self, confirm: bool, snapshot_id: str | None = None) -> dict:
+        try:
+            return self._delivery(confirm, snapshot_id)
+        except DeliveryRepairQueued:
+            with self._operation():
+                if not self._start_worker(self._load):
+                    raise RuntimeError("A workflow worker is already running.")
+            return self.status()
+
+    def _delivery(self, confirm: bool, snapshot_id: str | None = None) -> dict:
         with self._operation():
             if self._worker_is_running():
                 raise RuntimeError("A workflow worker is already running.")
@@ -571,6 +583,8 @@ class GuiService:
                     )
                 try:
                     self.orchestrator.confirm_delivery(preview, operation)
+                except DeliveryRepairQueued:
+                    raise
                 except RuntimeError as error:
                     self.orchestrator.create_delivery_preview(operation)
                     self.orchestrator.state.pop("presented_delivery_snapshot", None)

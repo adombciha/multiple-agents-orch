@@ -255,6 +255,7 @@ class ManagerAgent(BaseAgent):
 
     def step_waiting_for_delivery(self):
         from orchestrator.core.state import (
+            DeliveryRepairQueued,
             log_header,
             log_success,
             log_info,
@@ -410,6 +411,8 @@ Be specific: name changed files, cite available test evidence, and distinguish c
 
         try:
             self.orchestrator.validate_delivery_preview(preview, operation)
+        except DeliveryRepairQueued:
+            raise
         except RuntimeError as error:
             log_warning(f"Delivery snapshot is no longer valid: {error}")
             create_preview(operation)
