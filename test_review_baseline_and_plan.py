@@ -105,13 +105,14 @@ def test_git_evidence_failure_pauses_without_requesting_review(
 
 @pytest.mark.parametrize("extra_targets", [[], ["outside.py"]])
 @pytest.mark.parametrize("task_id", ["T1", ""])
-def test_manager_combined_python_task_is_split_before_coverage_validation(
+def test_manager_combined_python_task_preserves_group_and_validates_coverage(
     initialized_orchestrator, monkeypatch, extra_targets, task_id
 ):
     app = initialized_orchestrator
     app.request_path.write_text("Only add live_answer.py and test_live_answer.py.")
     app.requirements_path.write_text(
-        "Only allowed to add live_answer.py and test_live_answer.py."
+        "Only allowed to add live_answer.py and test_live_answer.py. "
+        "Revision feedback: combine both files into a single implementation task."
     )
     response = {
         "tasks": [
@@ -141,10 +142,9 @@ def test_manager_combined_python_task_is_split_before_coverage_validation(
     else:
         assert app.state["state"] == "REVIEWING_PLAN"
         tasks = app.state["tasks"]
-        assert [task["id"] for task in tasks] == ["T1-1", "T1-2"]
+        assert [task["id"] for task in tasks] == ["T1"]
         assert [task["target_files"] for task in tasks] == [
-            ["live_answer.py"],
-            ["test_live_answer.py"],
+            ["live_answer.py", "test_live_answer.py"],
         ]
         assert all(task["status"] == "pending" for task in tasks)
         assert all(
@@ -152,3 +152,64 @@ def test_manager_combined_python_task_is_split_before_coverage_validation(
             for task in tasks
         )
         assert all(task["output_contract"]["format"] == "file_blocks" for task in tasks)
+        assert tasks[0]["description"] == response["tasks"][0]["description"]
+        assert (
+            "Related non-Markdown files may share one implementation task"
+            in call.call_args.args[0]
+        )
+        assert "Implement changes only in" not in app.plan_path.read_text()
+
+
+def test_combined_code_task_survives_replan_and_implementation(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    files = ["live_answer.py", "test_live_answer.py"]
+    description = "Implement both files as one task, including tests"
+    app.request_path.write_text("Only add live_answer.py and test_live_answer.py.")
+    app.requirements_path.write_text(
+        "Only allowed to add live_answer.py and test_live_answer.py. Combine both into one task."
+    )
+    app.state["plan_revisions"] = 1
+    app.state["pending_plan_feedback"] = (
+        "Combine both files into one implementation task"
+    )
+    monkeypatch.setattr(
+        app,
+        "call_manager",
+        Mock(
+            return_value=json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "id": "COMBINED",
+                            "description": description,
+                            "target_files": files,
+                            "rd_level": "senior",
+                            "qa_level": "senior",
+                        }
+                    ],
+                    "staffing": {"rd": {"senior": 1}, "qa": {"senior": 1}},
+                    "specialists": [],
+                }
+            )
+        ),
+    )
+    app.step_developing_plan()
+    assert app.state["state"] == "REVIEWING_PLAN"
+    assert app.state["tasks"][0]["description"] == description
+    app.state["state"] = "IMPLEMENTING"
+    call = Mock(
+        return_value=(
+            "[FILE_START: live_answer.py]\ndef add(a, b):\n    return a + b\n[FILE_END: live_answer.py]\n"
+            "[FILE_START: test_live_answer.py]\nfrom live_answer import add\ndef test_add():\n    assert add(20, 22) == 42\n[FILE_END: test_live_answer.py]"
+        )
+    )
+    monkeypatch.setattr(app, "call_agent", call)
+    app.step_implementing()
+    call.assert_called_once()
+    assert app.state["state"] == "TESTING"
+    assert len(app.state["tasks"]) == 1
+    assert app.state["tasks"][0]["id"] == "COMBINED"
+    assert app.state["tasks"][0]["status"] == "completed"
+    assert all((app.workspace / path).is_file() for path in files)

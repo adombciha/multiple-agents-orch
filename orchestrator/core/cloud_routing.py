@@ -16,6 +16,19 @@ def cloud_model_allowed(model: str | None) -> bool:
     }.intersection(re.findall(r"[a-z0-9]+", model.casefold()))
 
 
+def codex_model_allowed_for_role(role: str, model: str | None) -> bool:
+    if not cloud_model_allowed(model):
+        return False
+    if not role.startswith("developer"):
+        return True
+    families = (
+        ("-luna", "-sol")
+        if role in {"developer_senior", "developer_middle"}
+        else ("-luna",)
+    )
+    return model.endswith(families)
+
+
 def discover_codex_models() -> dict[str, dict]:
     global _codex_catalog_cache
     if (
@@ -56,24 +69,19 @@ def select_codex_model(orchestrator, role: str, prompt: str) -> tuple[str, str |
     if cache is None:
         cache = orchestrator._cloud_route_choices = {}
     key = ("codex", role, summary)
-    if (
-        key in cache
-        and cloud_model_allowed(cache[key][0])
-        and (not role.startswith("developer") or cache[key][0].endswith("-luna"))
-    ):
+    if key in cache and codex_model_allowed_for_role(role, cache[key][0]):
         return cache[key]
     cache.pop(key, None)
     models = {
         slug: entry
         for slug, entry in discover_codex_models().items()
-        if cloud_model_allowed(slug)
+        if codex_model_allowed_for_role(role, slug)
     }
     if role.startswith("developer"):
-        models = {
-            slug: entry for slug, entry in models.items() if slug.endswith("-luna")
-        }
         if not models:
-            raise RuntimeError("No available Luna model for Developer Codex route")
+            raise RuntimeError(
+                "No available allowed Developer model (Luna, or Sol for senior/middle) for Codex route"
+            )
     if not models:
         raise RuntimeError(
             "No allowed Codex models available; refusing an implicit CLI default"

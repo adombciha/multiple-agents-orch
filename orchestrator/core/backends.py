@@ -535,7 +535,7 @@ def call_codex(
     model: str | None = None,
 ) -> str:
     from orchestrator.core.state import log_info
-    from orchestrator.core.cloud_routing import cloud_model_allowed, select_codex_model
+    from orchestrator.core.cloud_routing import codex_model_allowed_for_role, select_codex_model
 
     full_prompt = ""
     if system_prompt:
@@ -551,12 +551,19 @@ def call_codex(
     ]
 
     model = model or orchestrator.get_active_model_for_role(role, "codex")
-    if role.startswith("developer") and model != "auto" and not model.endswith("-luna"):
+    if (
+        role.startswith("developer")
+        and model
+        and model != "auto"
+        and not codex_model_allowed_for_role(role, model)
+    ):
+        if role in {"developer_senior", "developer_middle"}:
+            raise RuntimeError("Developer Codex route requires a Luna or Sol model")
         raise RuntimeError("Developer Codex route requires a Luna model")
     effort = orchestrator.config.get("reasoning_effort", {}).get(role)
     if not model or model == "auto":
         model, effort = select_codex_model(orchestrator, role, prompt)
-    if not cloud_model_allowed(model):
+    if not codex_model_allowed_for_role(role, model):
         raise RuntimeError(f"Codex model is prohibited or unresolved: {model!r}")
     orchestrator._resolved_cloud_model = model
     if model and model != "auto":

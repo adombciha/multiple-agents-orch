@@ -50,7 +50,7 @@ def test_codex_filters_before_scoring_and_discards_prohibited_cache(
     assert cloud_routing.select_codex_model(app, role, "task")[0] == "gpt-6-luna"
     assert "gpt-6-astra" not in rank.call_args.args[2]
     if role.startswith("developer"):
-        assert rank.call_args.args[2] == ["gpt-6-luna"]
+        assert rank.call_args.args[2] == ["gpt-6-luna", "gpt-6.1-sol"]
 
 
 @pytest.mark.parametrize("catalog", [{}, {"gpt-6-astra": {}}])
@@ -160,3 +160,65 @@ def test_capacity_fallback_skips_all_prohibited_families(initialized_orchestrato
         backends.token_fallback_model(app, "architect", RuntimeError("token limit"))
         is None
     )
+
+
+@pytest.mark.parametrize("role", ["developer_senior", "developer_middle"])
+@pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-99-sol"])
+def test_developer_sol_is_discovered_and_scored_at_runtime(
+    initialized_orchestrator, monkeypatch, role, model
+):
+    app = initialized_orchestrator
+    monkeypatch.setattr(
+        cloud_routing,
+        "discover_codex_models",
+        Mock(
+            return_value={
+                model: {
+                    "supported_reasoning_levels": [
+                        {"effort": "low"},
+                        {"effort": "high"},
+                    ]
+                },
+                "gpt-6-luna": {},
+                "gpt-6-astra": {},
+                "gpt-6-terra": {},
+            }
+        ),
+    )
+    rank = Mock(side_effect=[[model], ["high"]])
+    monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
+    run = Mock(return_value=Mock(returncode=0, stdout="result", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    assert backends.call_codex(app, "task", role=role, model="auto") == "result"
+    assert rank.call_args_list[0].args[2] == [model, "gpt-6-luna"]
+    assert model in run.call_args.args[0]
+    assert "model_reasoning_effort='high'" in run.call_args.args[0]
+
+
+@pytest.mark.parametrize("role", ["developer_senior", "developer_middle"])
+def test_developer_explicit_and_cached_sol_are_allowed(
+    initialized_orchestrator, monkeypatch, role
+):
+    app = initialized_orchestrator
+    monkeypatch.setattr(app, "_get_compact_task_summary", Mock(return_value="task"))
+    app._cloud_route_choices = {("codex", role, "task"): ("gpt-6.1-sol", "medium")}
+    catalog = Mock()
+    monkeypatch.setattr(cloud_routing, "discover_codex_models", catalog)
+    run = Mock(return_value=Mock(returncode=0, stdout="result", stderr=""))
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    assert backends.call_codex(app, "task", role=role, model="auto") == "result"
+    assert backends.call_codex(app, "task", role=role, model="gpt-6.1-sol") == "result"
+    catalog.assert_not_called()
+    assert run.call_count == 2
+
+
+def test_junior_sol_is_not_enabled_by_senior_policy(
+    initialized_orchestrator, monkeypatch
+):
+    app = initialized_orchestrator
+    assert app.config["role_model_routes"]["developer_junior"] == [["ollama", "auto"]]
+    run = Mock()
+    monkeypatch.setattr(backends.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="requires a Luna model"):
+        backends.call_codex(app, "task", role="developer_junior", model="gpt-6.1-sol")
+    run.assert_not_called()

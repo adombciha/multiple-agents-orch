@@ -347,22 +347,28 @@ def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monke
     assert command[command.index("-m") + 1] == "gpt-6-luna"
     assert "model_reasoning_effort='high'" in command
     assert rank.call_count == 2
-    assert rank.call_args_list[0].args[2] == ["gpt-6-luna", "gpt-5.6-luna"]
+    assert rank.call_args_list[0].args[2] == [
+        "gpt-6.1-sol",
+        "gpt-6-luna",
+        "gpt-5.6-luna",
+    ]
     assert all(
         call.kwargs["require_installed"] is False for call in rank.call_args_list
     )
 
 
-def test_developer_codex_auto_requires_live_luna(initialized_orchestrator, monkeypatch):
+def test_developer_codex_auto_requires_allowed_family(
+    initialized_orchestrator, monkeypatch
+):
     monkeypatch.setattr(
         cloud_routing,
         "discover_codex_models",
-        Mock(return_value={"gpt-6.1-sol": {"description": "Sol"}}),
+        Mock(return_value={"gpt-6.1-terra": {"description": "Terra"}}),
     )
     run = Mock()
     monkeypatch.setattr(backends.subprocess, "run", run)
 
-    with pytest.raises(RuntimeError, match="No available Luna model"):
+    with pytest.raises(RuntimeError, match="No available allowed Developer model"):
         backends.call_codex(
             initialized_orchestrator, "task", role="developer_senior", model="auto"
         )
@@ -405,16 +411,18 @@ def test_explicit_codex_model_bypasses_runtime_scoring(
     assert "gpt-6-luna" in run.call_args.args[0]
 
 
-def test_developer_codex_rejects_explicit_sol(initialized_orchestrator, monkeypatch):
+def test_developer_codex_rejects_explicit_other_family(
+    initialized_orchestrator, monkeypatch
+):
     run = Mock()
     monkeypatch.setattr(backends.subprocess, "run", run)
 
-    with pytest.raises(RuntimeError, match="requires a Luna model"):
+    with pytest.raises(RuntimeError, match="requires a Luna or Sol model"):
         backends.call_codex(
             initialized_orchestrator,
             "task",
             role="developer_senior",
-            model="gpt-6.1-sol",
+            model="gpt-6.1-terra",
         )
     run.assert_not_called()
 

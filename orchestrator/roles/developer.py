@@ -344,7 +344,7 @@ class DeveloperAgent(BaseAgent):
             else "For existing Markdown files, create one task per independent heading-bounded section, set target_files to exactly one file, and add section_heading copied exactly from the heading inventory below."
         )
         file_coverage_rule = (
-            f"Cover every requested file exactly once, including non-Markdown files, as a whole-file task. Requested files: {json.dumps(requested_files, ensure_ascii=False)}."
+            f"Cover every requested file and no files outside this list: {json.dumps(requested_files, ensure_ascii=False)}. Related non-Markdown files may share one implementation task; preserve a combined task when revision feedback requests it. Markdown files must follow the heading or whole-file rules above."
             if docs_only or whole_file_docs
             else ""
         )
@@ -408,66 +408,44 @@ class DeveloperAgent(BaseAgent):
                 files = requested_files
                 allowed = set(files)
                 markdown_allowed = set(requested_markdown)
-                normalized_tasks = []
                 for task in tasks:
                     targets = task.get("target_files")
                     if (
-                        isinstance(targets, list)
-                        and len(targets) > 1
-                        and task.get("id")
-                        and task.get("description")
-                        and all(
-                            isinstance(path, str)
-                            and path in allowed
-                            and Path(path).suffix.lower() != ".md"
+                        not isinstance(targets, list)
+                        or not targets
+                        or not all(
+                            isinstance(path, str) and path in allowed
                             for path in targets
                         )
                     ):
-                        normalized_tasks.extend(
-                            {
-                                **task,
-                                "id": f"{task.get('id', '')}-{index}",
-                                "target_files": [path],
-                                "description": f"Implement changes only in {path}. "
-                                + str(task.get("description", "")),
-                            }
-                            for index, path in enumerate(dict.fromkeys(targets), 1)
+                        raise ValueError(
+                            "Task targets must stay within the requested files"
                         )
-                    else:
-                        normalized_tasks.append(task)
-                tasks = normalized_tasks
+                    if any(path in markdown_allowed for path in targets) and (
+                        len(targets) != 1
+                        or (
+                            not whole_file_docs
+                            and task.get("section_heading")
+                            not in markdown_headings[targets[0]]
+                        )
+                    ):
+                        raise ValueError(
+                            "Markdown tasks require one file and a valid heading unless whole-file mode applies"
+                        )
                 if whole_file_docs:
                     by_file = {}
+                    code_tasks = []
                     for task in tasks:
                         targets = task.get("target_files")
-                        if (
-                            isinstance(targets, list)
-                            and len(targets) == 1
-                            and targets[0] in allowed
-                        ):
+                        if targets[0] in markdown_allowed:
                             task.pop("section_heading", None)
                             by_file.setdefault(targets[0], task)
-                    tasks = list(by_file.values())
-                else:
-                    tasks = [
-                        task
-                        for task in tasks
-                        if task.get("target_files")
-                        and len(task["target_files"]) == 1
-                        and (
-                            task["target_files"][0] in allowed
-                            and (
-                                task["target_files"][0] not in markdown_allowed
-                                or task.get("section_heading")
-                                in markdown_headings.get(task["target_files"][0], [])
-                            )
-                        )
-                    ]
-                covered = {task["target_files"][0] for task in tasks}
+                        else:
+                            code_tasks.append(task)
+                    tasks = list(by_file.values()) + code_tasks
+                covered = {path for task in tasks for path in task["target_files"]}
                 if covered != allowed:
-                    raise ValueError(
-                        "Manager must create one valid task for every requested file"
-                    )
+                    raise ValueError("Manager tasks must cover every requested file")
             if isinstance(parsed, dict):
                 self.orchestrator.state["staffing"] = parsed.get(
                     "staffing", self.orchestrator.state.get("staffing", {})
