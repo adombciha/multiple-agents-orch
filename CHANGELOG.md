@@ -100,3 +100,50 @@ Next steps:
 3. Conduct comprehensive re-regression testing.
 
 Additional verification steps will be implemented to ensure all functionalities are functioning as intended.
+
+**CHANGELOG - Ollama Diagnos tool & Offline Test File**
+
+- **Completed Task**:
+  - `scripts/check_ollama_models.py`: Added CLI diagnostic tool for Ollama models supporting繁體中文 and `--json` output option.
+  - `test_check_ollama_models.py`: Added HTTP mock testing script for offline testing.
+
+- **Files Added**:
+  - `scripts/check_ollama_models.py`
+  - `test_check_ollama_models.py`
+
+- **Scope of Delivery**:
+  - The above two files have been successfully added to the project.
+
+- **Follow-up Actions**:
+  - QA has not yet passed, and complete regression testing and owner approval evidence are still pending.
+  - The project scope is limited to the above two files.
+
+- **Git Status**:
+  - The files `scripts/check_ollama_models.py` and `test_check_ollama_models.py` are no longer tracked.
+  - Currently, no significant changes to other tracked files have been observed.
+
+- **Test Results**:
+  - Online testing commands executed:
+    ```bash
+    PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -B -m pytest -q -s -p no:cacheprovider test_check_ollama_models.py
+    ```
+  - Local testing results:
+    - Total tests passed: 17 (subtests: 46)
+    - Additional test results (abstract): 719 passed (subtests: 46)
+    - No explicit exit code provided.
+
+- **QA Status**:
+  - QA requirements for model performance, quality, and user experience are not met as per the original requirements.
+  - The test is limited to offline verification, and no further inference testing should be added.
+
+- **Next Steps**:
+  - Confirm owner approval record.
+  - Validate complete regression testing results, exit code, and outcomes.
+  - Update final Git history to reflect changes.
+  - Await owner二次确认 before merging.
+
+- **LightLLM Token Usage**:
+  - Total tokens consumed: 541,577 (1 GPT-6.1-Sol, 49 calls)
+  - Model usage: Gemini 3.8 Flash (Medium), deepseek-r1:7b, Gemini 3.8 High, GPT-6.1-Sol, Qwen2.5 Coder:7b
+
+This entry reflects the completion of the specified task and the current status of the project.
