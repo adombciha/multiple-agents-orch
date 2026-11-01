@@ -1437,7 +1437,7 @@ def test_gui_refresh_owner_decision_matrix(
             {"state": "FAILED", "can_submit": True},
             "流程失敗",
             "task{}",
-            ["task{}", "reset{}"],
+            ["task{}", "reset{}", "reject{}"],
         ),
     ],
 )

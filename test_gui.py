@@ -544,7 +544,7 @@ def test_http_task_runs_async_and_status_is_readable_during_execution(tmp_path):
 
 
 def test_http_stop_and_continue_use正式_action_routes():
-    service = make_service("RUNNING")
+    service = make_service("IMPLEMENTING")
     service._load = Mock()
 
     stop_handler = make_handler(
@@ -560,7 +560,7 @@ def test_http_stop_and_continue_use正式_action_routes():
     )
     stopped = post_json(stop_handler, {})
 
-    assert stopped["state"] == "RUNNING"
+    assert stopped["state"] == "IMPLEMENTING"
     service.orchestrator.request_pause.assert_called_once_with()
     assert stop_handler.send_response.call_args.args[0] == gui.HTTPStatus.OK
 
@@ -579,7 +579,7 @@ def test_http_stop_and_continue_use正式_action_routes():
     )
     continued = post_json(continue_handler, {})
 
-    assert continued["state"] == "RUNNING"
+    assert continued["state"] == "IMPLEMENTING"
     service.orchestrator.clear_pause_request.assert_called_once_with()
     start_worker.assert_called_once()
     assert continue_handler.send_response.call_args.args[0] == gui.HTTPStatus.OK
@@ -1118,7 +1118,7 @@ def test_gui_approve_clears_pause_request_before_resuming(monkeypatch):
     service = make_service("WAITING_FOR_OWNER")
     service._load = Mock()
     start_worker = start_worker_inline(service)
-    apply_approve = Mock(return_value=True)
+    apply_approve = Mock(side_effect=lambda app: app.clear_pause_request() or True)
     monkeypatch.setattr(gui, "apply_approve", apply_approve)
 
     result = service.approve()
@@ -1137,7 +1137,9 @@ def test_gui_continue_owner_review_clears_pause_request_once(monkeypatch):
     apply_review_decision = Mock(
         side_effect=lambda orchestrator, *_args: orchestrator.clear_pause_request()
     )
-    monkeypatch.setattr(gui, "apply_review_decision", apply_review_decision)
+    monkeypatch.setattr(
+        "orchestrator.main.apply_review_decision", apply_review_decision
+    )
 
     result = service.continue_task()
 
@@ -1888,6 +1890,9 @@ def owner_review_service(tmp_path):
             }
         )
         orchestrator.pause_for_human_review(source, reason, resume_state, pass_state)
+        # Exercise saved runs from before explicit decision kinds existed.
+        orchestrator.state.pop("human_review_kind", None)
+        orchestrator.save_state()
         orchestrator.request_pause()
         orchestrator.run_to_end = Mock(
             side_effect=AssertionError("Offline contract tests must not run agents")
@@ -1928,7 +1933,9 @@ def test_persisted_pause_evidence_reaches_status_and_http_page(
     assert status["plan_requires_owner_approval"] is True
     assert status["pause_requested"] is True
     assert status["can_submit"] is False
-    assert f"{source} 驗證未通過，需要人工確認。" in status["reports"]["review"]
+    assert status["reports"][
+        "review"
+    ] == service.orchestrator.human_report_path.read_text(encoding="utf-8")
     assert_gui_decision(gui.render_page(status), title, label, action)
 
     handler = make_handler("GET", {"Host": "127.0.0.1:8765"}, "/", service)

@@ -7601,6 +7601,7 @@ def test_local_gui_checks_host_origin_token_and_action_lock(tmp_path, monkeypatc
         snapshot_id = "a" * 64
         for action, arguments in [
             ("approve", ["approve", "--run"]),
+            ("reset", ["reset"]),
             ("review revise", ["review", "revise", "--run"]),
             ("review reject", ["review", "reject"]),
             ("review preview-existing", ["review", "preview-existing"]),

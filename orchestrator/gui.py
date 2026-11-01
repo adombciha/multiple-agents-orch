@@ -22,15 +22,15 @@ from urllib.parse import urlsplit
 from orchestrator.core.state import AgentOrchestrator, DeliveryRepairQueued, delivery_snapshot_id
 from orchestrator.main import (
     apply_approve,
+    apply_continue,
     apply_review_decision,
     archive_previous_run,
     clear_run_state,
     inline_referenced_markdown,
-    pick_continue_decision,
 )
 
 from orchestrator.core.runlock import RunLock
-from orchestrator.core.status import read_snapshot, workflow_decision, STAGE_LABELS
+from orchestrator.core.status import read_snapshot, workflow_decision, next_actions, STAGE_LABELS
 
 HOST = "127.0.0.1"
 
@@ -101,7 +101,7 @@ async function refresh() {
   actionNode.replaceChildren();
   for (const action of snapshot.next_actions || []) {
     const command = action.command === 'review pass' ? 'review_pass' : action.command;
-    button(action.label, command, ['reject', 'review reject', 'review_pass'].includes(command) ? 'Confirm this owner decision?' : '');
+    button(action.label, command, ['reset', 'reject', 'review reject', 'review_pass'].includes(command) ? 'Confirm this owner decision?' : '');
   }
   if (data.lock && !data.pause_requested) button('Pause after this step', 'pause');
   if (data.pause_requested) button('Cancel pending pause', 'pause_cancel');
@@ -466,29 +466,10 @@ class GuiService:
     def continue_task(self, clear_route_failures: bool = False) -> dict:
         def prepare():
             self._load()
-            state = self.orchestrator.state.get("state")
-            if state in {"COMPLETED", "FAILED"}:
+            if not apply_continue(self.orchestrator, clear_route_failures):
                 raise RuntimeError(
-                    "Workflow cannot be continued from its terminal state."
+                    "Developer route contract failures must be cleared before retry."
                 )
-            if state == "WAITING_FOR_DELIVERY":
-                raise RuntimeError("Delivery confirmation is required.")
-            if state == "WAITING_FOR_OWNER":
-                decision, reset_revisions = pick_continue_decision(self.orchestrator)
-                if decision == "revise":
-                    apply_review_decision(
-                        self.orchestrator,
-                        "revise",
-                        reset_revisions,
-                    )
-                elif not apply_approve(
-                    self.orchestrator, clear_route_failures=clear_route_failures
-                ):
-                    raise RuntimeError(
-                        "Developer route contract failures must be cleared before retry."
-                    )
-            else:
-                self.orchestrator.clear_pause_request()
 
         with self._operation():
             if self._worker_is_running():
@@ -502,7 +483,6 @@ class GuiService:
             self._load()
             if self.orchestrator.state.get("state") != "WAITING_FOR_OWNER":
                 raise RuntimeError("Workflow is not waiting for owner approval.")
-            self.orchestrator.clear_pause_request()
             if not apply_approve(self.orchestrator):
                 raise RuntimeError(
                     "Developer route contract failures must be cleared before retry."
@@ -552,14 +532,18 @@ class GuiService:
                 raise RuntimeError("A workflow worker is already running.")
         return self.status()
 
-    def reset(self) -> dict:
+    def reset(self, *, keep_request: bool = False) -> dict:
         with self._operation():
             if self._worker_is_running():
                 raise RuntimeError("A workflow worker is already running.")
             with self.orchestrator.execution_lock():
                 self._load()
+                if keep_request and self.orchestrator.state.get("state") != "FAILED":
+                    raise RuntimeError(
+                        "Only a failed workflow can be sent back to planning here."
+                    )
                 clear_run_state(self.orchestrator, "PLANNING")
-                if self.orchestrator.request_path.exists():
+                if not keep_request and self.orchestrator.request_path.exists():
                     self.orchestrator.request_path.unlink()
                 self.orchestrator.save_state()
         return self.status()
@@ -1152,7 +1136,7 @@ def render_page(status: dict) -> str:
             f"{_safe_text(label)}</button>"
         )
 
-    decision = workflow_decision(
+    decision = status.get("workflow_decision") or workflow_decision(
         {**status, "human_review_source": source, "human_review_details": reason},
         busy=busy,
         pause_requested=bool(status.get("pause_requested")),
@@ -1455,6 +1439,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/approve",
             "/api/review",
             "/api/reset",
+            "/api/reject",
             "/api/deliver",
         }:
             self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
@@ -1485,6 +1470,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/reset":
                 result = self.service.reset()
+            elif path == "/api/reject":
+                result = self.service.reset(keep_request=True)
             else:
                 result = self.service.delivery(
                     bool(body.get("confirm", False)), body.get("snapshot_id")
@@ -1582,6 +1569,12 @@ def make_handler(orchestrator, token: str, port: int):
                 self._json(503, {"error": "Status snapshot is unavailable."})
                 return
             holder = RunLock.read_holder(orchestrator.ai_dir)
+            snapshot["next_actions"] = next_actions(
+                snapshot,
+                busy=bool(holder),
+                external_lock=bool(holder),
+                pause_requested=orchestrator.pause_request_path.exists(),
+            )
             self._json(
                 200,
                 {
@@ -1637,6 +1630,7 @@ def make_handler(orchestrator, token: str, port: int):
                     "--clear-route-failures",
                 ],
                 "reject": ["reject"],
+                "reset": ["reset"],
             }
             bound_command = re.fullmatch(
                 r"(deliver --confirm |review accept-existing --snapshot )([0-9a-f]{64})",

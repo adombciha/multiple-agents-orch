@@ -159,9 +159,9 @@ def test_gui_explicit_route_retry_uses_shared_approval(monkeypatch):
     service.orchestrator.state["human_review_source"] = "Developer"
     start_worker_inline(service)
     approve = Mock(return_value=True)
-    monkeypatch.setattr(gui, "apply_approve", approve)
+    monkeypatch.setattr("orchestrator.main.apply_approve", approve)
     service.continue_task(clear_route_failures=True)
-    approve.assert_called_once_with(service.orchestrator, clear_route_failures=True)
+    approve.assert_called_once_with(service.orchestrator, True)
 
 
 def test_gui_worker_handles_persistence_failure(tmp_path, monkeypatch):

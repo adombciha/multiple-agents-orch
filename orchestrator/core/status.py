@@ -18,6 +18,7 @@ STAGE_LABELS = {
     "WAITING_FOR_DELIVERY": "交付準備與確認",
     "COMPLETED": "已完成",
     "FAILED": "流程失敗",
+    "RESEARCHING": "研究中",
 }
 
 
@@ -29,6 +30,15 @@ def owner_review_kind(state: dict) -> str:
     resume = state.get("resume_state")
     pass_state = state.get("pass_state")
     reason = str(state.get("human_review_details", "")).strip()
+    recorded = state.get("human_review_kind")
+    if recorded is not None:
+        expected = classify_owner_pause(state)
+        compatible = (
+            recorded == expected
+            or recorded == "review"
+            and source in {"Architect", "Manager", "Reviewer", "QA"}
+        )
+        return recorded if compatible else "invalid"
     if (
         source == "Orchestrator"
         and resume == pass_state == "REVIEWING_CODE"
@@ -38,9 +48,6 @@ def owner_review_kind(state: dict) -> str:
         )
     ):
         return "accept_existing"
-    recorded = state.get("human_review_kind")
-    if recorded in {"approve_plan", "revise", "retry_testing", "review", "resume"}:
-        return recorded
     # Only the current verdict prefix and its recorded transition are evidence.
     approval_prefix = (
         "Architect approved the plan. The original request requires "
@@ -103,6 +110,102 @@ def owner_review_kind(state: dict) -> str:
     )
 
 
+def classify_owner_pause(state: dict) -> str:
+    """Validate recorded decision kinds against structured transitions."""
+    source = state.get("human_review_source")
+    resume, passed = state.get("resume_state"), state.get("pass_state")
+    if (
+        source == "Orchestrator"
+        and resume == passed == "REVIEWING_CODE"
+        and state.get("owner_acceptance_pending") is True
+    ):
+        return "accept_existing"
+    if source in {"Architect", "Manager"}:
+        if (
+            resume == passed == "IMPLEMENTING"
+            and state.get("plan_requires_owner_approval") is True
+        ):
+            return "approve_plan"
+        if resume == "DEVELOPING_PLAN" and passed == "IMPLEMENTING":
+            return "revise"
+    if source == "Reviewer" and resume == passed == "IMPLEMENTING":
+        return "revise"
+    if source == "QA":
+        if resume == passed == "TESTING":
+            return "retry_testing"
+        if resume == "IMPLEMENTING" and passed == "REVIEWING_CODE":
+            return "revise"
+    return (
+        "review" if source in {"Architect", "Manager", "Reviewer", "QA"} else "resume"
+    )
+
+
+def owner_action_target(state: dict, action: str) -> str:
+    """Validate an owner operation before changing state or granting approval."""
+    if state.get("state") != "WAITING_FOR_OWNER":
+        raise RuntimeError("Workflow is not waiting for owner review.")
+    kind = owner_review_kind(state)
+    allowed = {
+        "approve_plan": {"approve", "pass", "revise", "reject", "continue"},
+        "revise": {"approve", "pass", "revise", "reject", "continue"},
+        "review": {"approve", "pass", "revise", "reject", "continue"},
+        "retry_testing": {"approve", "continue", "reject"},
+        "resume": {"approve", "continue", "reject"},
+        "accept_existing": {
+            "approve",
+            "pass",
+            "continue",
+            "preview-existing",
+            "accept-existing",
+            "reject",
+        },
+        "invalid": {"reject"},
+    }
+    if action not in allowed[kind]:
+        raise RuntimeError(
+            f"Owner action {action!r} is not available for decision {kind!r}."
+        )
+    if action == "continue":
+        action = continue_decision(state)[0]
+    if action == "reject":
+        return "FAILED"
+    if action == "preview-existing":
+        return "WAITING_FOR_OWNER"
+    if action == "accept-existing":
+        return "REVIEWING_CODE"
+    if action == "revise":
+        return (
+            "DEVELOPING_PLAN"
+            if state.get("human_review_source") in {"Architect", "Manager"}
+            else "IMPLEMENTING"
+        )
+    default = {"QA_RESPONSE": "TESTING", "Requirements": "PLANNING"}.get(
+        state.get("human_review_source"), "REVIEWING_CODE"
+    )
+    target = state.get("pass_state", state.get("resume_state", default))
+    if target == "FAILED" and state.get("human_review_source") in {
+        "Developer",
+        "Orchestrator",
+    }:
+        target = "IMPLEMENTING"
+    if target not in STAGE_LABELS or target in {"WAITING_FOR_OWNER", "FAILED"}:
+        raise RuntimeError(
+            "Saved owner transition is invalid; inspect the workflow state."
+        )
+    if kind == "accept_existing" and target != "REVIEWING_CODE":
+        raise RuntimeError("Existing changes require code review before delivery.")
+    if state.get("human_review_source") == "QA_RESPONSE" and target != "TESTING":
+        raise RuntimeError("Invalid QA output must retry TESTING.")
+    if target == "COMPLETED" and not (
+        state.get("workflow_mode") == "research"
+        or state.get("delivery", {}).get("delivered")
+    ):
+        raise RuntimeError(
+            "Undelivered changes cannot be marked completed by an owner review."
+        )
+    return target
+
+
 def continue_decision(state: dict, max_revisions: int = 2) -> tuple[str, bool]:
     """Keep explicit approvals separate from repair and environment retries."""
     kind = owner_review_kind(state)
@@ -139,6 +242,7 @@ def workflow_decision(
     stage = state.get("stage", current)
     stage_labels = STAGE_LABELS
     buttons, delivery_buttons, display_buttons, reset_buttons = [], [], [], []
+    destinations = {}
 
     def button(
         label,
@@ -151,6 +255,16 @@ def workflow_decision(
         target=None,
         identity=None,
     ):
+        if current == "WAITING_FOR_OWNER" and action in {
+            "approve",
+            "review",
+            "continue",
+        }:
+            operation = (body or {}).get("decision", action)
+            try:
+                destinations[operation] = owner_action_target(state, operation)
+            except RuntimeError:
+                return
         (buttons if target is None else target).append(
             {
                 "label": label,
@@ -194,7 +308,10 @@ def workflow_decision(
         approved = kind == "approve_plan"
         rejected = kind == "revise"
         qa_environment = kind == "retry_testing"
-        if kind == "accept_existing":
+        if kind == "invalid":
+            title = "決策資料不一致，已停止執行"
+            explanation = "儲存的決策類型與恢復階段不一致。請檢查狀態資料；目前只能拒絕本次結果或明確重置。"
+        elif kind == "accept_existing":
             title = "等待擁有者處置現有變更"
             explanation = "請先展示接受範圍。接受會記錄你對現有變更及首次核准時序疑義的處置，然後重新審查程式；交付仍需另行確認。"
             acceptance_preview = status.get("owner_acceptance_preview", {})
@@ -219,6 +336,7 @@ def workflow_decision(
                     f"接受以下現有變更及首次核准時序疑義：{scope}\n範圍版本：{acceptance_preview['id']}\n接受後將重新審查，並不代表測試通過或確認交付。確定接受？",
                     primary=True,
                 )
+            button("重新審查（未接受現有變更）", "approve")
         elif approved:
             title = "計畫已通過，等待擁有者核准實作"
             explanation = (
@@ -315,6 +433,15 @@ def workflow_decision(
     elif current == "FAILED":
         title = "流程失敗"
         explanation = "請先查看執行錯誤與報告，再提交新任務或明確重置。"
+        button(
+            "重新規劃",
+            "reject",
+            confirmation="將清理本次 worktree 並保留需求重新規劃。確定繼續？",
+            primary=not can_submit,
+        )
+    elif current not in STAGE_LABELS:
+        title = "未知的流程階段"
+        explanation = "請先檢查儲存的狀態資料；目前無法繼續執行。"
     elif not can_submit:
         button("繼續執行", "continue", primary=True)
 
@@ -354,8 +481,8 @@ def workflow_decision(
         "display_actions": display_buttons,
         "delivery_actions": delivery_buttons,
         "reset_actions": reset_buttons,
-        "continue_decision": continue_decision(state),
         "kind": owner_review_kind(state),
+        "destinations": destinations,
     }
 
 
@@ -372,7 +499,10 @@ def next_actions(state: dict, delivery_pending: bool = False, **runtime) -> list
     decision = workflow_decision(state, git=preview, snapshot_id=snapshot_id, **runtime)
     actions = []
     for item in (
-        decision["actions"] + decision["display_actions"] + decision["delivery_actions"]
+        decision["actions"]
+        + decision["display_actions"]
+        + decision["delivery_actions"]
+        + (decision["reset_actions"] if state.get("state") == "FAILED" else [])
     ):
         if not item["enabled"]:
             continue
@@ -397,28 +527,6 @@ def next_actions(state: dict, delivery_pending: bool = False, **runtime) -> list
                 "description": decision["explanation"],
             }
         )
-    if state.get("state") == "FAILED" and not runtime.get("busy"):
-        actions = [
-            {
-                "command": "reject",
-                "label": "Re-plan",
-                "description": "Keep the request and plan again.",
-            },
-            {
-                "command": "reset",
-                "label": "Reset",
-                "description": "Clear this run and start over.",
-            },
-        ]
-    elif (
-        not actions
-        and state.get("state")
-        not in {"COMPLETED", "WAITING_FOR_OWNER", "WAITING_FOR_DELIVERY"}
-        and not runtime.get("busy")
-    ):
-        actions = [
-            {"command": "run", "label": "Run", "description": decision["explanation"]}
-        ]
     return actions
 
 

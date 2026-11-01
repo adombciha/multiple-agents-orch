@@ -956,6 +956,12 @@ class AgentOrchestrator:
     def validate_delivery_preview(
         self, preview: dict | None = None, operation: str | None = None
     ) -> bool:
+        if self.state.get("state") != "WAITING_FOR_DELIVERY":
+            raise RuntimeError("Workflow is not waiting for delivery.")
+        if self.state.get("delivery_artifacts_prepared") is not True:
+            raise RuntimeError(
+                "Delivery artifacts are not prepared; confirmation is unavailable."
+            )
         stored = self.state.get("delivery_preview")
         if not isinstance(stored, dict):
             raise RuntimeError("No persistent delivery preview is available.")
@@ -1153,9 +1159,15 @@ class AgentOrchestrator:
         return known_files
 
     def pause_for_human_review(
-        self, source: str, details: str, resume_state: str, pass_state: str
+        self,
+        source: str,
+        details: str,
+        resume_state: str,
+        pass_state: str,
+        *,
+        decision_kind: str | None = None,
     ):
-        from orchestrator.core.status import next_actions, owner_review_kind
+        from orchestrator.core.status import next_actions, owner_review_kind, workflow_decision
         from orchestrator.core.telemetry import summary_markdown
 
         requirements = (
@@ -1165,11 +1177,6 @@ class AgentOrchestrator:
         )
         chinese = any("\u4e00" <= char <= "\u9fff" for char in requirements)
         title = "人工審核報告" if chinese else "Human Review Report"
-        conclusion = (
-            f"{source} 驗證未通過，需要人工確認。"
-            if chinese
-            else f"{source} verification requires human review."
-        )
         action_state = {
             **self.state,
             "state": "WAITING_FOR_OWNER",
@@ -1179,7 +1186,18 @@ class AgentOrchestrator:
             "pass_state": pass_state,
         }
         action_state.pop("human_review_kind", None)
-        review_kind = owner_review_kind(action_state)
+        review_kind = decision_kind or (
+            "review"
+            if source in {"Architect", "Manager", "Reviewer", "QA"}
+            else "resume"
+        )
+        action_state["human_review_kind"] = review_kind
+        if owner_review_kind(action_state) == "invalid":
+            raise RuntimeError(
+                "Owner decision kind does not match its saved transition."
+            )
+        decision = workflow_decision(action_state)
+        conclusion = decision["title"] + "\n\n" + decision["explanation"]
         actions = next_actions(action_state)
         next_action = actions[0]["command"] if actions else "status"
         usage = summary_markdown(self)
@@ -1231,7 +1249,15 @@ class AgentOrchestrator:
             log_warning(
                 f"Reached max plan escalations; pausing for human review after {source} rejection."
             )
-            self.pause_for_human_review(source, feedback, resume_state, pass_state)
+            self.pause_for_human_review(
+                source,
+                feedback,
+                resume_state,
+                pass_state,
+                decision_kind="revise"
+                if source in {"Architect", "Manager", "Reviewer", "QA"}
+                else "resume",
+            )
             return False
         self.state["plan_escalations"] = self.state.get("plan_escalations", 0) + 1
         self.state["code_revisions"] = 0

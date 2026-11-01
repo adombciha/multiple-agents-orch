@@ -244,6 +244,7 @@ class QAAgent(BaseAgent):
                 f"Test command failed to launch (exit {code}), so no tests were executed.\nCommand: {test_cmd}\nOutput:\n{output}\nFix test_command in config.json, then approve to re-run TESTING.",
                 "TESTING",
                 "TESTING",
+                decision_kind="retry_testing",
             )
             return
 
@@ -445,6 +446,7 @@ class QAAgent(BaseAgent):
                 "Retry TESTING after checking the QA backend.\n\n" + qa_report[:2000],
                 "TESTING",
                 "TESTING",
+                decision_kind="resume",
             )
             return
 
@@ -481,6 +483,7 @@ class QAAgent(BaseAgent):
                 f"QA reports that test failures/skips are caused by a missing environment dependency, not a code bug. A human needs to install it, then approve to re-run TESTING.\n\nRun this:\n```bash\n{dependency_install_needed}\n```\n\nQA report:\n{qa_report[:2000]}",
                 "TESTING",
                 "TESTING",
+                decision_kind="retry_testing",
             )
             return
 

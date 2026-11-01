@@ -81,8 +81,9 @@ def offline_models(app, monkeypatch):
 
 
 @pytest.mark.parametrize("conflict", [False, True])
+@pytest.mark.parametrize("owner_gate", [False, True])
 def test_start_pause_restart_test_review_and_real_delivery(
-    tmp_path, monkeypatch, conflict
+    tmp_path, monkeypatch, conflict, owner_gate
 ):
     monkeypatch.setattr(
         "requests.sessions.Session.request",
@@ -108,14 +109,42 @@ def test_start_pause_restart_test_review_and_real_delivery(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["orchestrator.py", "start", "Implement smoke.py with answer() returning 42."],
+        [
+            "orchestrator.py",
+            "start",
+            "Implement smoke.py with answer() returning 42."
+            + (" Wait for owner approval before implementation." if owner_gate else ""),
+        ],
     )
     cli.main()
     app.load_config_and_state()
     offline_models(app, monkeypatch)
-    for expected in ("DEVELOPING_PLAN", "REVIEWING_PLAN", "IMPLEMENTING"):
+    for expected in (
+        "DEVELOPING_PLAN",
+        "REVIEWING_PLAN",
+        "WAITING_FOR_OWNER" if owner_gate else "IMPLEMENTING",
+    ):
         app.step()
         assert app.state["state"] == expected
+    if owner_gate:
+        from orchestrator.gui import GuiService
+        from orchestrator.core.status import next_actions
+
+        app = AgentOrchestrator(tmp_path)
+        app.load_config_and_state()
+        offline_models(app, monkeypatch)
+        assert app.state["human_review_kind"] == "approve_plan"
+        gui_decision = GuiService(tmp_path).status()["workflow_decision"]
+        assert gui_decision["destinations"]["approve"] == "IMPLEMENTING"
+        assert next_actions(app.state)[0]["command"] == "approve"
+        with monkeypatch.context() as approval:
+            approval.setattr(sys, "argv", ["orchestrator.py", "continue"])
+            approval.setattr(cli, "run_workflow", Mock())
+            cli._run_cli(app)
+        assert app.state["state"] == "IMPLEMENTING"
+        assert app.implementation_approval_evidence()[
+            "matches_current_request_and_plan"
+        ]
     app.request_pause()
     app.run_to_end()
     assert app.state["state"] == "WAITING_FOR_OWNER"

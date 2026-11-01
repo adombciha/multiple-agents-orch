@@ -251,6 +251,7 @@ Return the verdict and concise feedback using the supplied JSON schema."""
                 + review,
                 "REVIEWING_CODE",
                 "REVIEWING_CODE",
+                decision_kind="accept_existing",
             )
             return
 

@@ -77,6 +77,7 @@ class ArchitectAgent(BaseAgent):
                     + plan,
                     "IMPLEMENTING",
                     "IMPLEMENTING",
+                    decision_kind="approve_plan",
                 )
                 return
             self.orchestrator.state["state"] = "IMPLEMENTING"
@@ -95,5 +96,9 @@ class ArchitectAgent(BaseAgent):
             else:
                 log_warning("Reached max plan revisions. Pausing for human review.")
                 self.orchestrator.pause_for_human_review(
-                    "Architect", review, "DEVELOPING_PLAN", "IMPLEMENTING"
+                    "Architect",
+                    review,
+                    "DEVELOPING_PLAN",
+                    "IMPLEMENTING",
+                    decision_kind="revise",
                 )

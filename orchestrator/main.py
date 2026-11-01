@@ -20,7 +20,7 @@ from orchestrator.core.state import (
     log_header,
 )
 from orchestrator.core import scoring
-from orchestrator.core.status import continue_decision, next_actions
+from orchestrator.core.status import continue_decision, next_actions, owner_action_target, STAGE_LABELS
 
 REFERENCE_BLOCK_START = (
     "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
@@ -265,11 +265,7 @@ def apply_approve(
     """Resume a WAITING_FOR_OWNER pause at its recorded pass_state (falling
     back to resume_state), resetting the Developer budget after a Developer
     pause while retaining contract-failed routes unless explicitly cleared."""
-    resume_state = orchestrator.state.get(
-        "pass_state", orchestrator.state.get("resume_state", "REVIEWING_CODE")
-    )
-    if resume_state == "FAILED":
-        resume_state = "IMPLEMENTING"
+    resume_state = owner_action_target(orchestrator.state, "approve")
     active_task_id = orchestrator.state.get("active_task_id")
     if active_task_id:
         source = orchestrator.state.get("human_review_source")
@@ -321,6 +317,7 @@ def apply_review_decision(
     `reset_revisions` (revise only, non-Architect/Manager source): clear
     code_revisions first so the auto-revise loop gets a fresh budget instead
     of immediately re-pausing if it was already at max_revisions."""
+    next_state = owner_action_target(orchestrator.state, decision)
     if decision == "preview-existing":
         preview = orchestrator.present_existing_changes()
         log_info(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -330,14 +327,10 @@ def apply_review_decision(
         return
     if decision == "accept-existing":
         orchestrator.accept_existing_changes(snapshot_id)
-        next_state = "REVIEWING_CODE"
-    elif decision == "pass":
-        next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
     elif decision == "revise":
         orchestrator.state.pop("implementation_approval", None)
         orchestrator.state.pop("existing_changes_acceptance", None)
         if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
-            next_state = "DEVELOPING_PLAN"
             feedback = orchestrator.state.get("pending_plan_feedback", "")
             latest = orchestrator.state.get("human_review_details", "")
             orchestrator.state["pending_plan_feedback"] = "\n\n".join(
@@ -345,7 +338,6 @@ def apply_review_decision(
             )
             orchestrator.state["plan_revisions"] = 0
         else:
-            next_state = "IMPLEMENTING"
             if reset_revisions:
                 orchestrator.state["code_revisions"] = 0
             n = orchestrator.state.get("code_revisions", 0) + 1
@@ -361,8 +353,6 @@ def apply_review_decision(
                     **orchestrator.fix_task_levels(),
                 }
             )
-    else:
-        next_state = "FAILED"
     if decision == "pass" and orchestrator.state.get("human_review_source") == "QA":
         for qa_level in orchestrator.state.get("qa_dissenting_levels", []):
             qa_role = f"qa_{qa_level}"
@@ -399,6 +389,36 @@ def pick_continue_decision(orchestrator: AgentOrchestrator) -> tuple[str, bool]:
     return continue_decision(
         orchestrator.state, orchestrator.config.get("max_revisions", 2)
     )
+
+
+def apply_continue(
+    orchestrator: AgentOrchestrator, clear_route_failures: bool = False
+) -> bool:
+    """Apply the same safe continuation for CLI and GUI while holding the run lock."""
+    current = orchestrator.state.get("state")
+    if current == "WAITING_FOR_OWNER":
+        owner_action_target(orchestrator.state, "continue")
+        decision, reset_revisions = pick_continue_decision(orchestrator)
+        if decision == "approve":
+            return apply_approve(orchestrator, clear_route_failures)
+        if clear_route_failures:
+            task_id = orchestrator.state.get("active_task_id")
+            if task_id:
+                clear_task_route_failures(orchestrator, task_id, clear_contract=True)
+        apply_review_decision(orchestrator, "revise", reset_revisions)
+        return True
+    if current in {"COMPLETED", "FAILED"}:
+        raise RuntimeError("Workflow cannot be continued from its terminal state.")
+    if current == "WAITING_FOR_DELIVERY":
+        raise RuntimeError(
+            "Delivery confirmation is required; use deliver to show the Git impact."
+        )
+    if current not in STAGE_LABELS:
+        raise RuntimeError(
+            "Unknown workflow state; inspect the saved state before continuing."
+        )
+    orchestrator.clear_pause_request()
+    return True
 
 
 def run_workflow(orchestrator: AgentOrchestrator) -> None:
@@ -961,33 +981,8 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     elif args.command == "continue":
         try:
             orchestrator.load_config_and_state()
-            state = orchestrator.state.get("state")
-            if state == "COMPLETED":
-                if orchestrator.state.get("delivery", {}).get("delivered"):
-                    log_success("Project already delivered; nothing to continue.")
-                else:
-                    orchestrator.step()
-                return
-            if state == "FAILED":
-                log_error(
-                    "Project failed; nothing to continue. Use 'reject' (keep the "
-                    "prompt, re-plan) or 'reset' (start over) instead."
-                )
-                return
-            if state == "WAITING_FOR_OWNER":
-                decision, reset_revisions = pick_continue_decision(orchestrator)
-                if decision == "approve":
-                    if not apply_approve(orchestrator, args.clear_route_failures):
-                        return
-                else:
-                    if args.clear_route_failures:
-                        active_task_id = orchestrator.state.get("active_task_id")
-                        if active_task_id:
-                            clear_task_route_failures(
-                                orchestrator, active_task_id, clear_contract=True
-                            )
-                    apply_review_decision(orchestrator, "revise", reset_revisions)
-            run_workflow(orchestrator)
+            if apply_continue(orchestrator, args.clear_route_failures):
+                run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(
                 "Project not initialized. Please run 'python3 orchestrator.py init' first."
