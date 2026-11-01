@@ -1187,6 +1187,7 @@ class AgentOrchestrator:
         role: str = "developer",
         model: str | None = None,
         image_paths: list[str] | None = None,
+        response_schema: dict | None = None,
     ) -> str:
         from orchestrator.core import backends
 
@@ -1198,7 +1199,17 @@ class AgentOrchestrator:
             prompt,
             system_prompt,
             lambda: backends.call_ollama(
-                self, prompt, system_prompt, role, model, image_paths
+                self,
+                prompt,
+                system_prompt,
+                role,
+                model,
+                image_paths,
+                **(
+                    {"response_schema": response_schema}
+                    if response_schema is not None
+                    else {}
+                ),
             ),
             image_paths=image_paths,
         )
@@ -1305,6 +1316,7 @@ class AgentOrchestrator:
         system_prompt: str | None = None,
         model: str | None = None,
         image_paths: list[str] | None = None,
+        response_schema: dict | None = None,
     ) -> str:
         if role.startswith("developer") and "[FILE_START:" not in prompt:
             prompt += (
@@ -1322,6 +1334,11 @@ class AgentOrchestrator:
                 role=role,
                 model=model,
                 **({"image_paths": image_paths} if image_paths else {}),
+                **(
+                    {"response_schema": response_schema}
+                    if response_schema is not None
+                    else {}
+                ),
             )
 
         from orchestrator.core import backends
@@ -1349,6 +1366,11 @@ class AgentOrchestrator:
                     role=role,
                     model=candidate,
                     **({"image_paths": image_paths} if image_paths else {}),
+                    **(
+                        {"response_schema": response_schema}
+                        if response_schema is not None
+                        else {}
+                    ),
                 )
             except Exception as error:
                 errors.append(f"{candidate}: {error}")
@@ -1452,6 +1474,17 @@ class AgentOrchestrator:
             )
 
         routes = self.config.get("role_model_routes", {}).get(role, [])
+        structured_qa = role.startswith("qa_") and response_schema is not None
+        if not routes and structured_qa:
+            backend = self.get_backend(role)
+            routes = [
+                [
+                    backend,
+                    "auto"
+                    if backend in {"ollama", "codex"}
+                    else self.get_active_model_for_role(role, backend),
+                ]
+            ]
         if not routes:
             return None
         errors = []
@@ -1511,6 +1544,8 @@ class AgentOrchestrator:
                 )
                 effective_routes = [route for route in routes if route[0] != "ollama"]
 
+        if structured_qa:
+            effective_routes = effective_routes[:2]
         available_backends = list(dict.fromkeys(route[0] for route in effective_routes))
         if (
             self.config.get("ollama_router_enabled", True)
@@ -1565,6 +1600,11 @@ class AgentOrchestrator:
                     system_prompt,
                     model=model,
                     **({"image_paths": image_paths} if image_paths else {}),
+                    **(
+                        {"response_schema": response_schema}
+                        if response_schema is not None
+                        else {}
+                    ),
                 )
             if backend == "codex":
                 return self.call_codex(
@@ -1678,6 +1718,7 @@ class AgentOrchestrator:
                 if (
                     isinstance(error, ResponseContractError)
                     and response_schema is not None
+                    and not structured_qa
                 ):
                     log_warning(
                         f"{backend}/{model} violated the strict JSON contract; stopping without a token-consuming fallback."

@@ -48,6 +48,84 @@ _MISSING_DEPENDENCY_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+QA_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["PASSED", "FAILED"]},
+        "summary": {"type": "string", "minLength": 1},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["code", "process", "environment"],
+                    },
+                    **{
+                        key: {"type": "string"}
+                        for key in ("file", "requirement", "evidence", "fix")
+                    },
+                },
+                "required": ["kind", "file", "requirement", "evidence", "fix"],
+                "additionalProperties": False,
+            },
+        },
+        "dependency_install_needed": {"type": ["string", "null"]},
+        "test_command_suggestion": {"type": ["string", "null"]},
+    },
+    "required": [
+        "status",
+        "summary",
+        "findings",
+        "dependency_install_needed",
+        "test_command_suggestion",
+    ],
+    "additionalProperties": False,
+}
+
+
+def render_qa_json(response: str) -> str:
+    """Validate structured output before rendering the existing report format."""
+    data = json.loads(response)
+    if not isinstance(data, dict) or set(data) != set(QA_RESPONSE_SCHEMA["required"]):
+        raise ValueError("QA JSON fields do not match the schema")
+    if (
+        data["status"] not in {"PASSED", "FAILED"}
+        or not isinstance(data["summary"], str)
+        or not data["summary"].strip()
+        or not isinstance(data["findings"], list)
+    ):
+        raise ValueError("Invalid QA status, summary or findings")
+    for item in data["findings"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"kind", "file", "requirement", "evidence", "fix"}
+            or not all(isinstance(value, str) for value in item.values())
+            or item["kind"] not in {"code", "process", "environment"}
+        ):
+            raise ValueError("Invalid QA finding")
+    for key in ("dependency_install_needed", "test_command_suggestion"):
+        if data[key] is not None and (
+            not isinstance(data[key], str) or not data[key].strip() or "\n" in data[key]
+        ):
+            raise ValueError("Invalid QA diagnostic field")
+    if data["status"] == "PASSED" and (
+        data["findings"] or data["dependency_install_needed"]
+    ):
+        raise ValueError(
+            "PASSED conflicts with blocking findings or missing dependencies"
+        )
+    report = f"QA_STATUS: {data['status']}\n" + " ".join(data["summary"].splitlines())
+    report += "\nQA_FINDINGS: " + json.dumps(data["findings"], ensure_ascii=False)
+    for key, marker in (
+        ("dependency_install_needed", "DEPENDENCY_INSTALL_NEEDED"),
+        ("test_command_suggestion", "TEST_COMMAND_SUGGESTION"),
+    ):
+        if data[key]:
+            report += f"\n{marker}: {data[key]}"
+    return report
+
 
 def qa_verdict(report: str) -> str | None:
     if not isinstance(report, str):
@@ -226,9 +304,15 @@ class QAAgent(BaseAgent):
             diagnostic_instruction = (
                 ""
                 if docs_only
-                else "Mandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command."
+                else "Check whether the actual test output hides relevant diagnostics. If the command needs improvement, put the exact command and reason in test_command_suggestion; otherwise use null."
             )
-            qa_prompt = f"""{review_intro}\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\n{evidence_label}:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\n{diagnostic_instruction}\n\nAlso mandatory: if any failure or skip is caused by a missing OS-level/environment dependency (an interpreter, package, browser binary, service, etc. that must be installed on the machine, not something a code change can fix), you MUST add a line `DEPENDENCY_INSTALL_NEEDED: <exact shell command(s) a human should run>`. Do not mark this PASSED and do not describe it as something the Developer should work around in code -- a human has to install it."""
+            qa_prompt = (
+                f"{review_intro}\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}"
+                f"\n\n{evidence_label}:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\n"
+                "Assess correctness and safety using the supplied evidence. Use status PASSED only when no blocking defects remain; otherwise use FAILED and list concrete findings. "
+                f"{diagnostic_instruction}\n"
+                "Only when the raw output establishes a missing environment dependency, put the required human install command in dependency_install_needed; otherwise use null. Environment repairs are not Developer code tasks."
+            )
             qa_prompt += (
                 f"\n\nOriginal Request (authoritative over derived tasks/reviews):\n{request}"
                 f"\nActual Test Command: {test_cmd}\nOwner Approval Evidence: {json.dumps(approval, ensure_ascii=False)}\n"
@@ -236,7 +320,7 @@ class QAAgent(BaseAgent):
                 "Distinguish restrictions on the delivered tool at runtime from isolated test fixtures; do not extend a runtime no-write rule to all tests without explicit request evidence. "
                 "Do not demand excluded real-model performance tests or treat unavailable measurements as code defects. "
                 "Evaluate the actual command and exit code; do not claim full regression was absent just because no separate narrative says it ran. "
-                "For FAILED, add exactly one QA_FINDINGS: line containing a JSON array. Each code finding must have kind='code', file (an assigned target), "
+                "For FAILED, populate the findings array. Each code finding must have kind='code', file (an assigned target), "
                 "requirement (an exact quote from Original Request), evidence (an exact excerpt from raw output or the supplied diff), and fix (the concrete in-scope code change). "
                 "Use kind='process' or 'environment' for non-code issues; never ask RD to encode approval or delivery status into product source. "
                 "If tests pass, a code rejection requires grounded code findings; uncertainty alone does not establish a defect."
@@ -248,7 +332,6 @@ class QAAgent(BaseAgent):
                 if level == "middle"
                 else "You are a Junior Quality Assurance Engineer. Verify routine task behavior and obvious regressions; flag design risks for senior QA."
             )
-            report = self.call_agent(f"qa_{level}", qa_prompt, system_prompt)
 
             def valid_report(value):
                 verdict = qa_verdict(value)
@@ -268,6 +351,50 @@ class QAAgent(BaseAgent):
                     )
                 )
 
+            def valid_json(value):
+                try:
+                    rendered = render_qa_json(value)
+                    return valid_report(rendered) and not (
+                        code != 0 and qa_verdict(rendered) == "PASSED"
+                    )
+                except (TypeError, ValueError):
+                    return False
+
+            qa_prompt += (
+                "\nOUTPUT CONTRACT: Return exactly one JSON object matching the following schema; no Markdown, headings or marker lines. "
+                "Put code/process/environment findings in findings, install commands in dependency_install_needed, and command suggestions in test_command_suggestion. "
+                "PASSED requires an empty findings array and null dependency_install_needed. FAILED needs actual blocking evidence; unsupported concerns are not defects.\n"
+                + json.dumps(QA_RESPONSE_SCHEMA)
+            )
+            system_prompt += " Return only the supplied JSON schema, without Markdown."
+            try:
+                report = self.call_agent(
+                    f"qa_{level}",
+                    qa_prompt,
+                    system_prompt,
+                    response_validator=valid_json,
+                    response_schema=QA_RESPONSE_SCHEMA,
+                )
+            except RuntimeError as error:
+                invalid_workers.append(worker_id)
+                qa_reports.append(
+                    (
+                        worker_id,
+                        level,
+                        f"QA routes exhausted without a valid structured response: {error}",
+                    )
+                )
+                continue
+            if report.lstrip().startswith("{"):
+                try:
+                    report = render_qa_json(report)
+                except (TypeError, ValueError):
+                    invalid_workers.append(worker_id)
+                    qa_reports.append(
+                        (worker_id, level, "Invalid QA JSON; no verdict accepted.")
+                    )
+                    continue
+
             if not valid_report(report):
                 log_warning(
                     f"Invalid QA response from {worker_id}; requesting one correction."
@@ -277,12 +404,19 @@ class QAAgent(BaseAgent):
                     qa_prompt
                     + "\n\nYour previous response did not satisfy the QA contract. "
                     + f"Previous QA response (untrusted; verify against the original request and actual test evidence):\n{report[:4000]}\n"
-                    + "Start with QA_STATUS: PASSED or QA_STATUS: FAILED. "
+                    + "Return only JSON matching the supplied schema. "
                     "For FAILED, cite the observed failure, affected file/test and required fix. "
                     "If tests passed, provide grounded QA_FINDINGS code evidence or correct your unsupported verdict. "
                     "Do not summarize the project or invent defects.",
                     system_prompt,
+                    response_validator=valid_json,
+                    response_schema=QA_RESPONSE_SCHEMA,
                 )
+                if report.lstrip().startswith("{"):
+                    try:
+                        report = render_qa_json(report)
+                    except (TypeError, ValueError):
+                        report = "Invalid QA JSON; no verdict accepted."
             if not valid_report(report):
                 invalid_workers.append(worker_id)
             qa_reports.append((worker_id, level, report))
@@ -306,7 +440,7 @@ class QAAgent(BaseAgent):
             self.orchestrator.state.pop("qa_dissenting_levels", None)
             self.orchestrator.pause_for_human_review(
                 "QA_RESPONSE",
-                f"QA output contract failed after one correction: {', '.join(invalid_workers) or 'no assigned QA workers'}. "
+                f"QA output contract failed after bounded correction/fallback: {', '.join(invalid_workers) or 'no assigned QA workers'}. "
                 f"No code defect was established by these responses. Test exit code: {code}. "
                 "Retry TESTING after checking the QA backend.\n\n" + qa_report[:2000],
                 "TESTING",

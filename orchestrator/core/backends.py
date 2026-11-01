@@ -523,6 +523,7 @@ def call_ollama(
     role: str = "developer",
     model: str | None = None,
     image_paths: list[str] | None = None,
+    response_schema: dict | None = None,
 ) -> str:
     from orchestrator.core.state import log_info, log_error
 
@@ -551,6 +552,8 @@ def call_ollama(
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
     payload["options"], think = ollama_request_options(orchestrator, model, messages)
+    if response_schema is not None:
+        payload["format"] = response_schema
     no_think_models = getattr(orchestrator, "_ollama_no_think_models", set())
     if think is not None and model not in no_think_models:
         payload["think"] = think
