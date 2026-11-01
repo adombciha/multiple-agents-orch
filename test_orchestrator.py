@@ -3094,6 +3094,79 @@ def test_markdown_edit_blocks_require_unique_old_text(initialized_orchestrator):
     assert readme.read_text(encoding="utf-8") == "# Install\n\nSame\nSame\n"
 
 
+@pytest.mark.parametrize(
+    "name,original,updated",
+    [
+        (
+            "test_check_ollama_models.py",
+            "# Old test comment\nVALUE = 1\n",
+            "# Updated test comment\nVALUE = 2\n",
+        ),
+        (
+            "app.py",
+            '"""Module documentation\n# Old embedded Markdown heading\n"""\nVALUE = 1\n',
+            '"""Module documentation\n# New embedded Markdown heading\n"""\nVALUE = 2\n',
+        ),
+        ("notes.txt", "# Old label\nText\n", "# New label\nText\n"),
+    ],
+)
+def test_non_markdown_edit_does_not_apply_heading_protection(
+    initialized_orchestrator, name, original, updated
+):
+    app = initialized_orchestrator
+    source = app.workspace / name
+    source.write_text(original)
+    response = f"[FILE_EDIT_START: {name}]\n[OLD]\n{original}[NEW]\n{updated}[FILE_EDIT_END: {name}]"
+    errors = []
+    assert app.parse_and_write_files(
+        response, [name], dry_run=True, validation_errors=errors
+    ) == [name]
+    assert errors == []
+    assert source.read_text() == original
+    assert app.parse_and_write_files(response, [name]) == [name]
+    assert source.read_text() == updated
+
+
+@pytest.mark.parametrize("name", ["README.md", "README.MD"])
+@pytest.mark.parametrize("authorized", [False, True])
+def test_markdown_edit_preserves_headings_unless_explicitly_authorized(
+    initialized_orchestrator, name, authorized
+):
+    app = initialized_orchestrator
+    source = app.workspace / name
+    original = "# Original title\n\nBody\n"
+    source.write_text(original)
+    response = f"[FILE_EDIT_START: {name}]\n[OLD]\n# Original title\n[NEW]\n# Revised title\n[FILE_EDIT_END: {name}]"
+    errors = []
+    result = app.parse_and_write_files(
+        response,
+        [name],
+        allow_markdown_heading_changes=authorized,
+        validation_errors=errors,
+    )
+    if authorized:
+        assert result == [name]
+        assert source.read_text() == "# Revised title\n\nBody\n"
+    else:
+        assert result == []
+        assert "removes existing headings" in errors[0]
+        assert source.read_text() == original
+
+
+def test_python_comment_edit_still_requires_valid_syntax(initialized_orchestrator):
+    app = initialized_orchestrator
+    source = app.workspace / "app.py"
+    original = "# Original comment\nVALUE = 1\n"
+    source.write_text(original)
+    response = "[FILE_EDIT_START: app.py]\n[OLD]\n# Original comment\nVALUE = 1\n[NEW]\ndef broken():\nreturn 2\n[FILE_EDIT_END: app.py]"
+    errors = []
+    assert (
+        app.parse_and_write_files(response, ["app.py"], validation_errors=errors) == []
+    )
+    assert "does not parse" in errors[0]
+    assert source.read_text() == original
+
+
 def test_missing_old_edit_reports_current_file_excerpt_without_writing(
     initialized_orchestrator,
 ):

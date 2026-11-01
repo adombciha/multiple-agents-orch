@@ -891,7 +891,11 @@ class DeveloperAgent(BaseAgent):
                 for line in original.splitlines()
                 if re.match(r"^#{1,6}\s+\S", line)
             ]
-            if any(heading not in updated for heading in headings):
+            if (
+                target_path.suffix.lower() == ".md"
+                and not allow_markdown_heading_changes
+                and any(heading not in updated for heading in headings)
+            ):
                 reject(
                     f"Skipping Markdown edit that removes existing headings: {filepath_str}"
                 )
