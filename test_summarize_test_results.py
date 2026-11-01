@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -102,6 +103,110 @@ def test_statistics_variants(tmp_path, capsys, statistics):
 
     assert main(["--file", str(path)]) == 0
     assert capsys.readouterr().out.endswith(f"pytest 統計：{statistics}\n")
+
+
+@pytest.mark.parametrize(
+    ("command", "code", "output", "statistics"),
+    [
+        ("python -m pytest -q", 0, "2 passed in 0.10s", "2 passed in 0.10s"),
+        (
+            "python -m pytest -q",
+            1,
+            "2 passed in 0.01s\n1 failed, 2 passed in 0.10s",
+            "1 failed, 2 passed in 0.10s",
+        ),
+        ("pytest", -9, "process terminated", "未知"),
+        (
+            'python -m pytest "C:\\測試\\test_example.py"',
+            1,
+            "1 failed in 0.10s",
+            "1 failed in 0.10s",
+        ),
+    ],
+)
+def test_json_output(tmp_path, capsys, command, code, output, statistics):
+    path = write_record(
+        tmp_path,
+        f"Command: {command}\nExit Code: {code}\nOutput:\n{output}\n",
+    )
+    original = path.read_bytes()
+
+    assert main(["--file", str(path), "--json"]) == 0
+
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result == {
+        "command": command,
+        "exit_code": code,
+        "statistics": statistics,
+    }
+    assert type(result["command"]) is str
+    assert type(result["exit_code"]) is int
+    assert type(result["statistics"]) is str
+    assert captured.err == ""
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    ("scenario", "error"),
+    [
+        ("missing", "檔案不存在"),
+        ("directory", "無法讀取檔案"),
+        ("invalid_utf8", "無法讀取檔案"),
+        ("missing_field", "缺少必要欄位或欄位為空：Command"),
+        ("invalid_code", "Exit Code 必須是整數"),
+    ],
+)
+def test_json_failure(tmp_path, capsys, scenario, error):
+    path = tmp_path / "test_results.txt"
+    if scenario == "directory":
+        path = tmp_path
+    elif scenario == "invalid_utf8":
+        path.write_bytes(b"Command: pytest\nExit Code: 0\nOutput:\n\xff")
+    elif scenario == "missing_field":
+        path = write_record(tmp_path, "Exit Code: 0\n")
+    elif scenario == "invalid_code":
+        path = write_record(tmp_path, "Command: pytest\nExit Code: invalid\n")
+
+    assert main(["--file", str(path), "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert error in captured.err
+    assert str(path) in captured.err
+
+
+def test_module_cli_json(tmp_path):
+    path = write_record(
+        tmp_path,
+        "Command: python -m pytest -q\nExit Code: 1\n"
+        "Output:\n1 failed, 2 passed in 0.10s\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-m",
+            "scripts.summarize_test_results",
+            "--file",
+            str(path),
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parent,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "command": "python -m pytest -q",
+        "exit_code": 1,
+        "statistics": "1 failed, 2 passed in 0.10s",
+    }
 
 
 def test_bom_crlf_whitespace_and_colon_in_command(tmp_path, capsys):

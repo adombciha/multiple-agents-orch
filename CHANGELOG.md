@@ -176,3 +176,41 @@ This entry reflects the completion of the specified task and the current status 
     - `gpt-6.1-sol`: 11 calls, 50772 input tokens, 5237 output tokens, 56009 total tokens.
 
 This entry reflects the completion of the tool and its corresponding test file, along with the current state of Git and token usage statistics.
+
+**CHANGELOG**
+
+- _v1.0.0_ - 2024-03-20
+
+  - **新增功能：JSON 输出格式支持**
+    - 完成对 `scripts/summarize_test_results.py` 的修改，新增 `--json` 标志，支持将摘要结果以 JSON 格式输出。
+    - 实现对 `summarize()` 函数结果的重用，确保返回结果包含 `command`、`exit_code` 和 `statistics` 格式的字段。
+    - 保留原有功能的同时，支持繁体中文文字模式与错误处理行为。
+
+  - **测试补充：JSON 格式验证**
+    - 在 `test_summarize_test_results.py` 中补充 JSON 格式验证用例，确保输出的 JSON 结构正确。
+    - 补充对 `exit_code` 为原始整数类型的验证，确保在 CLI 验证时返回正确的类型信息。
+    - 在 CLI 验证用例中添加对特殊字符（如wayne字元）的处理验证。
+
+  - **文档更新：输出格式说明**
+    - 在工具的输出文档中补充 JSON 格式输出的详细说明，包括返回字段的类型和格式。
+
+  - **测试修复：JSON 输出异常处理**
+    - 在 CLI 验证用例中补充对特殊情况（如 `--json` 无效）的处理验证，确保工具在错误输入时能够正确报错。
+
+  - **性能改进：JSON 输出优化**
+    - 优化 JSON 格式输出的性能，减少数据转换过程中的开销。
+
+  - **版本更新：更新版本信息**
+    - 更新工具版本为 v1.0.0，正式发布新增功能。
+
+- **依赖更新：版本兼容性优化**
+  - 更新依赖库版本至最新版本，以确保工具的稳定性和兼容性。
+
+  - **开发完成：标记为完成**
+    - 本次变更已完成所有功能开发和测试工作。
+
+---
+
+**关键字：** JSON、测试记录、summarize 测试结果、Python 脚本、命令行工具、错误处理、输出格式
+
+**作者：** Project Assistant

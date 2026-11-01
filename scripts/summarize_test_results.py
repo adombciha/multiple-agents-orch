@@ -1,6 +1,7 @@
 """Read a test record and print a Traditional Chinese summary."""
 
 import argparse
+import json
 from pathlib import Path
 import re
 import sys
@@ -47,6 +48,7 @@ def summarize(text):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="唯讀摘要測試紀錄。")
     parser.add_argument("--file", required=True, type=Path, help="測試紀錄檔案路徑")
+    parser.add_argument("--json", action="store_true", help="以 JSON 輸出摘要")
     args = parser.parse_args(argv)
 
     try:
@@ -64,9 +66,21 @@ def main(argv=None):
         print(f"錯誤：{args.file}：{exc}", file=sys.stderr)
         return 1
 
-    print(f"測試命令（Command）：{command}")
-    print(f"原始測試退出碼（Exit Code）：{exit_code}")
-    print(f"pytest 統計：{statistics}")
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "command": command,
+                    "exit_code": exit_code,
+                    "statistics": statistics,
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"測試命令（Command）：{command}")
+        print(f"原始測試退出碼（Exit Code）：{exit_code}")
+        print(f"pytest 統計：{statistics}")
     return 0
 
 
