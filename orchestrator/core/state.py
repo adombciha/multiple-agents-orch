@@ -158,6 +158,7 @@ class AgentOrchestrator:
             },
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
+            "qa_failed_model_routes": [],
             "task_failed_model_routes": {},
             "task_contract_failures": {},
             "task_developer_calls": {},
@@ -315,6 +316,7 @@ class AgentOrchestrator:
             "tasks": [],
             "specialists": [],
             "failed_model_routes": [],
+            "qa_failed_model_routes": [],
             "task_failed_model_routes": {},
             "task_contract_failures": {},
             "task_developer_calls": {},
@@ -426,6 +428,7 @@ class AgentOrchestrator:
         self.state.setdefault("last_developer_role", "developer_senior")
         self.state.setdefault("developer_promotions", {})
         self.state.setdefault("failed_model_routes", [])
+        self.state.setdefault("qa_failed_model_routes", [])
         self.state.setdefault("task_failed_model_routes", {})
         self.state.setdefault("task_contract_failures", {})
         self.state.setdefault("task_developer_calls", {})
@@ -1657,7 +1660,10 @@ class AgentOrchestrator:
             "developer"
         )
         task_id = self.state.get("active_task_id") if implementing else None
-        if task_id:
+        if structured_qa:
+            # Legacy global failures have no role provenance; keep them for other roles.
+            failed_routes = self.state.setdefault("qa_failed_model_routes", [])
+        elif task_id:
             failed_routes = self.state.setdefault(
                 "task_failed_model_routes", {}
             ).setdefault(task_id, [])
@@ -1908,7 +1914,9 @@ class AgentOrchestrator:
                     self.save_state()
                 exhausted = backends.quota_exhausted(error)
                 if (
-                    not isinstance(error, ResponseContractError)
+                    not isinstance(
+                        error, (ResponseContractError, backends.InputContextExceeded)
+                    )
                     and not exhausted
                     and route not in failed_routes
                 ):

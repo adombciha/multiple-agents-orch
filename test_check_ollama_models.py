@@ -497,7 +497,8 @@ class CheckOllamaModelsTests(unittest.TestCase):
         self.assertNotIn("request", self.rows(report)["too-small:1"])
         self.assertTrue(
             any(
-                error.get("model") == "too-small:1" and error["type"] == "RuntimeError"
+                error.get("model") == "too-small:1"
+                and error["type"] == "InputContextExceeded"
                 for error in report["errors"]
             )
         )

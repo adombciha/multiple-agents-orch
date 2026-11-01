@@ -100,6 +100,7 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["task_backend_overrides"] = {}
     orchestrator.state["quota_exhausted_backends"] = {}
     orchestrator.state["failed_model_routes"] = []
+    orchestrator.state["qa_failed_model_routes"] = []
     orchestrator.state["task_failed_model_routes"] = {}
     orchestrator.state["task_contract_failures"] = {}
     orchestrator.state["task_developer_calls"] = {}
@@ -266,6 +267,11 @@ def apply_approve(
     back to resume_state), resetting the Developer budget after a Developer
     pause while retaining contract-failed routes unless explicitly cleared."""
     resume_state = owner_action_target(orchestrator.state, "approve")
+    if resume_state == "TESTING" and orchestrator.state.get("human_review_source") in {
+        "QA",
+        "QA_RESPONSE",
+    }:
+        orchestrator.state["qa_failed_model_routes"] = []
     active_task_id = orchestrator.state.get("active_task_id")
     if active_task_id:
         source = orchestrator.state.get("human_review_source")
@@ -833,6 +839,7 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             "task_backend_overrides": {},
             "quota_exhausted_backends": {},
             "failed_model_routes": [],
+            "qa_failed_model_routes": [],
             "task_failed_model_routes": {},
             "task_contract_failures": {},
             "task_developer_calls": {},

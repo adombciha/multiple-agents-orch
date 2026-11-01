@@ -178,3 +178,88 @@ def test_json_defect_requires_real_requirement_and_evidence(qa_app, monkeypatch)
     assert post.call_count == 1
     assert app.state["state"] == "IMPLEMENTING"
     assert "Remove the unsafe call" in app.state["tasks"][-1]["description"]
+
+
+def test_context_overflow_does_not_disable_routes_for_smaller_requests(
+    qa_app, monkeypatch
+):
+    app = qa_app
+    post = configure_routes(app, monkeypatch, [result()])
+    app.config["ollama_num_ctx"] = 8192
+    with pytest.raises(RuntimeError, match="exceeds context budget"):
+        app.call_role_model_routes(
+            "qa_senior", "x" * 100000, response_schema=QA_RESPONSE_SCHEMA
+        )
+    post.assert_not_called()
+    assert app.state.get("qa_failed_model_routes", []) == []
+    assert app.state.get("failed_model_routes", []) == []
+    response = app.call_role_model_routes(
+        "qa_senior", "Short evidence", response_schema=QA_RESPONSE_SCHEMA
+    )
+    assert json.loads(response)["status"] == "PASSED"
+    assert post.call_count == 1
+
+
+@pytest.mark.parametrize("entry", ["approve", "continue", "gui"])
+def test_owner_qa_retry_recovers_legacy_and_qa_routes_after_restart(
+    qa_app, monkeypatch, entry
+):
+    from orchestrator.main import apply_approve, apply_continue
+
+    app = qa_app
+    post = configure_routes(app, monkeypatch, [result()])
+    legacy = ["ollama/first:v1", "ollama/second:v1", "agy/other"]
+    app.state.update(
+        failed_model_routes=legacy[:],
+        qa_failed_model_routes=["ollama/first:v1", "ollama/second:v1"],
+        quota_exhausted_backends={"agy": 12345},
+        task_failed_model_routes={"T1": ["codex/auto"]},
+    )
+    app.pause_for_human_review(
+        "QA_RESPONSE", "No QA response", "TESTING", "TESTING", decision_kind="resume"
+    )
+    app.load_config_and_state()
+    if entry == "gui":
+        from orchestrator.gui import GuiService
+
+        service = GuiService(app.workspace)
+        service.orchestrator = app
+        monkeypatch.setattr(service, "_worker_is_running", lambda: False)
+        monkeypatch.setattr(
+            service, "_start_worker", lambda prepare: (prepare(), True)[1]
+        )
+        service.approve()
+    else:
+        callback = apply_approve if entry == "approve" else apply_continue
+        assert callback(app)
+    assert app.state["state"] == "TESTING"
+    assert app.state["qa_failed_model_routes"] == []
+    assert app.state["failed_model_routes"] == legacy
+    assert app.state["quota_exhausted_backends"] == {"agy": 12345}
+    assert app.state["task_failed_model_routes"] == {"T1": ["codex/auto"]}
+    post.assert_not_called()
+    app.step_testing()
+    assert post.call_count == 1
+    assert app.state["state"] == "REVIEWING_CODE"
+
+
+def test_qa_transport_failure_is_scoped_and_retry_does_not_bypass_backend_gate(
+    qa_app, monkeypatch
+):
+    from orchestrator.main import apply_approve
+
+    app = qa_app
+    post = configure_routes(app, monkeypatch, [])
+    post.side_effect = backends.requests.ConnectionError("offline")
+    app.step_testing()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert len(app.state["qa_failed_model_routes"]) == 2
+    assert app.state.get("failed_model_routes", []) == []
+    gate = Mock(return_value=False)
+    monkeypatch.setattr(backends, "backend_available", gate)
+    assert apply_approve(app)
+    post.reset_mock()
+    app.step_testing()
+    gate.assert_called()
+    post.assert_not_called()
+    assert app.state["human_review_source"] == "QA_RESPONSE"

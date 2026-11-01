@@ -463,6 +463,10 @@ def route_ollama_model_with_tev1(
         return None
 
 
+class InputContextExceeded(RuntimeError):
+    """This request exceeds context capacity; the model remains available."""
+
+
 def ollama_request_options(orchestrator, model, messages):
     """Use discovered controls and bound context allocation by the host budget."""
     catalog = getattr(orchestrator, "_ollama_chat_models_cache", None)
@@ -490,7 +494,7 @@ def ollama_request_options(orchestrator, model, messages):
         sum(len(m["content"].encode("utf-8")) for m in messages) + 2
     ) // 3 + 512
     if estimated_input >= budget:
-        raise RuntimeError(
+        raise InputContextExceeded(
             f"Estimated Ollama input ({estimated_input} tokens) exceeds context budget ({budget}); shorten the task or raise ollama_num_ctx within hardware limits."
         )
     output = min(output, budget - estimated_input)

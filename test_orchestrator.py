@@ -600,6 +600,7 @@ def test_load_config_and_state_loads_config_and_state_from_files(tmp_path, no_gi
     expected_state.setdefault("last_developer_role", "developer_senior")
     expected_state.setdefault("developer_promotions", {})
     expected_state.setdefault("failed_model_routes", [])
+    expected_state.setdefault("qa_failed_model_routes", [])
     expected_state.setdefault("task_failed_model_routes", {})
     expected_state.setdefault("task_contract_failures", {})
     expected_state.setdefault("task_developer_calls", {})
