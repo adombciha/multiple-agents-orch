@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from orchestrator.roles.base_agent import (
     BaseAgent,
+    declared_request_files,
     extract_json_response,
     is_strict_json_response,
     missing_request_files,
@@ -289,7 +290,8 @@ class DeveloperAgent(BaseAgent):
             target = (self.orchestrator.workspace / path).resolve()
             if not path.is_absolute() and self.orchestrator.workspace in target.parents:
                 requested_files.append(str(path))
-        requested_files = list(dict.fromkeys(requested_files))
+        explicit_files = declared_request_files(request_text)
+        requested_files = explicit_files or list(dict.fromkeys(requested_files))
         requested_markdown = [
             name for name in requested_files if Path(name).suffix.lower() == ".md"
         ]
@@ -305,18 +307,22 @@ class DeveloperAgent(BaseAgent):
                 if path.is_file()
                 else []
             )
-        docs_only = bool(requested_files) and any(
-            marker in requirements.lower()
-            for marker in (
-                "only allow modifying",
-                "only allowed to modify",
-                "only allow adding",
-                "only allowed to add",
-                "only modify these",
-                "只允許修改",
-                "僅允許修改",
-                "只允許新增",
-                "僅允許新增",
+        docs_only = (
+            bool(explicit_files)
+            or bool(requested_files)
+            and any(
+                marker in requirements.lower()
+                for marker in (
+                    "only allow modifying",
+                    "only allowed to modify",
+                    "only allow adding",
+                    "only allowed to add",
+                    "only modify these",
+                    "只允許修改",
+                    "僅允許修改",
+                    "只允許新增",
+                    "僅允許新增",
+                )
             )
         )
         language_rewrite = any(

@@ -112,3 +112,78 @@ def test_developing_plan_detects_saved_requirements_drift_without_model_call(
     )
     assert "重新產生需求</button>" in page
     assert "接受目前結果並繼續</button>" not in page
+
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        ["scripts/check_ollama_models.py", "test_check_ollama_models.py"],
+        ["scripts/check_ollama_models.py"],
+        [
+            "scripts/check_ollama_models.py",
+            "test_check_ollama_models.py",
+            "orchestrator/core/backends.py",
+        ],
+    ],
+)
+def test_plan_coverage_uses_declared_outputs_not_read_only_references(
+    initialized_orchestrator, monkeypatch, targets
+):
+    app = initialized_orchestrator
+    request = """## Scope
+僅新增：
+- scripts/check_ollama_models.py
+- test_check_ollama_models.py
+
+既有程式與設定只能唯讀。重用 orchestrator/core/backends.py 的能力探索及請求參數計算。
+## Goal
+新增本機模型診斷工具與離線測試。
+"""
+    files = ["scripts/check_ollama_models.py", "test_check_ollama_models.py"]
+    app.request_path.write_text(request)
+    app.requirements_path.write_text(
+        "僅允許新增 scripts/check_ollama_models.py 與 test_check_ollama_models.py。\n"
+        "重用 orchestrator/core/backends.py，不修改現有程式。"
+    )
+    task = {
+        "id": "task-1",
+        "description": "Inspect the reference, then implement the diagnostic tool and offline tests",
+        "target_files": targets,
+        "rd_level": "middle",
+        "qa_level": "middle",
+    }
+    call = Mock(
+        return_value=json.dumps(
+            {
+                "tasks": [task],
+                "staffing": {"rd": {"middle": 1}, "qa": {"middle": 1}},
+                "specialists": [],
+            }
+        )
+    )
+    monkeypatch.setattr(app, "call_manager", call)
+
+    app.step_developing_plan()
+
+    call.assert_called_once()
+    rule = (
+        call.call_args.args[0]
+        .split("Cover every requested file and no files outside this list: ", 1)[1]
+        .split(". Related", 1)[0]
+    )
+    assert json.loads(rule) == files
+    assert "orchestrator/core/backends.py" in call.call_args.args[0]
+    if targets == files:
+        assert app.state["state"] == "REVIEWING_PLAN"
+        assert app.state["tasks"][0]["target_files"] == files
+        assert app.state["tasks"][0]["description"] == task["description"]
+        assert (
+            "orchestrator/core/backends.py"
+            not in app.plan_path.read_text()
+            .split("## Target Files\n", 1)[1]
+            .split("\n##", 1)[0]
+        )
+    else:
+        assert app.state["state"] == "WAITING_FOR_OWNER"
+        assert app.state["human_review_source"] == "Manager"
+        assert app.state["tasks"] == []
