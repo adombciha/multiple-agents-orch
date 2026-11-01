@@ -477,7 +477,7 @@ def workflow_decision(
         button(
             "重置任務",
             "reset",
-            confirmation="重置會清除已存任務內容並清理目前 worktree，且需要重新提交任務。確定重置？",
+            confirmation="重置會先備份目前分支、worktree 檔案與執行紀錄，再清除任務與 worktree；之後需重新提交任務。確定重置？",
             target=reset_buttons,
         )
 

@@ -5,6 +5,7 @@ import json
 import subprocess
 import signal
 import shutil
+import tarfile
 import re
 import time
 import hashlib
@@ -2235,15 +2236,148 @@ class AgentOrchestrator:
             raise RuntimeError("Git worktree setup failed.")
         log_success("Git worktree successfully established.")
 
-    def cleanup_worktree(self, merge=False):
+    def _backup_reset_worktree(self, wt_path):
+        """Keep committed history and all worktree files before an explicit discard."""
+        archive_root = self.workspace / ".ai-company-archive"
+        if archive_root.is_symlink():
+            raise RuntimeError("Reset archive directory must not be a symlink.")
+        archive_root.mkdir(exist_ok=True)
+        head = self._checked_git_output(
+            ["rev-parse", "refs/heads/ai-feature-branch"], self.workspace
+        ).strip()
+
+        def fingerprint():
+            values = []
+            for path in sorted(wt_path.rglob("*")):
+                relative = path.relative_to(wt_path)
+                if relative.parts[0] == ".git":
+                    continue
+                mode = path.lstat().st_mode
+                if path.is_symlink():
+                    content = os.fsencode(os.readlink(path))
+                elif path.is_file():
+                    content = path.read_bytes()
+                elif path.is_dir():
+                    content = b""
+                else:
+                    raise RuntimeError(
+                        f"Cannot safely back up special file: {relative}"
+                    )
+                values.append(
+                    [str(relative), mode, hashlib.sha256(content).hexdigest()]
+                )
+            return hashlib.sha256(
+                json.dumps(values, ensure_ascii=False).encode()
+            ).hexdigest()
+
+        before = fingerprint()
+        with tempfile.TemporaryDirectory(
+            prefix=".reset-", dir=archive_root
+        ) as temporary:
+            directory = Path(temporary)
+            with tarfile.open(directory / "worktree.tar", "w") as archive:
+                archive.add(
+                    wt_path,
+                    arcname="worktree",
+                    filter=lambda info: None
+                    if info.name == "worktree/.git"
+                    or info.name.startswith("worktree/.git/")
+                    else info,
+                )
+            self._checked_git_output(
+                [
+                    "bundle",
+                    "create",
+                    str(directory / "branch.bundle"),
+                    "refs/heads/ai-feature-branch",
+                ],
+                self.workspace,
+            )
+            self._checked_git_output(
+                ["bundle", "verify", str(directory / "branch.bundle")], self.workspace
+            )
+            patches = {}
+            for name, options in (("index.patch", ["--cached"]), ("working.patch", [])):
+                content = self._checked_git_output(
+                    ["diff", "--binary", "--no-ext-diff", "--no-textconv", *options],
+                    wt_path,
+                )
+                (directory / name).write_text(content, encoding="utf-8")
+                patches[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            reports = directory / "run"
+            reports.mkdir()
+            for path in self.ai_dir.iterdir():
+                if (
+                    path.is_file()
+                    and not path.is_symlink()
+                    and path.name
+                    not in {"run.lock", "gui_worker.json", self.pause_request_path.name}
+                ):
+                    shutil.copy2(path, reports / path.name)
+            report_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in reports.iterdir()
+            }
+            manifest = {
+                "branch": "ai-feature-branch",
+                "head": head,
+                "worktree": before,
+                "patches": patches,
+                "reports": report_hashes,
+            }
+            identity = hashlib.sha256(
+                json.dumps(manifest, sort_keys=True).encode()
+            ).hexdigest()
+            destination = archive_root / ("reset-" + identity)
+            (directory / "manifest.json").write_text(
+                json.dumps(manifest, indent=2), encoding="utf-8"
+            )
+            if (
+                fingerprint() != before
+                or self._checked_git_output(
+                    ["rev-parse", "refs/heads/ai-feature-branch"], self.workspace
+                ).strip()
+                != head
+            ):
+                raise RuntimeError(
+                    "Worktree changed during reset backup; nothing was removed."
+                )
+            if destination.exists():
+                if destination.is_symlink() or any(
+                    hashlib.sha256(path.read_bytes()).digest()
+                    != hashlib.sha256(
+                        (destination / path.relative_to(directory)).read_bytes()
+                    ).digest()
+                    for path in directory.rglob("*")
+                    if path.is_file()
+                ):
+                    raise RuntimeError(
+                        "Existing reset backup does not match; nothing was removed."
+                    )
+            else:
+                os.replace(directory, destination)
+            log_info(f"Reset backup preserved at {destination}")
+        return destination
+
+    def cleanup_worktree(self, merge=False, *, discard=False):
         """Cleans up the git worktree, optionally merging the changes back first."""
         wt_path = self.ai_dir / "worktree"
+        if discard and merge:
+            raise ValueError("Discard is only available for explicit reset, not merge.")
+        if wt_path.is_symlink() or not self.ai_dir.resolve().is_relative_to(
+            self.workspace.resolve()
+        ):
+            log_error(
+                "Worktree path is outside this project or is a symlink; preserved."
+            )
+            return False
         for key in (
             "worktree_failure_stage",
             "worktree_merge_error",
             "worktree_conflict_files",
         ):
-            self.state.pop(key, None)
+            if merge:
+                self.state.pop(key, None)
         worktree_exists = wt_path.exists() or wt_path.is_symlink()
         if not self.config.get("use_worktree", True) or not self.has_git:
             if not worktree_exists:
@@ -2348,16 +2482,52 @@ class AgentOrchestrator:
                 else:
                     log_success(f"Successfully merged changes to {self.base_branch}!")
 
+        if discard:
+            try:
+                backup = self._backup_reset_worktree(wt_path)
+                current_listing = self._checked_git_output(
+                    ["worktree", "list", "--porcelain"], self.workspace
+                )
+                if not any(
+                    f"worktree {wt_path}" in record.splitlines()
+                    and "branch refs/heads/ai-feature-branch" in record.splitlines()
+                    for record in current_listing.split("\n\n")
+                ):
+                    raise RuntimeError(
+                        "Worktree ownership changed; nothing was removed."
+                    )
+            except (OSError, RuntimeError, tarfile.TarError) as error:
+                log_error(f"Reset backup failed; worktree preserved: {error}")
+                return False
         log_info("Removing Git worktree...")
         code, output = self.run_command(
-            ["git", "worktree", "remove", str(wt_path)],
+            [
+                "git",
+                "worktree",
+                "remove",
+                *(["--force"] if discard else []),
+                str(wt_path),
+            ],
             cwd=self.workspace,
         )
         if code != 0:
             log_error(f"Failed to remove git worktree: {output}")
             return False
+        if discard:
+            expected_head = json.loads((backup / "manifest.json").read_text())["head"]
+            if (
+                self._checked_git_output(
+                    ["rev-parse", "refs/heads/ai-feature-branch"], self.workspace
+                ).strip()
+                != expected_head
+            ):
+                log_error(
+                    "Feature branch moved during reset; branch preserved with reset backup."
+                )
+                return False
         code, output = self.run_command(
-            ["git", "branch", "-d", "ai-feature-branch"], cwd=self.workspace
+            ["git", "branch", "-D" if discard else "-d", "ai-feature-branch"],
+            cwd=self.workspace,
         )
         if code != 0:
             log_error(f"Failed to delete feature branch: {output}")

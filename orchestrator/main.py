@@ -3,6 +3,7 @@ import re
 import sys
 import argparse
 import json
+import hashlib
 import uuid
 import shutil
 import tempfile
@@ -73,13 +74,23 @@ def inline_referenced_markdown(prompt: str, workspace: Path) -> str:
     return masked_prompt + appended
 
 
-def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
+def clear_run_state(
+    orchestrator: AgentOrchestrator,
+    target_state: str,
+    *,
+    discard_worktree: bool = False,
+) -> None:
     """Shared by `reset` and `reject`: wipe revision counters, staffing, and
     the worktree so a run can start over from `target_state`. Does not touch
     the saved request prompt -- callers decide separately whether to keep it
     (`reject`, so the same ask gets re-planned) or clear it too (`reset`,
     so a fresh `start` is required)."""
-    if orchestrator.cleanup_worktree(merge=False) is False:
+    if (
+        orchestrator.cleanup_worktree(
+            merge=False, **({"discard": True} if discard_worktree else {})
+        )
+        is False
+    ):
         raise RuntimeError("Git worktree cleanup failed; run state was preserved.")
     orchestrator.state["state"] = target_state
     orchestrator.state["plan_revisions"] = 0
@@ -146,6 +157,41 @@ def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
         )
         return False
 
+    worktree = orchestrator.ai_dir / "worktree"
+    if worktree.exists() or worktree.is_symlink():
+        try:
+            if (
+                worktree.is_symlink()
+                or not orchestrator.has_git
+                or not orchestrator.config.get("use_worktree", True)
+            ):
+                raise RuntimeError("Existing worktree cannot be safely cleaned.")
+            if (
+                orchestrator._checked_git_output(
+                    ["symbolic-ref", "--short", "HEAD"], worktree
+                ).strip()
+                != "ai-feature-branch"
+            ):
+                raise RuntimeError("Existing worktree belongs to another branch.")
+            if orchestrator._checked_git_output(
+                ["status", "--porcelain", "--untracked-files=all"], worktree
+            ).strip():
+                raise RuntimeError(
+                    "Existing worktree has uncommitted files; use explicit reset to back it up and clear it."
+                )
+            orchestrator._checked_git_output(
+                [
+                    "merge-base",
+                    "--is-ancestor",
+                    "ai-feature-branch",
+                    orchestrator.base_branch,
+                ],
+                orchestrator.workspace,
+            )
+        except (OSError, RuntimeError) as error:
+            log_error(f"Cannot archive/start before worktree cleanup: {error}")
+            return False
+
     sources = [
         orchestrator.state_path,
         orchestrator.request_path,
@@ -167,12 +213,47 @@ def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
     if not existing:
         return True
 
-    archive_dir = orchestrator.workspace / ".ai-company-archive" / uuid.uuid4().hex
-    archive_dir.mkdir(parents=True, exist_ok=False)
-    for source in existing:
-        shutil.copy2(source, archive_dir / source.name)
-    log_info(f"Archived previous workflow reports and state to {archive_dir}")
-    return True
+    try:
+        hashes = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in existing
+        }
+        archive_root = orchestrator.workspace / ".ai-company-archive"
+        if archive_root.is_symlink() or any(path.is_symlink() for path in existing):
+            raise RuntimeError("Archive paths must not be symlinks.")
+        archive_root.mkdir(exist_ok=True)
+        identity = hashlib.sha256(
+            json.dumps(hashes, sort_keys=True).encode()
+        ).hexdigest()
+        archive_dir = archive_root / ("run-" + identity)
+        if archive_dir.exists():
+            if archive_dir.is_symlink() or any(
+                hashlib.sha256((archive_dir / name).read_bytes()).hexdigest() != digest
+                for name, digest in hashes.items()
+            ):
+                raise RuntimeError(
+                    "Existing workflow archive is incomplete or changed."
+                )
+        else:
+            with tempfile.TemporaryDirectory(
+                prefix=".archive-", dir=archive_root
+            ) as temporary:
+                for source in existing:
+                    shutil.copy2(source, Path(temporary) / source.name)
+                if any(
+                    hashlib.sha256((Path(temporary) / name).read_bytes()).hexdigest()
+                    != digest
+                    for name, digest in hashes.items()
+                ):
+                    raise RuntimeError(
+                        "Workflow changed during archive; original artifacts preserved."
+                    )
+                os.replace(temporary, archive_dir)
+        log_info(f"Archived previous workflow reports and state to {archive_dir}")
+        return True
+    except (OSError, RuntimeError) as error:
+        log_error(f"Could not archive workflow; original artifacts preserved: {error}")
+        return False
 
 
 def _all_available_developer_routes_failed_contract(orchestrator, task_id: str) -> bool:
@@ -1021,7 +1102,7 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     elif args.command == "reset":
         try:
             orchestrator.load_config_and_state()
-            clear_run_state(orchestrator, args.state)
+            clear_run_state(orchestrator, args.state, discard_worktree=True)
             if orchestrator.request_path.exists():
                 orchestrator.request_path.unlink()
             orchestrator.save_state()

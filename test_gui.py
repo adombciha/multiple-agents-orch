@@ -712,7 +712,7 @@ def test_render_page_displays_stage_tasks_reports_and_git_impact():
     assert 'id="reports"' in page
     assert "setTimeout(refreshWhenIdle, 3000)" in page
     assert "重置任務</button>" in page
-    assert "重置會清除已存任務內容並清理目前 worktree" in page
+    assert "重置會先備份目前分支、worktree 檔案與執行紀錄" in page
 
 
 def test_render_page_escapes_script_injection_from_tasks_reports_and_review():
@@ -844,7 +844,9 @@ def test_gui_reset_reuses_reset_logic_and_clears_saved_prompt(monkeypatch):
 
     result = service.reset()
 
-    clear_run_state.assert_called_once_with(service.orchestrator, "PLANNING")
+    clear_run_state.assert_called_once_with(
+        service.orchestrator, "PLANNING", discard_worktree=True
+    )
     service.orchestrator.request_path.unlink.assert_called_once_with()
     service.orchestrator.save_state.assert_called_once_with()
     assert result["state"] == "PLANNING"

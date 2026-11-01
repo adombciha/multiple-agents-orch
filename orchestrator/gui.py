@@ -568,7 +568,11 @@ class GuiService:
                     raise RuntimeError(
                         "Only a failed workflow can be sent back to planning here."
                     )
-                clear_run_state(self.orchestrator, "PLANNING")
+                clear_run_state(
+                    self.orchestrator,
+                    "PLANNING",
+                    **({"discard_worktree": True} if not keep_request else {}),
+                )
                 if not keep_request and self.orchestrator.request_path.exists():
                     self.orchestrator.request_path.unlink()
                 self.orchestrator.save_state()
