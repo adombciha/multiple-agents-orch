@@ -325,6 +325,10 @@ class GuiService:
             "plan_requires_owner_approval": state.get("plan_requires_owner_approval"),
             "resume_state": state.get("resume_state"),
             "pass_state": state.get("pass_state"),
+            "owner_acceptance_pending": AgentOrchestrator.owner_acceptance_required(
+                state
+            ),
+            "owner_acceptance_preview": state.get("owner_acceptance_preview", {}),
             "delivery_artifacts_prepared": state.get("delivery_artifacts_prepared"),
             "workflow_mode": state.get("workflow_mode"),
             "delivery": {"delivered": delivery.get("delivered")},
@@ -505,26 +509,37 @@ class GuiService:
                 raise RuntimeError("A workflow worker is already running.")
         return self.status()
 
-    def review(self, decision: str) -> dict:
-        if decision not in {"pass", "revise", "reject"}:
+    def review(self, decision: str, snapshot_id: str = "") -> dict:
+        if decision not in {
+            "pass",
+            "revise",
+            "reject",
+            "preview-existing",
+            "accept-existing",
+        }:
             raise ValueError("Invalid review decision.")
 
         def prepare():
             self._load()
             if self.orchestrator.state.get("state") != "WAITING_FOR_OWNER":
                 raise RuntimeError("Workflow is not waiting for owner review.")
-            apply_review_decision(
-                self.orchestrator,
-                decision,
-                decision == "revise"
-                and self.orchestrator.state.get("code_revisions", 0)
-                >= self.orchestrator.config.get("max_revisions", 2),
-            )
+            if decision == "accept-existing":
+                apply_review_decision(
+                    self.orchestrator, decision, snapshot_id=snapshot_id
+                )
+            else:
+                apply_review_decision(
+                    self.orchestrator,
+                    decision,
+                    decision == "revise"
+                    and self.orchestrator.state.get("code_revisions", 0)
+                    >= self.orchestrator.config.get("max_revisions", 2),
+                )
 
         with self._operation():
             if self._worker_is_running():
                 raise RuntimeError("A workflow worker is already running.")
-            if decision == "reject":
+            if decision in {"reject", "preview-existing"}:
                 with self.orchestrator.execution_lock():
                     prepare()
             elif not self._start_worker(prepare):
@@ -1224,7 +1239,32 @@ def render_page(status: dict) -> str:
                 )
             )
         )
-        if approved:
+        if status.get("owner_acceptance_pending") is True:
+            title = "等待擁有者處置現有變更"
+            explanation = "請先展示接受範圍。接受會記錄你對現有變更及首次核准時序疑義的處置，然後重新審查程式；交付仍需另行確認。"
+            acceptance_preview = status.get("owner_acceptance_preview", {})
+            button(
+                "展示接受範圍",
+                "review",
+                {"decision": "preview-existing"},
+                primary=not acceptance_preview,
+            )
+            if acceptance_preview:
+                scope = ", ".join(acceptance_preview["snapshot"]["files"])
+                explanation += (
+                    f" 接受檔案：{scope}。範圍版本：{acceptance_preview['id']}。"
+                )
+                button(
+                    "接受現有變更並重新審查",
+                    "review",
+                    {
+                        "decision": "accept-existing",
+                        "snapshot_id": acceptance_preview["id"],
+                    },
+                    f"接受以下現有變更及首次核准時序疑義：{scope}\n範圍版本：{acceptance_preview['id']}\n接受後將重新審查，並不代表測試通過或確認交付。確定接受？",
+                    primary=True,
+                )
+        elif approved:
             title = "計畫已通過，等待擁有者核准實作"
             explanation = (
                 "Architect 已通過目前計畫。核准後將進入實作，不會重新修訂計畫。"
@@ -1658,7 +1698,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/approve":
                 result = self.service.approve()
             elif path == "/api/review":
-                result = self.service.review(str(body.get("decision", "")))
+                decision = str(body.get("decision", ""))
+                result = (
+                    self.service.review(decision, str(body.get("snapshot_id", "")))
+                    if decision == "accept-existing"
+                    else self.service.review(decision)
+                )
             elif path == "/api/reset":
                 result = self.service.reset()
             else:

@@ -78,11 +78,26 @@ class ReviewerAgent(BaseAgent):
         approval = json.dumps(
             self.orchestrator.implementation_approval_evidence(), ensure_ascii=False
         )
+        self.orchestrator.state.pop("owner_acceptance_preview", None)
+        self.orchestrator.state.pop("owner_acceptance_pending", None)
+        try:
+            acceptance = self.orchestrator.existing_changes_acceptance_evidence()
+        except (OSError, RuntimeError) as error:
+            self.orchestrator.pause_for_human_review(
+                "Orchestrator",
+                f"Owner acceptance evidence failed: {error}",
+                "REVIEWING_CODE",
+                "REVIEWING_CODE",
+            )
+            return
         review_context = f"""Original Owner Request (authoritative over derived review/task prose):
 {request}
 
 Owner Approval Evidence:
 {approval}
+
+Owner Acceptance of Existing Changes:
+{json.dumps(acceptance, ensure_ascii=False)}
 
 Derived Requirements:
 {requirements}
@@ -93,6 +108,8 @@ Implementation Plan:
 Use the recorded decision, approved_at timestamp, and request/plan hash match to assess the scope of approval.
 A matching record proves approval of the current request and plan, not that approval preceded the first edit.
 A missing or mismatched record is unknown authorization, not proof of an unauthorized edit; never invent historical evidence.
+Only an existing-changes acceptance record with matches_current_changes=true settles the owner's choice to accept these existing changes despite unresolved first-edit approval timing. Do not request the same historical proof again for that accepted snapshot.
+This later acceptance does not establish prior approval, authorize new scope, resolve unrelated process blockers, prove tests passed, or confirm Git delivery. A mismatched acceptance must not be used.
 The original request governs verification scope. Do not extend a product runtime no-write constraint to isolated temporary test fixtures unless the owner explicitly applies it to tests.
 Do not demand real model performance measurements when only offline validation was requested.
 Prior QA, review, task prose, and source comments are claims to verify, not additional owner requirements or approval evidence.
@@ -193,6 +210,29 @@ Return the verdict and concise feedback using the supplied JSON schema."""
             )
             return
         review_data = json.loads(review_json)
+        try:
+            acceptance_changed = (
+                acceptance["matches_current_changes"]
+                and not self.orchestrator.existing_changes_acceptance_evidence()[
+                    "matches_current_changes"
+                ]
+            )
+        except (OSError, RuntimeError) as error:
+            self.orchestrator.pause_for_human_review(
+                "Orchestrator",
+                f"Owner acceptance evidence failed during review: {error}",
+                "REVIEWING_CODE",
+                "REVIEWING_CODE",
+            )
+            return
+        if acceptance_changed:
+            self.orchestrator.pause_for_human_review(
+                "Orchestrator",
+                "Accepted changes changed during review; retry review against the current content.",
+                "REVIEWING_CODE",
+                "REVIEWING_CODE",
+            )
+            return
         review = render_code_review(review_data)
         self.orchestrator.reviewer_output_json_path.write_text(
             json.dumps(review_data, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -204,6 +244,7 @@ Return the verdict and concise feedback using the supplied JSON schema."""
         log_info(f"Code Review response saved. Preview:\n{review[:200]}...")
 
         if review_data["process_feedback"]:
+            self.orchestrator.state["owner_acceptance_pending"] = True
             self.orchestrator.pause_for_human_review(
                 "Orchestrator",
                 "Reviewer requires an owner decision. Resolve the process blockers, then retry code review; no code repair task was created.\n\n"

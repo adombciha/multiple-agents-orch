@@ -497,6 +497,149 @@ class AgentOrchestrator:
                 "approved_at": time.time(),
             }
 
+    @staticmethod
+    def owner_acceptance_required(state: dict) -> bool:
+        return (
+            state.get("state") == "WAITING_FOR_OWNER"
+            and state.get("human_review_source") == "Orchestrator"
+            and state.get("resume_state") == "REVIEWING_CODE"
+            and state.get("pass_state") == "REVIEWING_CODE"
+            and (
+                state.get("owner_acceptance_pending") is True
+                # Recognize process pauses saved before acceptance previews existed.
+                or str(state.get("human_review_details", "")).startswith(
+                    "Reviewer requires an owner decision."
+                )
+            )
+        )
+
+    def existing_changes_snapshot(self) -> dict:
+        """Bind task files and, in Git workspaces, all tracked and untracked changes."""
+        cwd = self.agent_workspace()
+        if cwd.is_symlink() or not cwd.resolve().is_relative_to(
+            self.workspace.resolve()
+        ):
+            raise RuntimeError(
+                "Acceptance workspace escapes the project or is a symlink."
+            )
+        paths = {
+            path
+            for task in self.state.get("tasks", [])
+            for path in task.get("target_files", [])
+        }
+        git = {}
+        if self.has_git:
+            git = {
+                "head": self._checked_git_output(["rev-parse", "HEAD"], cwd),
+                "target": self._checked_git_output(
+                    ["rev-parse", self.base_branch], self.workspace
+                ),
+                "baseline": self._checked_git_output(
+                    ["merge-base", "HEAD", self.base_branch], cwd
+                ).strip(),
+                "index": self._checked_git_output(["ls-files", "--stage", "-z"], cwd),
+                "diff": self._checked_git_output(
+                    ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"], cwd
+                ),
+            }
+            paths.update(
+                path
+                for path in self._checked_git_output(
+                    ["diff", "--name-only", "--no-renames", "-z", git["baseline"]], cwd
+                ).split("\0")
+                if path
+            )
+            paths.update(
+                path
+                for path in self._checked_git_output(
+                    ["ls-files", "--others", "--exclude-standard", "-z"], cwd
+                ).split("\0")
+                if path
+            )
+        internal = self.ai_dir.resolve()
+        paths = {
+            path
+            for path in paths
+            if not (
+                internal.is_relative_to(cwd.resolve())
+                and (cwd / path).absolute().is_relative_to(internal)
+            )
+        }
+        try:
+            contents = self._delivery_file_contents(cwd, list(paths))
+            modes = {
+                path: (cwd / path).lstat().st_mode if content is not None else None
+                for path, content in contents.items()
+            }
+            for relative, content in contents.items():
+                if content is not None:
+                    path = cwd / relative
+                    raw = (
+                        os.fsencode(os.readlink(path))
+                        if path.is_symlink()
+                        else path.read_bytes()
+                    )
+                    contents[relative] = hashlib.sha256(raw).hexdigest()
+            snapshot = {
+                "workspace": str(cwd.resolve()),
+                "request_sha256": hashlib.sha256(
+                    self.request_path.read_bytes()
+                ).hexdigest(),
+                "plan_sha256": hashlib.sha256(self.plan_path.read_bytes()).hexdigest(),
+                "files": sorted(paths),
+            }
+        except OSError as error:
+            raise RuntimeError(f"Cannot read acceptance content: {error}") from error
+        snapshot["fingerprint"] = delivery_snapshot_id(
+            {**snapshot, "contents": contents, "modes": modes, "git": git}
+        )
+        return snapshot
+
+    def present_existing_changes(self) -> dict:
+        if not self.owner_acceptance_required(self.state):
+            raise RuntimeError(
+                "This workflow is not waiting for acceptance of existing changes."
+            )
+        preview = {
+            "snapshot": self.existing_changes_snapshot(),
+            "review_reason": self.state.get("human_review_details", ""),
+        }
+        preview["id"] = delivery_snapshot_id(preview)
+        self.state["owner_acceptance_preview"] = preview
+        self.save_state()
+        return preview
+
+    def accept_existing_changes(self, snapshot_id: str) -> None:
+        if not self.owner_acceptance_required(self.state):
+            raise RuntimeError(
+                "This workflow is not waiting for acceptance of existing changes."
+            )
+        preview = self.state.get("owner_acceptance_preview", {})
+        if not snapshot_id or not preview or snapshot_id != preview.get("id"):
+            raise RuntimeError(
+                "Show the acceptance scope first, then confirm its snapshot ID."
+            )
+        if preview.get("snapshot") != self.existing_changes_snapshot() or preview.get(
+            "review_reason"
+        ) != self.state.get("human_review_details", ""):
+            raise RuntimeError(
+                "The acceptance scope changed. Show it again before confirming."
+            )
+        self.state["existing_changes_acceptance"] = {
+            "decision": "accept_existing_changes",
+            "accepted_at": time.time(),
+            **preview,
+        }
+
+    def existing_changes_acceptance_evidence(self) -> dict:
+        record = self.state.get("existing_changes_acceptance", {})
+        return {
+            "record": record,
+            "matches_current_changes": bool(record)
+            and record.get("decision") == "accept_existing_changes"
+            and record.get("snapshot") == self.existing_changes_snapshot(),
+        }
+
     def _delivery_state_fingerprint(self, state: dict | None = None) -> str:
         values = deepcopy(self.state if state is None else state)
         for key in (

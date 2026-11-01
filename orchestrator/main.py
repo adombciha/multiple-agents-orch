@@ -107,6 +107,9 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["active_task_id"] = None
     orchestrator.state.pop("pending_plan_feedback", None)
     orchestrator.state.pop("implementation_approval", None)
+    orchestrator.state.pop("existing_changes_acceptance", None)
+    orchestrator.state.pop("owner_acceptance_preview", None)
+    orchestrator.state.pop("owner_acceptance_pending", None)
 
 
 def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
@@ -306,16 +309,30 @@ def apply_approve(
 
 
 def apply_review_decision(
-    orchestrator: AgentOrchestrator, decision: str, reset_revisions: bool = False
+    orchestrator: AgentOrchestrator,
+    decision: str,
+    reset_revisions: bool = False,
+    snapshot_id: str = "",
 ) -> None:
-    """Apply a pass/revise/reject decision to a WAITING_FOR_OWNER pause.
+    """Apply a review or explicit content acceptance decision to an owner pause.
     `reset_revisions` (revise only, non-Architect/Manager source): clear
     code_revisions first so the auto-revise loop gets a fresh budget instead
     of immediately re-pausing if it was already at max_revisions."""
-    if decision == "pass":
+    if decision == "preview-existing":
+        preview = orchestrator.present_existing_changes()
+        log_info(json.dumps(preview, ensure_ascii=False, indent=2))
+        log_info(
+            f"Confirm acceptance with: python3 orchestrator.py review accept-existing --snapshot {preview['id']} --run"
+        )
+        return
+    if decision == "accept-existing":
+        orchestrator.accept_existing_changes(snapshot_id)
+        next_state = "REVIEWING_CODE"
+    elif decision == "pass":
         next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
     elif decision == "revise":
         orchestrator.state.pop("implementation_approval", None)
+        orchestrator.state.pop("existing_changes_acceptance", None)
         if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
             next_state = "DEVELOPING_PLAN"
             feedback = orchestrator.state.get("pending_plan_feedback", "")
@@ -354,7 +371,7 @@ def apply_review_decision(
             log_info(
                 f"Recorded QA false-positive for qa_{qa_level} after owner override."
             )
-    if decision in {"pass", "revise"}:
+    if decision in {"pass", "revise", "accept-existing"}:
         orchestrator.clear_pause_request()
     if decision == "pass" and next_state == "IMPLEMENTING":
         orchestrator.record_implementation_approval("pass")
@@ -365,6 +382,8 @@ def apply_review_decision(
         "pass_state",
         "human_review_details",
         "qa_dissenting_levels",
+        "owner_acceptance_preview",
+        "owner_acceptance_pending",
     ):
         orchestrator.state.pop(key, None)
     orchestrator.save_state()
@@ -599,7 +618,13 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
         help="Clear cached temporary and contract route failures for the active task before approval.",
     )
     review_parser = subparsers.add_parser("review", help="Decide a paused human review")
-    review_parser.add_argument("decision", choices=["pass", "revise", "reject"])
+    review_parser.add_argument(
+        "decision",
+        choices=["pass", "revise", "reject", "preview-existing", "accept-existing"],
+    )
+    review_parser.add_argument(
+        "--snapshot", default="", help="Snapshot ID shown by review preview-existing"
+    )
     review_parser.add_argument(
         "--run", action="store_true", help="Continue the workflow after the decision"
     )
@@ -927,8 +952,10 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                     f"Cannot review from state: {orchestrator.state.get('state')}"
                 )
                 return
-            apply_review_decision(orchestrator, args.decision, args.reset_revisions)
-            if args.run and args.decision != "reject":
+            apply_review_decision(
+                orchestrator, args.decision, args.reset_revisions, args.snapshot
+            )
+            if args.run and args.decision not in {"reject", "preview-existing"}:
                 run_workflow(orchestrator)
         except FileNotFoundError:
             log_error(

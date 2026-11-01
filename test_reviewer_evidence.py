@@ -217,3 +217,68 @@ def test_invalid_review_cannot_generate_repairs_or_allow_delivery(review_app):
     assert app.state["resume_state"] == app.state["pass_state"] == "REVIEWING_CODE"
     assert len(app.state["tasks"]) == 1
     app.escalate_developer_backend.assert_not_called()
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_review_receives_explicit_acceptance_bound_to_actual_contents(
+    review_app, changed
+):
+    app = review_app
+    (app.workspace / "app.py").write_text("VALUE = 1\n")
+    app.call_agent.return_value = json.dumps(
+        {
+            "status": "REJECTED",
+            "feedback": [],
+            "process_feedback": ["Resolve first-edit approval timing."],
+        }
+    )
+    app.step_reviewing_code()
+    preview = app.present_existing_changes()
+    apply_review_decision(app, "accept-existing", snapshot_id=preview["id"])
+    record = dict(app.state["existing_changes_acceptance"])
+    if changed:
+        (app.workspace / "app.py").write_text("VALUE = 2\n")
+    app.call_agent.return_value = json.dumps(APPROVED)
+
+    app.step_reviewing_code()
+
+    evidence = app.existing_changes_acceptance_evidence()
+    assert evidence["matches_current_changes"] is (not changed)
+    assert evidence["record"] == record
+    for text in (
+        app.call_agent.call_args.args[1],
+        app.consult_specialists.call_args.kwargs["context"],
+    ):
+        assert json.dumps(evidence, ensure_ascii=False) in text
+        assert "Do not request the same historical proof again" in text
+        assert "does not establish prior approval" in text
+        assert "A mismatched acceptance must not be used" in text
+    assert app.state["state"] == "WAITING_FOR_DELIVERY"
+    assert not app.state["delivery"]["delivered"]
+
+
+def test_accepted_content_changing_during_review_cannot_reach_delivery(review_app):
+    app = review_app
+    path = app.workspace / "app.py"
+    path.write_text("VALUE = 1\n")
+    app.call_agent.return_value = json.dumps(
+        {
+            "status": "REJECTED",
+            "feedback": [],
+            "process_feedback": ["Resolve approval timing."],
+        }
+    )
+    app.step_reviewing_code()
+    preview = app.present_existing_changes()
+    apply_review_decision(app, "accept-existing", snapshot_id=preview["id"])
+
+    def review(*args, **kwargs):
+        path.write_text("VALUE = 2\n")
+        return json.dumps(APPROVED)
+
+    app.call_agent.side_effect = review
+    app.step_reviewing_code()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert "changed during review" in app.state["human_review_details"]
+    assert app.state["resume_state"] == "REVIEWING_CODE"
+    assert len(app.state["tasks"]) == 1
