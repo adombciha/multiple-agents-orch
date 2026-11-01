@@ -985,7 +985,7 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(
             ],
             "stream": False,
             "keep_alive": 0,
-            "think": "high",
+            "options": {"num_ctx": 9216, "num_predict": 8192},
         },
         timeout=1800,
     )
@@ -995,7 +995,12 @@ def test_call_ollama_posts_chat_payload_and_returns_message_content(
 def test_call_ollama_retries_without_thinking_when_model_rejects_it(
     initialized_orchestrator, monkeypatch
 ):
-    rejected = Mock(status_code=400)
+    initialized_orchestrator._ollama_chat_models_cache = (
+        0,
+        frozenset({"plain-model"}),
+        {"plain-model": {"thinking": {"values": ["high"], "default": "high"}}},
+    )
+    rejected = Mock(status_code=400, text="think is unsupported")
     accepted = Mock(status_code=200)
     accepted.json.return_value = {"message": {"content": "answer"}}
     post = Mock(side_effect=[rejected, accepted])
@@ -1009,7 +1014,7 @@ def test_call_ollama_retries_without_thinking_when_model_rejects_it(
     assert "plain-model" in initialized_orchestrator._ollama_no_think_models
 
 
-def test_call_ollama_reports_400_response_after_retry(
+def test_call_ollama_reports_context_400_without_thinking_retry(
     initialized_orchestrator, monkeypatch
 ):
     rejected = Mock(status_code=400, text='{"error":"prompt too long"}')
@@ -1022,7 +1027,7 @@ def test_call_ollama_reports_400_response_after_retry(
     with pytest.raises(RuntimeError, match="prompt too long"):
         initialized_orchestrator.call_ollama("do it", model="granite4.2:8b")
 
-    assert post.call_count == 2
+    assert post.call_count == 1
 
 
 def test_gpt_oss_developer_uses_json_files_and_returns_file_blocks(

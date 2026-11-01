@@ -228,6 +228,7 @@ def discover_ollama_chat_models(
                     "quantization_level": details.get("quantization_level"),
                     "context_length": context_length,
                     "capabilities": sorted(capabilities),
+                    "thinking": data.get("thinking"),
                 }.items()
                 if value is not None
             }
@@ -460,6 +461,61 @@ def route_ollama_model_with_tev1(
         return None
 
 
+def ollama_request_options(orchestrator, model, messages):
+    """Use discovered controls and bound context allocation by the host budget."""
+    catalog = getattr(orchestrator, "_ollama_chat_models_cache", None)
+    metadata = (
+        next(
+            (
+                value
+                for name, value in catalog[2].items()
+                if _ollama_model_matches(model, {name})
+            ),
+            {},
+        )
+        if catalog
+        else {}
+    )
+    budget = int(orchestrator.config.get("ollama_num_ctx", 32768))
+    output = int(orchestrator.config.get("ollama_num_predict", 8192))
+    if budget <= 0 or output <= 0:
+        raise ValueError("ollama_num_ctx and ollama_num_predict must be positive")
+    context = metadata.get("context_length")
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        budget = min(budget, context)
+    # Approximate text tokens; image token costs remain model-dependent.
+    estimated_input = (
+        sum(len(m["content"].encode("utf-8")) for m in messages) + 2
+    ) // 3 + 512
+    if estimated_input >= budget:
+        raise RuntimeError(
+            f"Estimated Ollama input ({estimated_input} tokens) exceeds context budget ({budget}); shorten the task or raise ollama_num_ctx within hardware limits."
+        )
+    output = min(output, budget - estimated_input)
+    needed = estimated_input + output
+    options = {
+        "num_ctx": min(budget, max(4096, ((needed + 1023) // 1024) * 1024)),
+        "num_predict": output,
+    }
+    requested = orchestrator.config.get("ollama_think", "high")
+    controls = metadata.get("thinking") or {}
+    values = controls.get("values", []) if isinstance(controls, dict) else []
+    think = None
+    if requested is not None and values:
+        if any(
+            type(requested) is type(value) and requested == value for value in values
+        ):
+            think = requested
+        elif all(isinstance(value, bool) for value in values):
+            enabled = bool(requested)
+            think = enabled if enabled in values else controls.get("default")
+        else:
+            think = controls.get("default")
+        if not any(type(think) is type(value) and think == value for value in values):
+            think = None
+    return options, think
+
+
 def call_ollama(
     orchestrator,
     prompt: str,
@@ -494,9 +550,9 @@ def call_ollama(
         "stream": False,
         "keep_alive": orchestrator.config.get("ollama_keep_alive", 0),
     }
-    think = orchestrator.config.get("ollama_think", "high")
+    payload["options"], think = ollama_request_options(orchestrator, model, messages)
     no_think_models = getattr(orchestrator, "_ollama_no_think_models", set())
-    if think and model not in no_think_models:
+    if think is not None and model not in no_think_models:
         payload["think"] = think
     if image_paths:
         payload["messages"][-1]["images"] = [
@@ -506,9 +562,13 @@ def call_ollama(
     try:
         timeout = orchestrator.config.get("ollama_timeout", 1800)
         response = requests.post(url, json=payload, timeout=timeout)
-        if payload.get("think") and response.status_code == 400:
+        if (
+            "think" in payload
+            and response.status_code == 400
+            and "think" in str(response.text).lower()
+        ):
             log_info(
-                f"Ollama returned HTTP 400 with think={think} for {model}; retrying without thinking."
+                f"Ollama returned HTTP 400 with think={think} for {model}; retrying without the think parameter."
             )
             no_think_models.add(model)
             orchestrator._ollama_no_think_models = no_think_models
