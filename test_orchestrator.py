@@ -7637,3 +7637,87 @@ def test_local_gui_rejects_invalid_port_before_binding(tmp_path):
         serve(AgentOrchestrator(tmp_path), 0)
     with pytest.raises(ValueError, match="between 1 and 65535"):
         serve(AgentOrchestrator(tmp_path), "8765")
+
+
+@pytest.mark.parametrize("backend", ["codex", "agy", "ollama"])
+@pytest.mark.parametrize("large", [False, True])
+def test_developer_repair_bounds_feedback_preserves_target_and_raw_logs(
+    initialized_orchestrator, monkeypatch, backend, large
+):
+    app = initialized_orchestrator
+    app.config["use_worktree"] = False
+    app.config["backends"]["developer_senior"] = backend
+    app.requirements_path.write_text("Repair app.py with offline tests.")
+    app.plan_path.write_text("Repair app.py only.")
+    app.request_path.write_text("Only modify app.py; preserve unrelated source.")
+    app.state.update(
+        state="IMPLEMENTING",
+        code_revisions=1,
+        tasks=[
+            {
+                "id": "T-REPAIR",
+                "description": "Repair the child launcher",
+                "target_files": ["app.py"],
+                "status": "pending",
+                "rd_level": "senior",
+                "qa_level": "senior",
+                "revisions": 1,
+                "output_contract": {"format": "file_blocks"},
+            }
+        ],
+        staffing={"rd": {"senior": 1}, "qa": {"senior": 1}},
+    )
+    source = "# Preserve original target source\n" * 2000 + "value = 1\n"
+    (app.workspace / "app.py").write_text(source)
+    (app.workspace / "unrelated.py").write_text("SECRET_UNRELATED_CONTENT = True\n")
+    if large:
+        raw = (
+            "Command: python3 -m pytest -q\nExit Code: 1\n"
+            + "." * 6000
+            + "\n"
+            + "E   ModuleNotFoundError: No module named 'pytest'\n" * 25000
+            + "FAILED app.py::test_child_launcher\n148 failed, 53 errors\n"
+        )
+        qa = "QA_STATUS: FAILED\n" + "重複回饋" * 100000 + "\nQA_END"
+        review = "REJECTED\n" + "重複審查" * 100000 + "\nREVIEW_END"
+    else:
+        raw = "Command: python3 -m pytest -q\nExit Code: 1\nFAILED app.py::test_child_launcher"
+        qa = "QA_STATUS: FAILED\nCheck child imports."
+        review = "REJECTED\napp.py: fix the child launcher."
+    app.test_results_path.write_text(raw)
+    app.qa_report_path.write_text(qa)
+    app.reviewer_output_path.write_text(review)
+    call = Mock(
+        return_value="[FILE_START: app.py]\n"
+        + source.replace("value = 1", "value = 2")
+        + "[FILE_END: app.py]"
+    )
+    monkeypatch.setattr(app, "call_agent", call)
+    monkeypatch.setattr(brain, "inject_prompt", Mock(return_value=""))
+    app.step_implementing()
+    prompt = call.call_args.args[1]
+    assert f"[CURRENT_FILE: app.py]\n{source}\n[END_CURRENT_FILE: app.py]" in prompt
+    assert "SECRET_UNRELATED_CONTENT" not in prompt
+    assert "FAILED app.py::test_child_launcher" in prompt
+    assert "Exit Code: 1" in prompt
+    for path in (app.test_results_path, app.qa_report_path, app.reviewer_output_path):
+        assert str(path) in prompt
+    feedback = prompt.split(
+        "Note: The previous implementation had issues. Feedback:\n", 1
+    )[1]
+    assert len(feedback.encode("utf-8")) < 11000
+    if large:
+        assert "TRUNCATED" in feedback
+        assert "148 failed, 53 errors" in feedback
+        assert "ModuleNotFoundError" in feedback
+        assert "QA_END" in feedback and "REVIEW_END" in feedback
+    else:
+        assert raw in prompt and qa in prompt and review in prompt
+    assert app.test_results_path.read_text() == raw
+    assert app.qa_report_path.read_text() == qa
+    assert app.reviewer_output_path.read_text() == review
+    assert app.state["state"] == "TESTING"
+    assert app.state["tasks"][0]["status"] == "completed"
+    assert (app.workspace / "app.py").read_text() == source.replace(
+        "value = 1", "value = 2"
+    ).rstrip("\n")

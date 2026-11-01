@@ -13,6 +13,7 @@ from orchestrator.roles.base_agent import (
     missing_request_files,
 )
 from orchestrator.core import scoring, roster, brain
+from orchestrator.roles.qa import qa_excerpt, qa_test_excerpt
 
 # Must match orchestrator.main's REFERENCE_BLOCK_START/END: auto-inlined
 # reference material (e.g. a spec/plan doc the request pointed at) lives
@@ -1450,19 +1451,19 @@ class DeveloperAgent(BaseAgent):
                     with open(
                         self.orchestrator.qa_report_path, "r", encoding="utf-8"
                     ) as f:
-                        feedback += f"\n--- QA Feedback ---\n{f.read()}\n"
+                        feedback += f"\n--- QA Feedback (full record: {self.orchestrator.qa_report_path}) ---\n{qa_excerpt(f.read(), 2400)}\n"
                 if self.orchestrator.test_results_path.exists():
                     with open(
                         self.orchestrator.test_results_path, "r", encoding="utf-8"
                     ) as f:
-                        feedback += f"\n--- Test Results ---\n{f.read()}\n"
+                        feedback += f"\n--- Test Results (full record: {self.orchestrator.test_results_path}) ---\n{qa_test_excerpt(f.read())}\n"
                 if self.orchestrator.reviewer_output_path.exists():
                     with open(
                         self.orchestrator.reviewer_output_path, "r", encoding="utf-8"
                     ) as f:
-                        feedback += f"\n--- Code Review Feedback ---\n{f.read()}\n"
+                        feedback += f"\n--- Code Review Feedback (full record: {self.orchestrator.reviewer_output_path}) ---\n{qa_excerpt(f.read(), 2400)}\n"
                 if feedback:
-                    prompt += f"\n\nNote: The previous implementation had issues. Feedback:\n{feedback}\nPlease fix these issues."
+                    prompt += f"\n\nNote: The previous implementation had issues. Feedback:\n{feedback}\nSections marked TRUNCATED are excerpts, not complete evidence. Use the current task and file contents to verify the failure before editing. Please fix these issues."
 
             system_prompt = f"You are a {level.title()} AI Developer"
             system_prompt += (
