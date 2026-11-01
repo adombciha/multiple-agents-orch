@@ -2,6 +2,8 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
+import signal
 import re
 import shutil
 import subprocess
@@ -710,6 +712,87 @@ def agy_json_response(response: str) -> str:
     return canonical
 
 
+def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
+    """Bound CLI shutdown after a complete result, without accepting partial output."""
+    from orchestrator.core.state import log_warning
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=os.name == "posix",
+    )
+
+    def stop():
+        # MCP children can keep output pipes open after the CLI exits.
+        if os.name == "posix":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+    deadline = time.monotonic() + timeout
+    finished_at = None
+    pending_input = input
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            try:
+                stdout, stderr = process.communicate(
+                    input=pending_input, timeout=min(1, remaining)
+                )
+                return subprocess.CompletedProcess(
+                    cmd, process.returncode, stdout, stderr
+                )
+            except subprocess.TimeoutExpired as error:
+                pending_input = None
+                output = error.output or b""
+                if isinstance(output, bytes):
+                    output = output.decode("utf-8", errors="replace")
+                if finished_at is None:
+                    # Only newline-terminated protocol records are complete.
+                    for line in output.split("\n")[:-1]:
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if (
+                            isinstance(event, dict)
+                            and event.get("event") == "result"
+                            and isinstance(event.get("result"), dict)
+                            and isinstance(event["result"].get("status"), str)
+                        ):
+                            finished_at = time.monotonic()
+                            break
+                if (
+                    finished_at is not None
+                    and time.monotonic() - finished_at >= exit_grace
+                ):
+                    returncode = process.poll()
+                    stop()
+                    stdout, stderr = process.communicate(timeout=5)
+                    log_warning(
+                        "AGY sent its final result but did not close; cleaned up its process group."
+                    )
+                    # The caller still validates status, payload and task contract.
+                    return subprocess.CompletedProcess(
+                        cmd, returncode or 0, stdout, stderr
+                    )
+    finally:
+        stop()
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+
+
 def call_agy(
     orchestrator,
     prompt: str,
@@ -766,7 +849,7 @@ def call_agy(
     if response_schema is not None:
         display_cmd[display_cmd.index("--json-schema") + 1] = "<schema>"
     log_info(f"Running agy: {' '.join(display_cmd)} ...")
-    result = subprocess.run(
+    result = run_agy_stream(
         cmd,
         cwd=orchestrator.agent_workspace(),
         input=json.dumps(
@@ -774,11 +857,7 @@ def call_agy(
             ensure_ascii=False,
         )
         + "\n",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
         timeout=1800,
-        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(

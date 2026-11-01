@@ -782,7 +782,7 @@ def test_direct_cli_backends_use_agent_worktree(initialized_orchestrator, monkey
     worktree.mkdir()
     output = '{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n'
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
 
     backends.call_agy(
         initialized_orchestrator, "prompt", role="developer_junior", model="test-model"
@@ -829,7 +829,7 @@ def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
 ):
     output = '{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n'
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
 
     backends.call_agy(initialized_orchestrator, "prompt", model="gemini-3.1-pro")
 
@@ -846,7 +846,7 @@ def test_agy_maps_legacy_model_ids_to_supported_gemini_names(
 def test_agy_sends_large_prompt_over_stdin(initialized_orchestrator, monkeypatch):
     output = '{"event":"result","result":{"status":"SUCCESS","response":"done"}}\n'
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     prompt = "x" * 140_000
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
 
@@ -883,7 +883,7 @@ def test_agy_uses_plan_mode_outside_developer_implementation(
 ):
     output = '{"event":"result","result":{"status":"SUCCESS","response":"done"}}\n'
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     initialized_orchestrator.state["state"] = "REVIEWING_PLAN"
 
     backends.call_agy(
@@ -904,7 +904,7 @@ def test_agy_rejects_missing_or_failed_result(
     initialized_orchestrator, monkeypatch, output
 ):
     run = Mock(return_value=Mock(returncode=0, stdout=output, stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
 
     with pytest.raises(RuntimeError, match="agy CLI"):
         backends.call_agy(initialized_orchestrator, "prompt", model="test-model")

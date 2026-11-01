@@ -40,7 +40,7 @@ def test_schema_reaches_native_agy_cli_through_routing(
     app = initialized_orchestrator
     configure_routes(app)
     run = Mock(return_value=agy_result('{"use_sales": false}'))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     result = app.call_role_model_routes(
         "manager",
         "Use the supplied requirements",
@@ -77,7 +77,7 @@ def test_empty_agy_result_stops_without_fallback_and_records_failure(
     app = initialized_orchestrator
     configure_routes(app)
     run = Mock(return_value=agy_result(response))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     fallback = Mock()
     monkeypatch.setattr(app, "call_codex", fallback)
     with pytest.raises(
@@ -117,7 +117,7 @@ def test_native_structured_output_takes_precedence(
             structured_output=json.dumps(data) if encoded else data,
         )
     )
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     response = app.call_role_model_routes(
         "manager",
         "Task",
@@ -137,7 +137,7 @@ def test_identical_planner_and_finish_json_are_accepted(
     data = {"tasks": [{"id": "T1"}], "staffing": {}, "specialists": []}
     response = json.dumps(data, indent=2) + "\n\n" + json.dumps(data, sort_keys=True)
     run = Mock(return_value=agy_result(response))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     assert (
         json.loads(
             app.call_role_model_routes(
@@ -169,7 +169,7 @@ def test_invalid_structured_result_stops_and_saves_private_diagnostic(
     app = initialized_orchestrator
     configure_routes(app)
     run = Mock(return_value=agy_result(response, **fields))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     fallback = Mock()
     monkeypatch.setattr(app, "call_codex", fallback)
     validator = (
@@ -202,7 +202,7 @@ def test_file_blocks_ignore_structured_output(initialized_orchestrator, monkeypa
     app = initialized_orchestrator
     response = "[FILE_START: answer.py]\nvalue = 1\n[FILE_END: answer.py]"
     run = Mock(return_value=agy_result(response, structured_output={"unrelated": True}))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     assert app.call_agy("Task", model="test-model") == response
 
 
@@ -212,7 +212,7 @@ def test_invalid_nonempty_json_still_stops_without_correction(
     app = initialized_orchestrator
     configure_routes(app)
     run = Mock(return_value=agy_result("Here is an explanation, not JSON."))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     with pytest.raises(RuntimeError, match="Strict JSON contract failed"):
         app.call_role_model_routes(
             "manager",
@@ -230,7 +230,7 @@ def test_file_block_calls_do_not_receive_json_schema(
     app.state["state"] = "IMPLEMENTING"
     response = "[FILE_START: app.py]\nvalue = 1\n[FILE_END: app.py]"
     run = Mock(return_value=agy_result(response))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     assert app.call_agy("Task", role="developer_senior", model="test-model") == response
     assert "--json-schema" not in run.call_args.args[0]
     assert "structured-response stage" not in run.call_args.kwargs["input"]
@@ -246,7 +246,7 @@ def test_direct_agy_route_passes_schema_and_does_not_fallback_on_empty(
         app, "get_active_model_for_role", Mock(return_value="test-model")
     )
     run = Mock(return_value=agy_result(""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_agy_stream", run)
     fallback = Mock()
     monkeypatch.setattr(app, "call_agent_ollama_fallback", fallback)
     with pytest.raises(
@@ -260,3 +260,139 @@ def test_direct_agy_route_passes_schema_and_does_not_fallback_on_empty(
     )
     run.assert_called_once()
     fallback.assert_not_called()
+
+
+def test_stream_result_survives_cli_shutdown_hang(tmp_path):
+    import sys
+    import time
+
+    wire = agy_result("完整 response").stdout
+    started = time.monotonic()
+    result = backends.run_agy_stream(
+        [
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdin.read(); "
+            f"print({wire!r}, end='', flush=True); time.sleep(60)",
+        ],
+        cwd=tmp_path,
+        input="x" * 200_000,
+        timeout=8,
+        exit_grace=0,
+    )
+    assert time.monotonic() - started < 6
+    assert result.returncode == 0
+    assert result.stdout == wire
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        '{"event":"assistant","message":"working"}\n',
+        '{"event":"result","result":{"status":"SUCCESS"}}',
+        '{"event":"result",\n',
+    ],
+)
+def test_stream_without_complete_result_times_out(tmp_path, output):
+    import subprocess
+    import sys
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        backends.run_agy_stream(
+            [
+                sys.executable,
+                "-c",
+                "import sys,time; sys.stdin.read(); "
+                f"print({output!r}, end='', flush=True); time.sleep(60)",
+            ],
+            cwd=tmp_path,
+            input="request",
+            timeout=0.2,
+            exit_grace=0,
+        )
+
+
+def test_stream_preserves_natural_exit_failure(tmp_path):
+    import sys
+
+    result = backends.run_agy_stream(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdin.read(); "
+            "print('error', file=sys.stderr); sys.exit(7)",
+        ],
+        cwd=tmp_path,
+        input="request",
+        timeout=5,
+    )
+    assert result.returncode == 7
+    assert result.stderr.strip() == "error"
+
+
+@pytest.mark.parametrize(
+    "final",
+    [
+        {"status": "ERROR", "response": "failed"},
+        {"status": "SUCCESS", "response": ""},
+    ],
+)
+def test_hanging_cli_result_still_requires_valid_contract(
+    initialized_orchestrator, monkeypatch, tmp_path, final
+):
+    import sys
+
+    wire = json.dumps({"event": "result", "result": final}) + "\n"
+    result = backends.run_agy_stream(
+        [
+            sys.executable,
+            "-c",
+            "import sys,time; sys.stdin.read(); "
+            f"print({wire!r}, end='', flush=True); time.sleep(60)",
+        ],
+        cwd=tmp_path,
+        input="request",
+        timeout=8,
+        exit_grace=0,
+    )
+    monkeypatch.setattr(backends, "run_agy_stream", Mock(return_value=result))
+    with pytest.raises(RuntimeError):
+        backends.call_agy(initialized_orchestrator, "Task", model="test-model")
+
+
+@pytest.mark.skipif(backends.os.name != "posix", reason="POSIX process groups")
+def test_stream_reaps_cli_when_child_keeps_pipes_open(tmp_path, monkeypatch):
+    import signal
+    import sys
+
+    spawned = []
+    popen = backends.subprocess.Popen
+
+    def record_process(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(backends.subprocess, "Popen", record_process)
+    killpg = Mock(wraps=backends.os.killpg)
+    monkeypatch.setattr(backends.os, "killpg", killpg)
+    wire = agy_result("done").stdout
+    script = (
+        "import subprocess,sys; sys.stdin.read(); "
+        "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "sys.stderr.write('x' * 200000); sys.stderr.flush(); "
+        f"print({wire!r}, end='', flush=True)"
+    )
+    result = backends.run_agy_stream(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        input="request",
+        timeout=8,
+        exit_grace=0,
+    )
+    assert result.returncode == 0
+    assert result.stdout == wire
+    assert result.stderr == "x" * 200000
+    assert spawned[0].poll() is not None
+    assert spawned[0].stdout.closed
+    killpg.assert_any_call(spawned[0].pid, signal.SIGKILL)
