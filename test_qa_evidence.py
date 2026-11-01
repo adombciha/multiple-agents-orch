@@ -364,3 +364,119 @@ def test_qa_correction_is_bounded_and_does_not_turn_missing_evidence_into_pass(
     assert "TRUNCATED" in call.call_args_list[1].args[1]
     assert qa_app.state["state"] == "WAITING_FOR_OWNER"
     assert qa_app.state["human_review_source"] == "QA_RESPONSE"
+
+
+ISOLATED_CHILD_FAILURE = """___ test_offline_child ___
+result = subprocess.run([sys.executable, '-I', '-S', '-c', program])
+E       AssertionError: Traceback (most recent call last):
+E         File "<string>", line 1, in <module>
+E       ModuleNotFoundError: No module named 'pytest'
+E       CompletedProcess(args=['/usr/bin/python3', '-I', '-S', '-c', program])
+FAILED app.py::test_offline_child
+1 failed, 719 passed
+"""
+
+
+@pytest.mark.parametrize(
+    "output,expected",
+    [
+        (ISOLATED_CHILD_FAILURE, False),
+        (ISOLATED_CHILD_FAILURE.replace("'-I', '-S', ", ""), False),
+        (ISOLATED_CHILD_FAILURE.replace("'pytest'", "'requests'"), False),
+        ("/usr/bin/python3: No module named pytest", True),
+        (
+            "ImportError while importing test module app.py\nModuleNotFoundError: No module named 'requests'",
+            True,
+        ),
+        ("SKIPPED [3] app.py: ModuleNotFoundError: No module named 'playwright'", True),
+        ("bash: pytest: command not found", True),
+        ("719 passed", False),
+        (
+            ISOLATED_CHILD_FAILURE
+            + "\n___ test_other_dependency ___\nModuleNotFoundError: No module named 'playwright'",
+            True,
+        ),
+    ],
+)
+def test_environment_dependency_distinguishes_isolated_child_failures(output, expected):
+    from orchestrator.roles.qa import qa_environment_dependency
+
+    assert qa_environment_dependency(output) is expected
+
+
+def test_isolated_child_import_failure_returns_to_rd_without_install_pause(
+    qa_app, monkeypatch
+):
+    app = qa_app
+    monkeypatch.setattr(
+        app, "run_command", Mock(return_value=(1, ISOLATED_CHILD_FAILURE))
+    )
+    call = Mock(
+        return_value=json.dumps(
+            {
+                "status": "FAILED",
+                "summary": "The isolated child cannot import pytest.",
+                "findings": [
+                    {
+                        "kind": "environment",
+                        "file": "n/a",
+                        "requirement": "",
+                        "evidence": "No module named 'pytest'",
+                        "fix": "Install pytest",
+                    }
+                ],
+                "dependency_install_needed": "pip install pytest",
+                "test_command_suggestion": None,
+            }
+        )
+    )
+    monkeypatch.setattr(app, "call_agent", call)
+    app.step_testing()
+    assert app.state["state"] == "IMPLEMENTING"
+    assert app.state["code_revisions"] == 1
+    repair = app.state["tasks"][-1]
+    assert "-S" in repair["description"]
+    assert "No module named 'pytest'" in repair["description"]
+    assert "pip install pytest" not in repair["description"]
+    assert repair["target_files"] == ["app.py"]
+    assert (
+        "Environment dependency supported by runtime evidence: False"
+        in call.call_args.args[1]
+    )
+    assert ISOLATED_CHILD_FAILURE in app.test_results_path.read_text()
+
+
+def test_real_environment_import_failure_still_pauses_for_owner(qa_app, monkeypatch):
+    app = qa_app
+    monkeypatch.setattr(
+        app,
+        "run_command",
+        Mock(
+            return_value=(
+                1,
+                "ImportError while importing test module app.py\nModuleNotFoundError: No module named 'requests'",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        app,
+        "call_agent",
+        Mock(
+            return_value=json.dumps(
+                {
+                    "status": "FAILED",
+                    "summary": "Required test dependency is missing.",
+                    "findings": [],
+                    "dependency_install_needed": "python -m pip install requests",
+                    "test_command_suggestion": None,
+                }
+            )
+        ),
+    )
+    app.step_testing()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert app.state["human_review_source"] == "QA"
+    assert "pip install requests" in app.state["human_review_details"]
+    assert app.state["code_revisions"] == 0
+    assert len(app.state["tasks"]) == 1
+    app.escalate_developer_backend.assert_not_called()

@@ -49,6 +49,27 @@ _MISSING_DEPENDENCY_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+
+def qa_environment_dependency(output: str) -> bool:
+    """Exclude missing imports caused by a test's site-disabled child runtime."""
+    blocks = re.split(r"(?m)^[_=]{3,}[^\n]*[_=]{3,}\s*$", output)
+    for block in blocks:
+        isolated_child = re.search(
+            r"(?:CompletedProcess|CalledProcessError|File [\"']<string>[\"'])", block
+        ) and (
+            re.search(r"[\"'\s]-S(?=[\"'\s,])", block)
+            or (
+                re.search(r"E\s+AssertionError:.*Traceback", block)
+                and re.search(r"No module named [\"']pytest[\"']", block)
+            )
+        )
+        if isolated_child:
+            continue
+        if _MISSING_DEPENDENCY_SIGNALS.search(block):
+            return True
+    return False
+
+
 QA_RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -342,6 +363,7 @@ class QAAgent(BaseAgent):
         else:
             git_diff = "No git repository, changes are directly in workspace."
 
+        environment_dependency = qa_environment_dependency(output)
         test_excerpt = qa_test_excerpt(output)
         tasks = self.orchestrator.state.get("tasks", [])
         qa_workers, qa_assignments = self.orchestrator.allocate_workers("qa", tasks)
@@ -382,7 +404,9 @@ class QAAgent(BaseAgent):
                 "Sections marked TRUNCATED are partial evidence, not proof that omitted checks passed. Never infer missing dependencies or defects from omitted content. "
                 "Assess correctness and safety using the supplied evidence. Use status PASSED only when no blocking defects remain; otherwise use FAILED and list concrete findings. "
                 f"{diagnostic_instruction}\n"
-                "Only when the raw output establishes a missing environment dependency, put the required human install command in dependency_install_needed; otherwise use null. Environment repairs are not Developer code tasks."
+                "Only when the raw output establishes a missing environment dependency, put the required human install command in dependency_install_needed; otherwise use null. Environment repairs are not Developer code tasks. "
+                "Missing imports inside a test child launched with -S (disabled site packages) require checking the child launcher, import paths and isolation code; do not prescribe installing packages into the parent environment. "
+                f"Environment dependency supported by runtime evidence: {environment_dependency}."
             )
             qa_prompt += (
                 f"\n\nOriginal Request (authoritative over derived tasks/reviews):\n{qa_excerpt(request, 2000)}"
@@ -415,7 +439,7 @@ class QAAgent(BaseAgent):
                         )
                     )
                     or bool(
-                        _MISSING_DEPENDENCY_SIGNALS.search(output)
+                        environment_dependency
                         and _extract_marker(
                             [(worker_id, level, value)], "DEPENDENCY_INSTALL_NEEDED"
                         )
@@ -544,16 +568,10 @@ class QAAgent(BaseAgent):
         dependency_install_needed = _extract_marker(
             qa_reports, "DEPENDENCY_INSTALL_NEEDED"
         )
-        if dependency_install_needed and not _MISSING_DEPENDENCY_SIGNALS.search(output):
-            # QA can claim a missing dependency from general knowledge of
-            # the project (e.g. "playwright is in requirements.txt") even
-            # when this run's actual raw output shows nothing of the sort
-            # -- observed live once the QA backend switched to a stronger
-            # model that produces well-formed but stale/hallucinated
-            # suggestions instead of obviously-malformed ones. Only honor
-            # the marker when the raw output itself corroborates it.
+        if dependency_install_needed and not environment_dependency:
+            # A missing child import under -S does not establish a missing parent package.
             log_warning(
-                f"[!] QA claimed a missing dependency but this run's raw output shows no such error; ignoring: {dependency_install_needed}"
+                f"[!] QA suggested installation without supporting parent-environment evidence; ignoring: {dependency_install_needed}"
             )
             dependency_install_needed = None
         if dependency_install_needed:
