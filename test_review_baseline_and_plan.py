@@ -42,7 +42,9 @@ def test_review_separates_real_task_changes_from_later_target_commits(
     app.plan_path.write_text("Implement the requested files")
     app.test_results_path.write_text("Tests passed in feature worktree")
     monkeypatch.setattr(app, "consult_specialists", Mock(return_value=""))
-    call = Mock(return_value='{"status":"APPROVED","feedback":[]}')
+    call = Mock(
+        return_value='{"status":"APPROVED","feedback":[],"process_feedback":[]}'
+    )
     monkeypatch.setattr(app, "call_agent", call)
     monkeypatch.setattr(
         "requests.sessions.Session.request",

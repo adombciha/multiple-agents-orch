@@ -56,7 +56,9 @@ def offline_models(app, monkeypatch):
             return "[FILE_START: smoke.py]\ndef answer():\n    return 42\n[FILE_END: smoke.py]"
         if role.startswith("qa_"):
             return "QA_STATUS: PASSED\nsmoke.py returned 42 in the configured test command."
-        if role in {"reviewer", "architect"}:
+        if role == "reviewer":
+            return '{"status": "APPROVED", "feedback": [], "process_feedback": []}'
+        if role == "architect":
             return '{"status": "APPROVED", "feedback": []}'
         if role == "assistant":
             return "## Offline smoke delivery\nAdded and verified smoke.py."

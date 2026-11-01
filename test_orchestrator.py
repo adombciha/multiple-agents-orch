@@ -5066,7 +5066,9 @@ def test_step_reviewing_code_approved_requires_delivery_confirmation(
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_agent",
-        Mock(return_value='{"status":"APPROVED","feedback":["ok"]}'),
+        Mock(
+            return_value='{"status":"APPROVED","feedback":["ok"],"process_feedback":[]}'
+        ),
     )
 
     initialized_orchestrator.step_reviewing_code()
@@ -5106,7 +5108,9 @@ def test_reviewer_receives_untracked_file_status(initialized_orchestrator, monke
             ]
         ),
     )
-    call_agent = Mock(return_value='{"status":"APPROVED","feedback":[]}')
+    call_agent = Mock(
+        return_value='{"status":"APPROVED","feedback":[],"process_feedback":[]}'
+    )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
     initialized_orchestrator.step_reviewing_code()
@@ -5139,7 +5143,9 @@ def test_step_reviewing_code_rejected_revises_until_max(
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_agent",
-        Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'),
+        Mock(
+            return_value='{"status":"REJECTED","feedback":["fix it"],"process_feedback":[]}'
+        ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
@@ -5176,7 +5182,9 @@ def test_step_reviewing_code_rejected_at_max_revisions_escalates_then_pauses(
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_agent",
-        Mock(return_value='{"status":"REJECTED","feedback":["fix it"]}'),
+        Mock(
+            return_value='{"status":"REJECTED","feedback":["fix it"],"process_feedback":[]}'
+        ),
     )
     monkeypatch.setattr(initialized_orchestrator, "escalate_developer_backend", Mock())
 
