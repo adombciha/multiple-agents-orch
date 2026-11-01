@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import subprocess
+import signal
 import shutil
 import re
 import time
@@ -1314,28 +1315,131 @@ class AgentOrchestrator:
         timeout: int = 1800,
         capture: bool = True,
         cwd: Path | None = None,
+        progress_path: Path | None = None,
     ) -> tuple[int, str]:
         """Runs a subprocess command safety and returns (returncode, output)."""
         exec_cwd = cwd or self.agent_workspace()
 
         try:
-            result = subprocess.run(
-                cmd,
-                cwd=exec_cwd,
-                stdout=subprocess.PIPE if capture else None,
-                stderr=subprocess.PIPE if capture else None,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            if progress_path is not None and capture:
+                result = self._run_command_with_progress(
+                    cmd, exec_cwd, timeout, progress_path
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=exec_cwd,
+                    stdout=subprocess.PIPE if capture else None,
+                    stderr=subprocess.PIPE if capture else None,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
             output = ""
             if capture:
                 output = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             return result.returncode, output
         except subprocess.TimeoutExpired as e:
-            return -1, f"Timeout expired: {e}"
+            partial = ""
+            if progress_path is not None:
+                for data in (e.output, e.stderr):
+                    if data:
+                        partial += (
+                            data.decode("utf-8", errors="replace")
+                            if isinstance(data, bytes)
+                            else data
+                        )
+                if not partial and progress_path.exists():
+                    partial = progress_path.read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+            return -1, f"Timeout expired: {e}\n{partial}".rstrip()
         except Exception as e:
             return -1, f"Error running command: {e}"
+
+    def _run_command_with_progress(self, cmd, cwd, timeout, progress_path):
+        """Publish test output without writing workflow state or acquiring another lock."""
+        started = time.monotonic()
+        self._test_progress = {
+            "started": started,
+            "timeout": timeout,
+            "output_tail": "",
+        }
+        process = None
+        seen = [0, 0]
+        last_notice = -5
+        try:
+            progress_path.write_text(
+                f"Command: {cmd}\nRunning; waiting for test output.\n", encoding="utf-8"
+            )
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                start_new_session=os.name == "posix",
+            )
+            while True:
+                elapsed = time.monotonic() - started
+                remaining = timeout - elapsed
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+                try:
+                    stdout, stderr = process.communicate(timeout=min(1, remaining))
+                    return subprocess.CompletedProcess(
+                        cmd, process.returncode, stdout, stderr
+                    )
+                except subprocess.TimeoutExpired as error:
+                    chunks = []
+                    with progress_path.open("a", encoding="utf-8") as live:
+                        for index, data in enumerate((error.output, error.stderr)):
+                            data = data or b""
+                            if isinstance(data, str):
+                                data = data.encode("utf-8")
+                            live.write(
+                                data[seen[index] :].decode("utf-8", errors="replace")
+                            )
+                            seen[index] = len(data)
+                            chunks.append(
+                                data[-1500:].decode("utf-8", errors="replace")
+                            )
+                    recent = "\n".join(chunk for chunk in chunks if chunk).strip()[
+                        -1500:
+                    ]
+                    elapsed = time.monotonic() - started
+                    self._test_progress = {
+                        "started": started,
+                        "timeout": timeout,
+                        "output_tail": recent,
+                    }
+                    if elapsed - last_notice >= 5:
+                        latest = (
+                            recent.splitlines()[-1][-180:]
+                            if recent
+                            else "waiting for output"
+                        )
+                        log_info(
+                            f"Test still running ({int(elapsed)}s / {timeout}s): {latest}"
+                        )
+                        last_notice = elapsed
+                    if elapsed >= timeout:
+                        raise
+        finally:
+            if process is not None:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                elif process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+                for stream in (process.stdout, process.stderr):
+                    stream.close()
+            self._test_progress = None
 
     # LLM Wrapper Delegation
     def get_backend(self, role: str) -> str:

@@ -11,6 +11,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import tempfile
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -273,6 +274,7 @@ class GuiService:
         if not worker_running and getattr(self.orchestrator, "ai_dir", None):
             external_lock = RunLock.read_holder(self.orchestrator.ai_dir)
             worker_running = bool(external_lock)
+        test_progress = getattr(self.orchestrator, "_test_progress", None)
         runtime = dict(getattr(self, "worker_status", {}))
         if not runtime:
             try:
@@ -373,6 +375,16 @@ class GuiService:
             "reports": reports,
             "worker_running": worker_running,
             "external_lock": external_lock,
+            "test_progress": (
+                {
+                    **test_progress,
+                    "elapsed_seconds": max(
+                        0, int(time.monotonic() - test_progress["started"])
+                    ),
+                }
+                if worker_running and state.get("state") == "TESTING" and test_progress
+                else {}
+            ),
             "worker_status": runtime,
             "can_submit": can_submit,
         }
@@ -1094,6 +1106,15 @@ def render_page(status: dict) -> str:
         "failed": "執行失敗",
         "idle": "已停止於決策點",
     }.get(runtime.get("phase"), "等待操作")
+    test_progress = status.get("test_progress", {})
+    if busy and current == "TESTING" and test_progress:
+        phase += f"；測試已執行 {test_progress['elapsed_seconds']} 秒（上限 {test_progress['timeout']} 秒）"
+        if test_progress.get("output_tail"):
+            phase += (
+                "；最近輸出：" + test_progress["output_tail"].splitlines()[-1][-180:]
+            )
+        else:
+            phase += "；等待測試輸出"
     stage_labels = STAGE_LABELS
     stage = status.get("stage", current)
     buttons: list[str] = []

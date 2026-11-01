@@ -316,7 +316,10 @@ class QAAgent(BaseAgent):
             test_cmd = self.orchestrator.config.get("test_command", "git diff --stat")
             log_info(f"Running test command: {test_cmd}")
             code, output = self.orchestrator.run_command(
-                ["bash", "-c", test_cmd], timeout=600, capture=True
+                ["bash", "-c", test_cmd],
+                timeout=600,
+                capture=True,
+                progress_path=self.orchestrator.test_results_path,
             )
 
         with open(self.orchestrator.test_results_path, "w", encoding="utf-8") as f:

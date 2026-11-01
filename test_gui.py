@@ -2546,3 +2546,30 @@ def test_http_worktree_delivery_revalidates_then_merges_and_rejects_duplicate(tm
 # Full rerun: python3 -m pytest -q -rs
 # Skipped here: writable temporary fixtures, socket/Git/lock tests, full regression.
 # Risk: service/integration cases remain unexecuted; no real-browser layout checks.
+
+
+def test_gui_shows_live_test_runtime_and_escapes_recent_output(tmp_path, monkeypatch):
+    service = gui.GuiService(tmp_path)
+    app = service.orchestrator
+    app.init_project()
+    app.state["state"] = "TESTING"
+    app.save_state()
+    app._test_progress = {
+        "started": gui.time.monotonic() - 12,
+        "timeout": 600,
+        "output_tail": "<script>alert(1)</script>",
+    }
+    monkeypatch.setattr(service, "_worker_is_running", lambda: True)
+    status = service.status()
+    assert status["test_progress"]["elapsed_seconds"] >= 12
+    page = gui.render_page(status)
+    assert "測試已執行" in page and "上限 600 秒" in page
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
+    assert "<script>alert(1)</script>" not in page
+    app.state["state"] = "WAITING_FOR_OWNER"
+    app.save_state()
+    assert service.status()["test_progress"] == {}
+    app.state["state"] = "TESTING"
+    app.save_state()
+    monkeypatch.setattr(service, "_worker_is_running", lambda: False)
+    assert service.status()["test_progress"] == {}

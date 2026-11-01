@@ -7721,3 +7721,93 @@ def test_developer_repair_bounds_feedback_preserves_target_and_raw_logs(
     assert (app.workspace / "app.py").read_text() == source.replace(
         "value = 1", "value = 2"
     ).rstrip("\n")
+
+
+def test_test_command_publishes_output_before_exit_without_changing_state(
+    initialized_orchestrator, monkeypatch, tmp_path
+):
+    import threading
+    from orchestrator.core import state as state_module
+
+    app = initialized_orchestrator
+    live = tmp_path / "live.txt"
+    release = tmp_path / "release"
+    notice = threading.Event()
+    result = []
+    before = app.state_path.read_bytes()
+    monkeypatch.setattr(state_module, "log_info", lambda message: notice.set())
+    script = (
+        "import pathlib,sys,time; "
+        "print('test_live.py::test_one PASSED', flush=True); "
+        "print('diagnostic', file=sys.stderr, flush=True); "
+        f"release=pathlib.Path({str(release)!r}); "
+        "exec('while not release.exists(): time.sleep(0.02)'); "
+        "print('finished', flush=True)"
+    )
+    worker = threading.Thread(
+        target=lambda: result.append(
+            app.run_command(
+                [sys.executable, "-u", "-c", script], timeout=8, progress_path=live
+            )
+        )
+    )
+    worker.start()
+    try:
+        assert notice.wait(5)
+        assert worker.is_alive()
+        assert "test_live.py::test_one PASSED" in live.read_text()
+        assert "diagnostic" in live.read_text()
+        assert app._test_progress["timeout"] == 8
+        assert "test_live.py::test_one PASSED" in app._test_progress["output_tail"]
+        assert app.state_path.read_bytes() == before
+    finally:
+        release.touch()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert result[0][0] == 0
+    assert "finished" in result[0][1] and "stderr:\ndiagnostic" in result[0][1]
+    assert app._test_progress is None
+
+
+def test_test_command_timeout_keeps_partial_output_and_reaps_process(
+    initialized_orchestrator, monkeypatch, tmp_path
+):
+    import subprocess
+
+    app = initialized_orchestrator
+    spawned = []
+    original = subprocess.Popen
+
+    def record(*args, **kwargs):
+        process = original(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", record)
+    code, output = app.run_command(
+        [
+            sys.executable,
+            "-u",
+            "-c",
+            "import time; print('started', flush=True); time.sleep(60)",
+        ],
+        timeout=0.3,
+        progress_path=tmp_path / "live.txt",
+    )
+    assert code == -1
+    assert "Timeout expired" in output and "started" in output
+    assert spawned[0].poll() is not None
+    assert spawned[0].stdout.closed and spawned[0].stderr.closed
+    assert app._test_progress is None
+
+
+def test_test_command_start_failure_clears_runtime_progress(
+    initialized_orchestrator, tmp_path
+):
+    app = initialized_orchestrator
+    code, output = app.run_command(
+        ["/nonexistent-test-executable"], progress_path=tmp_path / "live.txt"
+    )
+    assert code == -1
+    assert "Error running command" in output
+    assert app._test_progress is None
