@@ -466,6 +466,37 @@ class AgentOrchestrator:
         with self.state_path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
+    def implementation_approval_evidence(self) -> dict:
+        record = self.state.get("implementation_approval", {})
+        current = {
+            "request_sha256": hashlib.sha256(self.request_path.read_bytes()).hexdigest()
+            if self.request_path.is_file()
+            else None,
+            "plan_sha256": hashlib.sha256(self.plan_path.read_bytes()).hexdigest()
+            if self.plan_path.is_file()
+            else None,
+        }
+        return {
+            "record": record,
+            "matches_current_request_and_plan": bool(record)
+            and all(
+                current[key] is not None and record.get(key) == value
+                for key, value in current.items()
+            ),
+        }
+
+    def record_implementation_approval(self, decision: str):
+        """Bind an explicit owner decision to the request and plan being approved."""
+        if self.request_path.is_file() and self.plan_path.is_file():
+            self.state["implementation_approval"] = {
+                "decision": decision,
+                "request_sha256": hashlib.sha256(
+                    self.request_path.read_bytes()
+                ).hexdigest(),
+                "plan_sha256": hashlib.sha256(self.plan_path.read_bytes()).hexdigest(),
+                "approved_at": time.time(),
+            }
+
     def _delivery_state_fingerprint(self, state: dict | None = None) -> str:
         values = deepcopy(self.state if state is None else state)
         for key in (

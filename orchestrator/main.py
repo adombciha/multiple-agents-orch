@@ -106,6 +106,7 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state["tasks"] = []
     orchestrator.state["active_task_id"] = None
     orchestrator.state.pop("pending_plan_feedback", None)
+    orchestrator.state.pop("implementation_approval", None)
 
 
 def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
@@ -294,6 +295,8 @@ def apply_approve(
                 active_task_id, None
             )
     orchestrator.clear_pause_request()
+    if resume_state == "IMPLEMENTING":
+        orchestrator.record_implementation_approval("approve")
     orchestrator.state["state"] = resume_state
     orchestrator.state.pop("human_review_source", None)
     orchestrator.state.pop("resume_state", None)
@@ -312,6 +315,7 @@ def apply_review_decision(
     if decision == "pass":
         next_state = orchestrator.state.get("pass_state", "REVIEWING_CODE")
     elif decision == "revise":
+        orchestrator.state.pop("implementation_approval", None)
         if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
             next_state = "DEVELOPING_PLAN"
             feedback = orchestrator.state.get("pending_plan_feedback", "")
@@ -352,6 +356,8 @@ def apply_review_decision(
             )
     if decision in {"pass", "revise"}:
         orchestrator.clear_pause_request()
+    if decision == "pass" and next_state == "IMPLEMENTING":
+        orchestrator.record_implementation_approval("pass")
     orchestrator.state["state"] = next_state
     for key in (
         "human_review_source",

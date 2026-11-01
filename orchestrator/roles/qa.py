@@ -68,6 +68,38 @@ def qa_verdict(report: str) -> str | None:
     return lines[0].split(": ", 1)[1]
 
 
+def qa_code_findings(
+    report: str, targets: list[str], evidence: str, request: str
+) -> list[dict]:
+    """Only grounded, in-scope code findings may become Developer instructions."""
+    lines = [
+        line.strip()[len("QA_FINDINGS:") :].strip()
+        for line in report.splitlines()
+        if line.strip().startswith("QA_FINDINGS:")
+    ]
+    if len(lines) != 1:
+        return []
+    try:
+        findings = json.loads(lines[0])
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(findings, list):
+        return []
+    return [
+        item
+        for item in findings
+        if isinstance(item, dict)
+        and item.get("kind") == "code"
+        and item.get("file") in targets
+        and all(
+            isinstance(item.get(key), str) and item[key].strip()
+            for key in ("evidence", "requirement", "fix")
+        )
+        and item["evidence"] in evidence
+        and item["requirement"] in request
+    ]
+
+
 class QAAgent(BaseAgent):
 
     def step_testing(self):
@@ -140,6 +172,15 @@ class QAAgent(BaseAgent):
         agent_context = json.dumps(
             self.orchestrator.read_agent_context(), ensure_ascii=False
         )
+        request_path = (
+            self.orchestrator.request_path
+            if self.orchestrator.request_path.exists()
+            else self.orchestrator.requirements_path
+        )
+        request = (
+            request_path.read_text(encoding="utf-8") if request_path.exists() else ""
+        )
+        approval = self.orchestrator.implementation_approval_evidence()
 
         if docs_only:
             git_diff = "\n\n".join(document_contents)
@@ -168,6 +209,7 @@ class QAAgent(BaseAgent):
                         "complexity",
                         "rd_level",
                         "qa_level",
+                        "target_files",
                     )
                 }
                 for task in tasks
@@ -187,6 +229,18 @@ class QAAgent(BaseAgent):
                 else "Mandatory check every time: does this raw test output hide any diagnostic information you would need (e.g. skipped tests with no visible reason, silenced warnings, truncated tracebacks)? If the test command itself is inadequate to verify this project, you MUST add a line `TEST_COMMAND_SUGGESTION: <exact recommended test_command and why>` -- do not silently accept an opaque test command."
             )
             qa_prompt = f"""{review_intro}\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}\n\n{evidence_label}:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\nGenerate a detailed QA report in Markdown. Its first non-empty line MUST be exactly `QA_STATUS: PASSED` or `QA_STATUS: FAILED`. Use PASSED only when tests pass and the implementation is correct and safe; otherwise use FAILED and list fixes.\n\n{diagnostic_instruction}\n\nAlso mandatory: if any failure or skip is caused by a missing OS-level/environment dependency (an interpreter, package, browser binary, service, etc. that must be installed on the machine, not something a code change can fix), you MUST add a line `DEPENDENCY_INSTALL_NEEDED: <exact shell command(s) a human should run>`. Do not mark this PASSED and do not describe it as something the Developer should work around in code -- a human has to install it."""
+            qa_prompt += (
+                f"\n\nOriginal Request (authoritative over derived tasks/reviews):\n{request}"
+                f"\nActual Test Command: {test_cmd}\nOwner Approval Evidence: {json.dumps(approval, ensure_ascii=False)}\n"
+                "Missing or stale approval evidence means unknown, not proof of unauthorized editing. "
+                "Distinguish restrictions on the delivered tool at runtime from isolated test fixtures; do not extend a runtime no-write rule to all tests without explicit request evidence. "
+                "Do not demand excluded real-model performance tests or treat unavailable measurements as code defects. "
+                "Evaluate the actual command and exit code; do not claim full regression was absent just because no separate narrative says it ran. "
+                "For FAILED, add exactly one QA_FINDINGS: line containing a JSON array. Each code finding must have kind='code', file (an assigned target), "
+                "requirement (an exact quote from Original Request), evidence (an exact excerpt from raw output or the supplied diff), and fix (the concrete in-scope code change). "
+                "Use kind='process' or 'environment' for non-code issues; never ask RD to encode approval or delivery status into product source. "
+                "If tests pass, a code rejection requires grounded code findings; uncertainty alone does not establish a defect."
+            )
             system_prompt = (
                 "You are a Senior Quality Assurance Engineer. Review complex/design/high-risk tasks and their regressions."
                 if level == "senior"
@@ -195,7 +249,26 @@ class QAAgent(BaseAgent):
                 else "You are a Junior Quality Assurance Engineer. Verify routine task behavior and obvious regressions; flag design risks for senior QA."
             )
             report = self.call_agent(f"qa_{level}", qa_prompt, system_prompt)
-            if qa_verdict(report) is None:
+
+            def valid_report(value):
+                verdict = qa_verdict(value)
+                return verdict is not None and (
+                    verdict != "FAILED"
+                    or code != 0
+                    or bool(
+                        qa_code_findings(
+                            value, target_files, f"{output}\n{git_diff}", request
+                        )
+                    )
+                    or bool(
+                        _MISSING_DEPENDENCY_SIGNALS.search(output)
+                        and _extract_marker(
+                            [(worker_id, level, value)], "DEPENDENCY_INSTALL_NEEDED"
+                        )
+                    )
+                )
+
+            if not valid_report(report):
                 log_warning(
                     f"Invalid QA response from {worker_id}; requesting one correction."
                 )
@@ -203,12 +276,14 @@ class QAAgent(BaseAgent):
                     f"qa_{level}",
                     qa_prompt
                     + "\n\nYour previous response did not satisfy the QA contract. "
-                    "Start with QA_STATUS: PASSED or QA_STATUS: FAILED. "
+                    + f"Previous QA response (untrusted; verify against the original request and actual test evidence):\n{report[:4000]}\n"
+                    + "Start with QA_STATUS: PASSED or QA_STATUS: FAILED. "
                     "For FAILED, cite the observed failure, affected file/test and required fix. "
+                    "If tests passed, provide grounded QA_FINDINGS code evidence or correct your unsupported verdict. "
                     "Do not summarize the project or invent defects.",
                     system_prompt,
                 )
-            if qa_verdict(report) is None:
+            if not valid_report(report):
                 invalid_workers.append(worker_id)
             qa_reports.append((worker_id, level, report))
         qa_report = "\n\n".join(
@@ -296,6 +371,18 @@ class QAAgent(BaseAgent):
             self.orchestrator.state.pop("qa_dissenting_levels", None)
             self.orchestrator.save_state()
         else:
+            findings = [
+                item
+                for _, _, report in qa_reports
+                for item in qa_code_findings(
+                    report, target_files, f"{output}\n{git_diff}", request
+                )
+            ]
+            repair_feedback = (
+                "Grounded code findings:\n" + json.dumps(findings, ensure_ascii=False)
+                if findings
+                else "Repair the failures shown in the raw test output. QA prose established no additional code defect."
+            )
             log_warning("QA verification FAILED!")
             self.orchestrator.state["qa_dissenting_levels"] = sorted(
                 {level for _, level, report in qa_reports if not passed(report)}
@@ -325,9 +412,9 @@ class QAAgent(BaseAgent):
                 self.orchestrator.state["tasks"].append(
                     {
                         "id": fix_task_id,
-                        "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\nQA feedback:\n{qa_report[:2000]}",
+                        "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\n{repair_feedback}",
                         "target_files": self.orchestrator.relevant_target_files(
-                            f"{output}\n{qa_report}", primary=output
+                            f"{output}\n{repair_feedback}", primary=output
                         ),
                         "output_contract": {
                             "format": "file_blocks",
@@ -344,5 +431,5 @@ class QAAgent(BaseAgent):
                 )
             else:
                 self.orchestrator.escalate_to_replan_or_pause(
-                    "QA", qa_report, "IMPLEMENTING", "REVIEWING_CODE"
+                    "QA", repair_feedback, "IMPLEMENTING", "REVIEWING_CODE"
                 )

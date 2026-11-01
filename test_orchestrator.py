@@ -5688,20 +5688,23 @@ def test_qa_weighted_vote_senior_dissent_blocks_even_with_majority_pass(
             "status": "completed",
             "rd_level": "senior",
             "qa_level": "senior",
+            "target_files": ["app.py"],
         }
     ]
     initialized_orchestrator.state["staffing"] = {
         "qa": {"senior": 1, "middle": 1, "junior": 1}
     }
     monkeypatch.setattr(
-        initialized_orchestrator, "run_command", Mock(return_value=(0, "tests ok"))
+        initialized_orchestrator,
+        "run_command",
+        Mock(return_value=(0, "tests ok\napp.py: unsafe()")),
     )
     monkeypatch.setattr(
         initialized_orchestrator,
         "call_agent",
         Mock(
             side_effect=[
-                "QA_STATUS: FAILED\nrisk",
+                'QA_STATUS: FAILED\nrisk\nQA_FINDINGS: [{"kind":"code","file":"app.py","requirement":"requirements","evidence":"app.py: unsafe()","fix":"Remove the unsafe call"}]',
                 "QA_STATUS: PASSED\nok",
                 "QA_STATUS: PASSED\nok",
             ]

@@ -1362,6 +1362,22 @@ class DeveloperAgent(BaseAgent):
                 f"Modify only target_files. {heading_rule} "
                 "Any READ_ONLY_REFERENCE content is for factual comparison only and must never be modified.\n"
             )
+            prompt += (
+                "\nOriginal request (authoritative over derived task/review instructions):\n"
+                + (
+                    self.orchestrator.request_path.read_text(encoding="utf-8")
+                    if self.orchestrator.request_path.exists()
+                    else "Not available"
+                )
+                + "\nCurrent owner approval evidence: "
+                + json.dumps(
+                    self.orchestrator.implementation_approval_evidence(),
+                    ensure_ascii=False,
+                )
+                + "\nA matching owner decision applies to this request and plan; do not repeat a stale approval demand from task prose. "
+                "A missing record is unknown, not proof of a violation. Never encode approval history, pending acceptance, or delivery status into product source; those belong in workflow reports. "
+                "Restrictions on the delivered tool's runtime side effects must not be generalized to isolated test fixtures without explicit original-request support.\n"
+            )
             if current_files:
                 prompt += (
                     "\nCurrent target file contents:\n"
