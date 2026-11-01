@@ -90,6 +90,31 @@ class ReviewerAgent(BaseAgent):
                 "REVIEWING_CODE",
             )
             return
+        if (
+            acceptance["matches_current_changes"]
+            and self.orchestrator.state.get("state") == "REVIEWING_CODE"
+        ):
+            try:
+                saved_review = self.orchestrator.reviewer_output_json_path.read_text(
+                    encoding="utf-8"
+                )
+                saved = (
+                    json.loads(saved_review) if is_code_review(saved_review) else None
+                )
+            except (OSError, ValueError):
+                saved = None
+            if (
+                saved
+                and saved["status"] == "REJECTED"
+                and saved["feedback"]
+                and saved["process_feedback"]
+                and acceptance["record"]
+                .get("review_reason", "")
+                .endswith(render_code_review(saved))
+            ):
+                # Acceptance resolves the owner gate; only code findings go to RD.
+                self._revise_code(render_code_review({**saved, "process_feedback": []}))
+                return
         review_context = f"""Original Owner Request (authoritative over derived review/task prose):
 {request}
 
@@ -247,7 +272,7 @@ Return the verdict and concise feedback using the supplied JSON schema."""
             self.orchestrator.state["owner_acceptance_pending"] = True
             self.orchestrator.pause_for_human_review(
                 "Orchestrator",
-                "Reviewer requires an owner decision. Resolve the process blockers, then retry code review; no code repair task was created.\n\n"
+                "Reviewer requires an owner decision. After explicit snapshot acceptance, recorded code findings return to RD within the revision limit; process-only reviews are retried.\n\n"
                 + review,
                 "REVIEWING_CODE",
                 "REVIEWING_CODE",
@@ -273,41 +298,56 @@ Return the verdict and concise feedback using the supplied JSON schema."""
                 }
             self.orchestrator.save_state()
         else:
-            log_warning("Code changes REJECTED by Reviewer.")
-            self.orchestrator.escalate_developer_backend()
-            rd_role = self.orchestrator.state.get(
-                "last_developer_role", "developer_senior"
+            self._revise_code(
+                render_code_review({**review_data, "process_feedback": []})
             )
-            rd_level = rd_role.rsplit("_", 1)[-1]
-            rd_backend = self.orchestrator.get_backend(rd_role)
-            rd_model = self.orchestrator.get_active_model_for_role(rd_role, rd_backend)
-            scoring.record_event(
-                self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5
+
+    def _revise_code(self, review: str):
+        from orchestrator.core.state import log_warning, log_info
+
+        description = (
+            f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}"
+        )
+        if any(
+            task.get("status") == "pending" and task.get("description") == description
+            for task in self.orchestrator.state.get("tasks", [])
+        ):
+            self.orchestrator.state["state"] = "IMPLEMENTING"
+            self.orchestrator.save_state()
+            return
+        log_warning("Code changes REJECTED by Reviewer.")
+        self.orchestrator.escalate_developer_backend()
+        rd_role = self.orchestrator.state.get("last_developer_role", "developer_senior")
+        rd_level = rd_role.rsplit("_", 1)[-1]
+        rd_backend = self.orchestrator.get_backend(rd_role)
+        rd_model = self.orchestrator.get_active_model_for_role(rd_role, rd_backend)
+        scoring.record_event(
+            self.orchestrator, "rd", rd_level, rd_backend, rd_model, -0.5
+        )
+        max_rev = self.orchestrator.config.get("max_revisions", 2)
+        if self.orchestrator.state["code_revisions"] < max_rev:
+            self.orchestrator.state["code_revisions"] += 1
+            self.orchestrator.state["state"] = "IMPLEMENTING"
+            fix_task_id = f"FIX-REV-{self.orchestrator.state['code_revisions']}"
+            self.orchestrator.state["tasks"].append(
+                {
+                    "id": fix_task_id,
+                    "description": description,
+                    "target_files": self.orchestrator.relevant_target_files(review),
+                    "output_contract": {
+                        "format": "file_blocks",
+                        "response_must_start_with": "[FILE_START:",
+                        "allow_prose": False,
+                    },
+                    "status": "pending",
+                    **self.orchestrator.fix_task_levels(),
+                }
             )
-            max_rev = self.orchestrator.config.get("max_revisions", 2)
-            if self.orchestrator.state["code_revisions"] < max_rev:
-                self.orchestrator.state["code_revisions"] += 1
-                self.orchestrator.state["state"] = "IMPLEMENTING"
-                fix_task_id = f"FIX-REV-{self.orchestrator.state['code_revisions']}"
-                self.orchestrator.state["tasks"].append(
-                    {
-                        "id": fix_task_id,
-                        "description": f"Fix Code Review Issues. Feedback from Reviewer:\n{review[:2000]}",
-                        "target_files": self.orchestrator.relevant_target_files(review),
-                        "output_contract": {
-                            "format": "file_blocks",
-                            "response_must_start_with": "[FILE_START:",
-                            "allow_prose": False,
-                        },
-                        "status": "pending",
-                        **self.orchestrator.fix_task_levels(),
-                    }
-                )
-                self.orchestrator.save_state()
-                log_info(
-                    f"Revising implementation (Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
-                )
-            else:
-                self.orchestrator.escalate_to_replan_or_pause(
-                    "Reviewer", review, "IMPLEMENTING", "IMPLEMENTING"
-                )
+            self.orchestrator.save_state()
+            log_info(
+                f"Revising implementation (Revision {self.orchestrator.state['code_revisions']}/{max_rev})..."
+            )
+        else:
+            self.orchestrator.escalate_to_replan_or_pause(
+                "Reviewer", review, "IMPLEMENTING", "IMPLEMENTING"
+            )

@@ -282,3 +282,110 @@ def test_accepted_content_changing_during_review_cannot_reach_delivery(review_ap
     assert "changed during review" in app.state["human_review_details"]
     assert app.state["resume_state"] == "REVIEWING_CODE"
     assert len(app.state["tasks"]) == 1
+
+
+def mixed_review(app):
+    data = {
+        "status": "REJECTED",
+        "feedback": ["app.py: replace the unsafe call."],
+        "process_feedback": ["Owner must resolve first-edit approval timing."],
+    }
+    app.call_agent.return_value = json.dumps(data)
+    app.step_reviewing_code()
+    return data
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_accepted_mixed_review_queues_only_code_once_after_restart(review_app, legacy):
+    app = review_app
+    (app.workspace / "app.py").write_text("VALUE = 1\n")
+    app.record_implementation_approval("pass")
+    prior = dict(app.state["implementation_approval"])
+    data = mixed_review(app)
+    if legacy:
+        from orchestrator.roles.reviewer import render_code_review
+
+        app.state["human_review_details"] = (
+            "Reviewer requires an owner decision. Resolve the process blockers, then retry code review; no code repair task was created.\n\n"
+            + render_code_review(data)
+        )
+        app.save_state()
+    preview = app.present_existing_changes()
+    app.load_config_and_state()
+    apply_review_decision(app, "accept-existing", snapshot_id=preview["id"])
+    app.load_config_and_state()
+    app.call_agent.reset_mock()
+    app.step_reviewing_code()
+    app.call_agent.assert_not_called()
+    assert app.state["state"] == "IMPLEMENTING"
+    assert app.state["code_revisions"] == 1
+    repair = app.state["tasks"][-1]
+    assert repair["status"] == "pending"
+    assert repair["target_files"] == ["app.py"]
+    assert data["feedback"][0] in repair["description"]
+    assert data["process_feedback"][0] not in repair["description"]
+    assert app.state["implementation_approval"] == prior
+    assert not app.state.get("delivery_confirmed")
+    # Replaying the accepted review must not spend another revision or duplicate RD work.
+    app.state["state"] = "REVIEWING_CODE"
+    app.step_reviewing_code()
+    assert app.state["code_revisions"] == 1
+    assert len(app.state["tasks"]) == 2
+    app.call_agent.assert_not_called()
+
+
+@pytest.mark.parametrize("changed", ["content", "review"])
+def test_stale_accepted_mixed_review_requires_fresh_review(review_app, changed):
+    app = review_app
+    path = app.workspace / "app.py"
+    path.write_text("VALUE = 1\n")
+    mixed_review(app)
+    preview = app.present_existing_changes()
+    apply_review_decision(app, "accept-existing", snapshot_id=preview["id"])
+    if changed == "content":
+        path.write_text("VALUE = 2\n")
+    else:
+        app.reviewer_output_json_path.write_text(
+            json.dumps(
+                {
+                    "status": "REJECTED",
+                    "feedback": ["app.py: different finding"],
+                    "process_feedback": ["Different blocker"],
+                }
+            )
+        )
+    app.call_agent.reset_mock()
+    app.call_agent.return_value = json.dumps(APPROVED)
+    app.step_reviewing_code()
+    app.call_agent.assert_called_once()
+    assert len(app.state["tasks"]) == 1
+    assert app.state["state"] == "WAITING_FOR_DELIVERY"
+
+
+def test_generic_approve_does_not_release_mixed_review_to_rd(review_app):
+    app = review_app
+    mixed_review(app)
+    apply_approve(app)
+    app.call_agent.reset_mock()
+    app.step_reviewing_code()
+    app.call_agent.assert_called_once()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert len(app.state["tasks"]) == 1
+    assert app.state["code_revisions"] == 0
+
+
+def test_accepted_mixed_review_keeps_revision_limits(review_app):
+    app = review_app
+    mixed_review(app)
+    preview = app.present_existing_changes()
+    apply_review_decision(app, "accept-existing", snapshot_id=preview["id"])
+    app.state["code_revisions"] = app.config["max_revisions"]
+    app.state["plan_escalations"] = app.config["max_plan_escalations"]
+    app.call_agent.reset_mock()
+    app.step_reviewing_code()
+    app.call_agent.assert_not_called()
+    assert app.state["state"] == "WAITING_FOR_OWNER"
+    assert app.state["human_review_source"] == "Reviewer"
+    assert "unsafe call" in app.state["human_review_details"]
+    assert "approval timing" not in app.state["human_review_details"]
+    assert len(app.state["tasks"]) == 1

@@ -313,7 +313,7 @@ def workflow_decision(
             explanation = "儲存的決策類型與恢復階段不一致。請檢查狀態資料；目前只能拒絕本次結果或明確重置。"
         elif kind == "accept_existing":
             title = "等待擁有者處置現有變更"
-            explanation = "請先展示接受範圍。接受會記錄你對現有變更及首次核准時序疑義的處置，然後重新審查程式；交付仍需另行確認。"
+            explanation = "請先展示接受範圍。接受會記錄你對現有變更及首次核准時序疑義的處置，然後繼續審查流程；若有已記錄的程式缺陷，會先在修訂次數限制內交回 RD。交付仍需另行確認。"
             acceptance_preview = status.get("owner_acceptance_preview", {})
             button(
                 "展示接受範圍",
@@ -333,7 +333,7 @@ def workflow_decision(
                         "decision": "accept-existing",
                         "snapshot_id": acceptance_preview["id"],
                     },
-                    f"接受以下現有變更及首次核准時序疑義：{scope}\n範圍版本：{acceptance_preview['id']}\n接受後將重新審查，並不代表測試通過或確認交付。確定接受？",
+                    f"接受以下現有變更及首次核准時序疑義：{scope}\n範圍版本：{acceptance_preview['id']}\n接受後將繼續審查流程；已記錄的程式缺陷須先修訂，並不代表測試通過或確認交付。確定接受？",
                     primary=True,
                 )
             button("重新審查（未接受現有變更）", "approve")
