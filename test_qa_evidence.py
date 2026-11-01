@@ -325,7 +325,8 @@ def test_large_qa_evidence_fits_local_model_and_reaches_rd(qa_app, monkeypatch):
                 "test_command_suggestion": None,
             }
         )
-        assert not validator(false_pass)
+        with pytest.raises(RuntimeError, match="contradicts test exit code"):
+            validator(false_pass)
         return "QA_STATUS: FAILED\nObserved subprocess guard failures."
 
     monkeypatch.setattr(app, "call_agent", respond)

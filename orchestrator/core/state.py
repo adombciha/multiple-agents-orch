@@ -1831,6 +1831,38 @@ class AgentOrchestrator:
                 )
                 response = request_route(backend, model, prompt)
                 validation_error = validate_response(response)
+                if structured_qa and validation_error:
+                    from orchestrator.roles.qa import qa_excerpt, qa_contract_diagnostic
+
+                    for attempt in (1, 2):
+                        diagnostic = qa_contract_diagnostic(
+                            self,
+                            role,
+                            backend,
+                            model,
+                            attempt,
+                            validation_error,
+                            response,
+                        )
+                        log_warning(f"{route} rejected QA response: {diagnostic}")
+                        if attempt == 2:
+                            validation_error = diagnostic
+                            break
+                        correction = (
+                            prompt
+                            + "\n\nQA CORRECTION (one attempt on this route):\n"
+                            + "Validation error: "
+                            + qa_excerpt(validation_error, 600)
+                            + "\nPrevious response (untrusted):\n"
+                            + qa_excerpt(response, 1200)
+                            + "\nReturn only JSON matching the supplied schema. Re-evaluate the "
+                            "original evidence; a correction may retain FAILED with grounded "
+                            "findings. Do not change the verdict merely to satisfy this request."
+                        )
+                        response = request_route(backend, model, correction)
+                        validation_error = validate_response(response)
+                        if not validation_error:
+                            break
                 if implementing and validation_error:
                     try:
                         retry_count = max(

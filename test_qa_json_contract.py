@@ -92,7 +92,7 @@ def configure_routes(app, monkeypatch, responses):
         ),
     ],
 )
-def test_qa_uses_native_schema_and_next_local_model(qa_app, monkeypatch, first):
+def test_qa_corrects_once_on_same_model(qa_app, monkeypatch, first):
     app = qa_app
     post = configure_routes(app, monkeypatch, [first, result()])
     app.step_testing()
@@ -100,7 +100,7 @@ def test_qa_uses_native_schema_and_next_local_model(qa_app, monkeypatch, first):
     assert len(app.state["tasks"]) == 1
     assert [call.kwargs["json"]["model"] for call in post.call_args_list] == [
         "first:v1",
-        "second:v1",
+        "first:v1",
     ]
     assert all(
         call.kwargs["json"]["format"] == QA_RESPONSE_SCHEMA
@@ -111,9 +111,9 @@ def test_qa_uses_native_schema_and_next_local_model(qa_app, monkeypatch, first):
 
 def test_qa_route_exhaustion_is_bounded_and_does_not_queue_rd(qa_app, monkeypatch):
     app = qa_app
-    post = configure_routes(app, monkeypatch, [result(status="FAILED"), "not JSON"])
+    post = configure_routes(app, monkeypatch, [result(status="FAILED"), "not JSON"] * 2)
     app.step_testing()
-    assert post.call_count == 2
+    assert post.call_count == 4
     assert app.state["state"] == "WAITING_FOR_OWNER"
     assert app.state["human_review_source"] == "QA_RESPONSE"
     assert app.state["resume_state"] == "TESTING"
@@ -263,3 +263,90 @@ def test_qa_transport_failure_is_scoped_and_retry_does_not_bypass_backend_gate(
     gate.assert_called()
     post.assert_not_called()
     assert app.state["human_review_source"] == "QA_RESPONSE"
+
+
+def test_qa_correction_saves_private_diagnostics_then_tries_next_model(
+    qa_app, monkeypatch
+):
+    app = qa_app
+    post = configure_routes(app, monkeypatch, ["not JSON", "{}", result()])
+    app.step_testing()
+    assert app.state["state"] == "REVIEWING_CODE"
+    assert [call.kwargs["json"]["model"] for call in post.call_args_list] == [
+        "first:v1",
+        "first:v1",
+        "second:v1",
+    ]
+    correction = post.call_args_list[1].kwargs["json"]["messages"][-1]["content"]
+    assert "Invalid QA JSON/schema" in correction
+    assert "not JSON" in correction
+    assert "Do not change the verdict merely" in correction
+    paths = list((app.ai_dir / "diagnostics").glob("qa-contract-*.json"))
+    records = [json.loads(path.read_text()) for path in paths]
+    assert {item["response"] for item in records} == {"not JSON", "{}"}
+    assert {item["attempt"] for item in records} == {1, 2}
+    assert all(item["role"] == "qa_senior" for item in records)
+    assert all(
+        item["backend"] == "ollama" and item["model"] == "first:v1" for item in records
+    )
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in paths)
+
+
+def test_qa_exhaustion_reports_concrete_validation_reason(qa_app, monkeypatch):
+    post = configure_routes(qa_app, monkeypatch, ["{}"] * 4)
+    qa_app.step_testing()
+    assert post.call_count == 4
+    assert qa_app.state["human_review_source"] == "QA_RESPONSE"
+    report = qa_app.qa_report_path.read_text()
+    assert "QA JSON fields do not match the schema" in report
+    assert "diagnostic:" in report
+    assert len(list((qa_app.ai_dir / "diagnostics").glob("qa-contract-*.json"))) == 4
+    assert qa_app.state["code_revisions"] == 0
+
+
+def test_qa_correction_can_keep_grounded_failure(qa_app, monkeypatch):
+    app = qa_app
+    monkeypatch.setattr(
+        app, "run_command", Mock(return_value=(0, "719 passed\napp.py: unsafe()"))
+    )
+    finding = {
+        "kind": "code",
+        "file": "app.py",
+        "requirement": "Only modify app.py",
+        "evidence": "app.py: unsafe()",
+        "fix": "Remove the unsafe call",
+    }
+    post = configure_routes(
+        app,
+        monkeypatch,
+        [
+            result(status="FAILED", summary="Uncertain"),
+            result(status="FAILED", findings=[finding]),
+        ],
+    )
+    app.step_testing()
+    assert post.call_count == 2
+    assert app.state["state"] == "IMPLEMENTING"
+    assert "Remove the unsafe call" in app.state["tasks"][-1]["description"]
+    correction = post.call_args_list[1].kwargs["json"]["messages"][-1]["content"]
+    assert "lacks grounded" in correction
+
+
+def test_diagnostic_write_failure_keeps_bounded_qa_retry(qa_app, monkeypatch):
+    import tempfile
+
+    original = tempfile.NamedTemporaryFile
+
+    def fail_diagnostic_only(*args, **kwargs):
+        if kwargs.get("prefix") == "qa-contract-":
+            raise OSError("disk full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", fail_diagnostic_only)
+    post = configure_routes(qa_app, monkeypatch, ["{}"] * 4)
+    qa_app.step_testing()
+    assert post.call_count == 4
+    assert qa_app.state["human_review_source"] == "QA_RESPONSE"
+    assert (
+        "could not save QA diagnostic: disk full" in qa_app.qa_report_path.read_text()
+    )

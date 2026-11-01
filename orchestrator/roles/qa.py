@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import re
+import tempfile
 from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent
 from orchestrator.core import scoring, brain
@@ -176,6 +177,38 @@ def qa_code_findings(
         and item["evidence"] in evidence
         and item["requirement"] in request
     ]
+
+
+def qa_contract_diagnostic(
+    orchestrator, role, backend, model, attempt, error, response
+):
+    """Keep rejected provider output private and separate from the final QA report."""
+    try:
+        directory = orchestrator.ai_dir / "diagnostics"
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="qa-contract-",
+            suffix=".json",
+            dir=directory,
+            delete=False,
+        ) as diagnostic:
+            json.dump(
+                {
+                    "role": role,
+                    "backend": backend,
+                    "model": model,
+                    "attempt": attempt,
+                    "error": error,
+                    "response": response,
+                },
+                diagnostic,
+                ensure_ascii=False,
+            )
+            return f"{error}; diagnostic: {diagnostic.name}"
+    except OSError as failure:
+        return f"{error}; could not save QA diagnostic: {failure}"
 
 
 def qa_excerpt(text: str, limit: int) -> str:
@@ -390,13 +423,25 @@ class QAAgent(BaseAgent):
                 )
 
             def valid_json(value):
+                from orchestrator.core.state import ResponseContractError
+
                 try:
                     rendered = render_qa_json(value)
-                    return valid_report(rendered) and not (
-                        code != 0 and qa_verdict(rendered) == "PASSED"
+                except (TypeError, ValueError) as error:
+                    raise ResponseContractError(
+                        f"Invalid QA JSON/schema: {error}"
+                    ) from error
+                if code != 0 and qa_verdict(rendered) == "PASSED":
+                    raise ResponseContractError(
+                        f"QA PASSED contradicts test exit code {code}; report the observed failure."
                     )
-                except (TypeError, ValueError):
-                    return False
+                if not valid_report(rendered):
+                    raise ResponseContractError(
+                        "QA FAILED lacks grounded in-scope code findings or a missing dependency "
+                        "established by raw output. Cite an assigned file, exact request quote, "
+                        "and exact test/diff evidence; do not invent defects from uncertainty."
+                    )
+                return True
 
             qa_prompt += (
                 "\nOUTPUT CONTRACT: Return exactly one JSON object matching the following schema; no Markdown, headings or marker lines. "
