@@ -244,3 +244,122 @@ def test_revising_or_resetting_revokes_previous_approval(qa_app, monkeypatch, ac
     assert not app.implementation_approval_evidence()[
         "matches_current_request_and_plan"
     ]
+
+
+@pytest.mark.parametrize("text", ["x" * 100000, "測試失敗🙂" * 20000])
+def test_qa_excerpt_bounds_utf8_and_marks_omissions(text):
+    from orchestrator.roles.qa import qa_excerpt
+
+    excerpt = qa_excerpt(text, 600)
+    assert len(excerpt.encode("utf-8")) <= 600
+    assert "TRUNCATED" in excerpt
+    assert "�" not in excerpt
+    assert qa_excerpt("short evidence", 600) == "short evidence"
+
+
+def test_qa_test_excerpt_retains_root_error_and_failure_summary():
+    from orchestrator.roles.qa import qa_test_excerpt
+
+    output = (
+        "." * 5000
+        + "\n"
+        + (
+            "Traceback\nE   OfflineViolation: subprocess guard rejected git init\n"
+            * 9000
+        )
+        + "FAILED test_workflow_acceptance.py::test_scope\n"
+        + "145 failed, 725 passed, 48 errors\n"
+    )
+    excerpt = qa_test_excerpt(output)
+    assert len(excerpt.encode("utf-8")) <= 4500
+    assert "E   OfflineViolation: subprocess guard rejected git init" in excerpt
+    assert "FAILED test_workflow_acceptance.py::test_scope" in excerpt
+    assert "145 failed, 725 passed, 48 errors" in excerpt
+    assert "test_results.txt" in excerpt
+
+
+def test_large_qa_evidence_fits_local_model_and_reaches_rd(qa_app, monkeypatch):
+    from orchestrator.core.backends import ollama_request_options
+
+    app = qa_app
+    output = (
+        "." * 5000
+        + "\n"
+        + "E   OfflineViolation: subprocess guard rejected git init\n" * 9000
+        + "FAILED app.py::test_scope\n145 failed, 725 passed, 48 errors\n"
+    )
+    app.has_git = True
+    app.request_path.write_text(REQUEST + "\n" + "需求" * 100000)
+    app.state["tasks"][0]["description"] = "驗證" * 100000
+    monkeypatch.setattr(
+        app, "read_agent_context", Mock(return_value={"notes": "背景" * 100000})
+    )
+    monkeypatch.setattr(
+        app, "run_command", Mock(side_effect=[(1, output), (0, "+change\n" * 100000)])
+    )
+    app.config["ollama_num_ctx"] = 8192
+    app.state["code_revisions"] = 0
+    calls = []
+
+    def respond(role, prompt, system, images, validator, schema):
+        calls.append(prompt)
+        options, _ = ollama_request_options(
+            app,
+            "local",
+            [
+                {"content": system},
+                {"content": prompt},
+            ],
+        )
+        assert options["num_predict"] >= 1500
+        assert "Test Exit Code: 1" in prompt
+        assert "OfflineViolation" in prompt
+        assert "145 failed, 725 passed, 48 errors" in prompt
+        assert "TRUNCATED" in prompt
+        false_pass = json.dumps(
+            {
+                "status": "PASSED",
+                "summary": "Everything passed",
+                "findings": [],
+                "dependency_install_needed": None,
+                "test_command_suggestion": None,
+            }
+        )
+        assert not validator(false_pass)
+        return "QA_STATUS: FAILED\nObserved subprocess guard failures."
+
+    monkeypatch.setattr(app, "call_agent", respond)
+    app.step_testing()
+    assert len(calls) == 1
+    assert output in app.test_results_path.read_text()
+    assert app.state["state"] == "IMPLEMENTING"
+    repair = app.state["tasks"][-1]
+    assert "OfflineViolation" in repair["description"]
+    assert "145 failed" in repair["description"]
+    assert repair["target_files"] == ["app.py"]
+
+
+def test_qa_correction_is_bounded_and_does_not_turn_missing_evidence_into_pass(
+    qa_app, monkeypatch
+):
+    from orchestrator.core.backends import ollama_request_options
+
+    call = Mock(return_value="無效回覆" * 100000)
+    monkeypatch.setattr(qa_app, "call_agent", call)
+    qa_app.config["ollama_num_ctx"] = 8192
+    qa_app.step_testing()
+    assert call.call_count == 2
+    for invocation in call.call_args_list:
+        _, prompt, system, *_ = invocation.args
+        options, _ = ollama_request_options(
+            qa_app,
+            "local",
+            [
+                {"content": system},
+                {"content": prompt},
+            ],
+        )
+        assert options["num_predict"] >= 1500
+    assert "TRUNCATED" in call.call_args_list[1].args[1]
+    assert qa_app.state["state"] == "WAITING_FOR_OWNER"
+    assert qa_app.state["human_review_source"] == "QA_RESPONSE"

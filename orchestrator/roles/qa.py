@@ -178,6 +178,41 @@ def qa_code_findings(
     ]
 
 
+def qa_excerpt(text: str, limit: int) -> str:
+    """Bound UTF-8 evidence without rewriting quoted source text."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    marker = "\n[TRUNCATED: excerpt only; omitted content is not verified.]\n"
+    available = limit - len(marker.encode("utf-8"))
+    head = available * 2 // 3
+    return (
+        encoded[:head].decode("utf-8", errors="ignore")
+        + marker
+        + encoded[-(available - head) :].decode("utf-8", errors="ignore")
+    )
+
+
+def qa_test_excerpt(output: str) -> str:
+    """Keep representative diagnostics and pytest's failure summary within budget."""
+    if len(output.encode("utf-8")) <= 4500:
+        return output
+    lines = output.splitlines()
+    summary = "\n".join(
+        line for line in lines if line.startswith(("FAILED ", "ERROR "))
+    )
+    errors = "\n".join(dict.fromkeys(line for line in lines if line.startswith("E ")))
+    return (
+        "[TRUNCATED TEST OUTPUT: full output remains in test_results.txt]\n"
+        + "Failure list (excerpt):\n"
+        + qa_excerpt(summary, 1000)
+        + "\nError diagnostics (excerpt):\n"
+        + qa_excerpt(errors, 1200)
+        + "\nOutput beginning/end (excerpts):\n"
+        + qa_excerpt(output, 2000)
+    )
+
+
 class QAAgent(BaseAgent):
 
     def step_testing(self):
@@ -274,6 +309,7 @@ class QAAgent(BaseAgent):
         else:
             git_diff = "No git repository, changes are directly in workspace."
 
+        test_excerpt = qa_test_excerpt(output)
         tasks = self.orchestrator.state.get("tasks", [])
         qa_workers, qa_assignments = self.orchestrator.allocate_workers("qa", tasks)
         qa_reports = []
@@ -308,15 +344,16 @@ class QAAgent(BaseAgent):
                 else "Check whether the actual test output hides relevant diagnostics. If the command needs improvement, put the exact command and reason in test_command_suggestion; otherwise use null."
             )
             qa_prompt = (
-                f"{review_intro}\n\nMachine Context:\n{agent_context}\n\nAssigned Tasks:\n{json.dumps(assigned_tasks, ensure_ascii=False)}"
-                f"\n\n{evidence_label}:\n{git_diff}\n\nRaw Test Output:\n{output}\nTest Exit Code: {code}\n\n"
+                f"{review_intro}\n\nMachine Context:\n{qa_excerpt(agent_context, 600)}\n\nAssigned Tasks:\n{qa_excerpt(json.dumps(assigned_tasks, ensure_ascii=False), 1400)}"
+                f"\n\n{evidence_label}:\n{qa_excerpt(git_diff, 2400)}\n\nRaw Test Output (bounded excerpts):\n{test_excerpt}\nTest Exit Code: {code}\n\n"
+                "Sections marked TRUNCATED are partial evidence, not proof that omitted checks passed. Never infer missing dependencies or defects from omitted content. "
                 "Assess correctness and safety using the supplied evidence. Use status PASSED only when no blocking defects remain; otherwise use FAILED and list concrete findings. "
                 f"{diagnostic_instruction}\n"
                 "Only when the raw output establishes a missing environment dependency, put the required human install command in dependency_install_needed; otherwise use null. Environment repairs are not Developer code tasks."
             )
             qa_prompt += (
-                f"\n\nOriginal Request (authoritative over derived tasks/reviews):\n{request}"
-                f"\nActual Test Command: {test_cmd}\nOwner Approval Evidence: {json.dumps(approval, ensure_ascii=False)}\n"
+                f"\n\nOriginal Request (authoritative over derived tasks/reviews):\n{qa_excerpt(request, 2000)}"
+                f"\nActual Test Command: {qa_excerpt(test_cmd, 400)}\nOwner Approval Evidence: {qa_excerpt(json.dumps(approval, ensure_ascii=False), 600)}\n"
                 "Missing or stale approval evidence means unknown, not proof of unauthorized editing. "
                 "Distinguish restrictions on the delivered tool at runtime from isolated test fixtures; do not extend a runtime no-write rule to all tests without explicit request evidence. "
                 "Do not demand excluded real-model performance tests or treat unavailable measurements as code defects. "
@@ -404,7 +441,7 @@ class QAAgent(BaseAgent):
                     f"qa_{level}",
                     qa_prompt
                     + "\n\nYour previous response did not satisfy the QA contract. "
-                    + f"Previous QA response (untrusted; verify against the original request and actual test evidence):\n{report[:4000]}\n"
+                    + f"Previous QA response (untrusted; verify against the original request and actual test evidence):\n{qa_excerpt(report, 1200)}\n"
                     + "Return only JSON matching the supplied schema. "
                     "For FAILED, cite the observed failure, affected file/test and required fix. "
                     "If tests passed, provide grounded QA_FINDINGS code evidence or correct your unsupported verdict. "
@@ -549,7 +586,7 @@ class QAAgent(BaseAgent):
                 self.orchestrator.state["tasks"].append(
                     {
                         "id": fix_task_id,
-                        "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{output[:2000]}\n{repair_feedback}",
+                        "description": f"Fix QA verification issues.\nTest exit code: {code}\nTest output:\n{test_excerpt}\n{repair_feedback}",
                         "target_files": self.orchestrator.relevant_target_files(
                             f"{output}\n{repair_feedback}", primary=output
                         ),
