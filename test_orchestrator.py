@@ -7030,9 +7030,10 @@ def test_status_snapshot_and_next_actions(initialized_orchestrator):
     assert snapshot["state"] == "WAITING_FOR_OWNER"
     assert len(snapshot["tasks"][0]["description"]) == 120
     assert [item["command"] for item in snapshot["next_actions"]] == [
-        "continue",
+        "review revise",
         "review pass",
-        "reject",
+        "continue",
+        "review reject",
     ]
     assert (
         next_actions({"state": "WAITING_FOR_OWNER", "human_review_source": "Owner"})[0][
@@ -7050,10 +7051,10 @@ def test_status_snapshot_and_next_actions(initialized_orchestrator):
             "WAITING_FOR_OWNER",
             "Reviewer",
             False,
-            ["continue", "review pass", "reject"],
+            ["review revise", "review pass", "continue", "review reject"],
         ),
-        ("WAITING_FOR_OWNER", "Owner", False, ["continue", "reject"]),
-        ("COMPLETED", None, True, ["deliver", "reject"]),
+        ("WAITING_FOR_OWNER", "Owner", False, ["continue", "review reject"]),
+        ("COMPLETED", None, True, ["deliver"]),
         ("COMPLETED", None, False, []),
         ("FAILED", None, False, ["reject", "reset"]),
     ],
@@ -7595,6 +7596,32 @@ def test_local_gui_checks_host_origin_token_and_action_lock(tmp_path, monkeypatc
         with pytest.raises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(post({"action": "deliver", "confirm": "bad"}))
         assert error.value.code == 400
+        launch = Mock(return_value=Mock(pid=123))
+        monkeypatch.setattr("orchestrator.gui.subprocess.Popen", launch)
+        snapshot_id = "a" * 64
+        for action, arguments in [
+            ("approve", ["approve", "--run"]),
+            ("review revise", ["review", "revise", "--run"]),
+            ("review reject", ["review", "reject"]),
+            ("review preview-existing", ["review", "preview-existing"]),
+            ("continue --clear-route-failures", ["continue", "--clear-route-failures"]),
+            ("deliver", ["deliver"]),
+            (f"deliver --confirm {snapshot_id}", ["deliver", "--confirm", snapshot_id]),
+            (
+                f"review accept-existing --snapshot {snapshot_id}",
+                ["review", "accept-existing", "--snapshot", snapshot_id, "--run"],
+            ),
+        ]:
+            assert urllib.request.urlopen(post({"action": action})).status == 202
+            assert launch.call_args.args[0][2:] == arguments
+            assert launch.call_args.kwargs["shell"] is False
+        launch.reset_mock()
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(
+                post({"action": f"deliver --confirm {snapshot_id}; echo bad"})
+            )
+        assert error.value.code == 400
+        launch.assert_not_called()
     finally:
         server.shutdown()
         server.server_close()

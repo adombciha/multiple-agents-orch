@@ -20,6 +20,7 @@ from orchestrator.core.state import (
     log_header,
 )
 from orchestrator.core import scoring
+from orchestrator.core.status import continue_decision, next_actions
 
 REFERENCE_BLOCK_START = (
     "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
@@ -110,6 +111,7 @@ def clear_run_state(orchestrator: AgentOrchestrator, target_state: str) -> None:
     orchestrator.state.pop("existing_changes_acceptance", None)
     orchestrator.state.pop("owner_acceptance_preview", None)
     orchestrator.state.pop("owner_acceptance_pending", None)
+    orchestrator.state.pop("human_review_kind", None)
 
 
 def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
@@ -303,6 +305,7 @@ def apply_approve(
     orchestrator.state["state"] = resume_state
     orchestrator.state.pop("human_review_source", None)
     orchestrator.state.pop("resume_state", None)
+    orchestrator.state.pop("human_review_kind", None)
     orchestrator.save_state()
     log_success(f"Owner approval recorded; workflow resumed at {resume_state}.")
     return True
@@ -378,6 +381,7 @@ def apply_review_decision(
     orchestrator.state["state"] = next_state
     for key in (
         "human_review_source",
+        "human_review_kind",
         "resume_state",
         "pass_state",
         "human_review_details",
@@ -391,19 +395,10 @@ def apply_review_decision(
 
 
 def pick_continue_decision(orchestrator: AgentOrchestrator) -> tuple[str, bool]:
-    """Decide what `continue` should do with a WAITING_FOR_OWNER pause: an AI
-    verdict that rejected something (Architect/Manager/Reviewer/QA) should be
-    sent back for another attempt (revise); a Developer (or unrecognized)
-    pause just means retries ran out on the current task, so resume it
-    (approve). For revise, auto-clear the revision counter if it's already
-    at the ceiling so the auto-loop gets a genuine attempt instead of
-    immediately re-pausing."""
-    source = orchestrator.state.get("human_review_source")
-    if source not in {"Architect", "Manager", "Reviewer", "QA"}:
-        return "approve", False
-    max_rev = orchestrator.config.get("max_revisions", 2)
-    at_ceiling = orchestrator.state.get("code_revisions", 0) >= max_rev
-    return "revise", at_ceiling
+    """Use the same saved approval/retry decision as GUI and status reports."""
+    return continue_decision(
+        orchestrator.state, orchestrator.config.get("max_revisions", 2)
+    )
 
 
 def run_workflow(orchestrator: AgentOrchestrator) -> None:
@@ -919,7 +914,9 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
             pause_pending = orchestrator.pause_request_path.exists()
             print(f"Pause request: {'pending' if pause_pending else 'none'}")
             print("Next actions:")
-            for action in snapshot.get("next_actions", []):
+            for action in next_actions(
+                snapshot, busy=bool(holder), pause_requested=pause_pending
+            ):
                 print(f" - {action['command']}: {action['description']}")
             delivery_preview = snapshot.get("delivery", {}).get("preview")
             if delivery_preview:

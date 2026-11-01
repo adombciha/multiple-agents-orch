@@ -499,19 +499,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def owner_acceptance_required(state: dict) -> bool:
-        return (
-            state.get("state") == "WAITING_FOR_OWNER"
-            and state.get("human_review_source") == "Orchestrator"
-            and state.get("resume_state") == "REVIEWING_CODE"
-            and state.get("pass_state") == "REVIEWING_CODE"
-            and (
-                state.get("owner_acceptance_pending") is True
-                # Recognize process pauses saved before acceptance previews existed.
-                or str(state.get("human_review_details", "")).startswith(
-                    "Reviewer requires an owner decision."
-                )
-            )
-        )
+        from orchestrator.core.status import owner_review_kind
+
+        return owner_review_kind(state) == "accept_existing"
 
     def existing_changes_snapshot(self) -> dict:
         """Bind task files and, in Git workspaces, all tracked and untracked changes."""
@@ -1165,7 +1155,7 @@ class AgentOrchestrator:
     def pause_for_human_review(
         self, source: str, details: str, resume_state: str, pass_state: str
     ):
-        from orchestrator.core.status import next_actions
+        from orchestrator.core.status import next_actions, owner_review_kind
         from orchestrator.core.telemetry import summary_markdown
 
         requirements = (
@@ -1184,7 +1174,12 @@ class AgentOrchestrator:
             **self.state,
             "state": "WAITING_FOR_OWNER",
             "human_review_source": source,
+            "human_review_details": details,
+            "resume_state": resume_state,
+            "pass_state": pass_state,
         }
+        action_state.pop("human_review_kind", None)
+        review_kind = owner_review_kind(action_state)
         actions = next_actions(action_state)
         next_action = actions[0]["command"] if actions else "status"
         usage = summary_markdown(self)
@@ -1208,6 +1203,7 @@ class AgentOrchestrator:
                 "resume_state": resume_state,
                 "pass_state": pass_state,
                 "human_review_details": details,
+                "human_review_kind": review_kind,
             }
         )
         self.save_state()
