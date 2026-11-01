@@ -61,7 +61,7 @@ def test_empty_allowed_codex_catalog_never_launches_implicit_default(
         cloud_routing, "discover_codex_models", Mock(return_value=catalog)
     )
     run = Mock()
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
     with pytest.raises(RuntimeError, match="No allowed Codex models"):
         backends.call_codex(
             initialized_orchestrator, "task", role="architect", model="auto"
@@ -188,7 +188,7 @@ def test_developer_sol_is_discovered_and_scored_at_runtime(
     rank = Mock(side_effect=[[model], ["high"]])
     monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
     run = Mock(return_value=Mock(returncode=0, stdout="result", stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
     assert backends.call_codex(app, "task", role=role, model="auto") == "result"
     assert rank.call_args_list[0].args[2] == [model, "gpt-6-luna"]
     assert model in run.call_args.args[0]
@@ -205,7 +205,7 @@ def test_developer_explicit_and_cached_sol_are_allowed(
     catalog = Mock()
     monkeypatch.setattr(cloud_routing, "discover_codex_models", catalog)
     run = Mock(return_value=Mock(returncode=0, stdout="result", stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
     assert backends.call_codex(app, "task", role=role, model="auto") == "result"
     assert backends.call_codex(app, "task", role=role, model="gpt-6.1-sol") == "result"
     catalog.assert_not_called()
@@ -218,7 +218,7 @@ def test_junior_sol_is_not_enabled_by_senior_policy(
     app = initialized_orchestrator
     assert app.config["role_model_routes"]["developer_junior"] == [["ollama", "auto"]]
     run = Mock()
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
     with pytest.raises(RuntimeError, match="requires a Luna model"):
         backends.call_codex(app, "task", role="developer_junior", model="gpt-6.1-sol")
     run.assert_not_called()

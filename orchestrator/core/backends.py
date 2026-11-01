@@ -648,29 +648,21 @@ def call_codex(
     log_info(f"Running Codex: {' '.join(cmd)}")
     try:
         with open(temp_prompt_file, "r", encoding="utf-8") as pf:
-            result = subprocess.run(
+            result = run_model_cli(
                 cmd,
                 cwd=orchestrator.agent_workspace(),
                 stdin=pf,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
                 timeout=1800,
-                check=False,
+                orchestrator=orchestrator,
             )
-
-        if temp_prompt_file.exists():
-            temp_prompt_file.unlink()
 
         if result.returncode != 0:
             raise RuntimeError(
                 f"Codex failed with code {result.returncode}:\n{result.stderr}"
             )
         return result.stdout
-    except Exception as e:
-        if temp_prompt_file.exists():
-            temp_prompt_file.unlink()
-        raise e
+    finally:
+        temp_prompt_file.unlink(missing_ok=True)
 
 
 def agy_contract_error(orchestrator, message: str, output: str):
@@ -716,14 +708,30 @@ def agy_json_response(response: str) -> str:
     return canonical
 
 
-def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
+def run_agy_stream(cmd, **kwargs):
+    return run_model_cli(cmd, stream_result=True, **kwargs)
+
+
+def run_model_cli(
+    cmd,
+    *,
+    input=None,
+    stdin=None,
+    cwd,
+    timeout=1800,
+    exit_grace=5,
+    stream_result=False,
+    orchestrator=None,
+):
     """Bound CLI shutdown after a complete result, without accepting partial output."""
     from orchestrator.core.state import log_warning
 
+    if orchestrator is not None:
+        orchestrator.check_model_cancellation()
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
-        stdin=subprocess.PIPE,
+        stdin=stdin if stdin is not None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -744,8 +752,12 @@ def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
     deadline = time.monotonic() + timeout
     finished_at = None
     pending_input = input
+    if orchestrator is not None:
+        orchestrator._active_model_call = True
     try:
         while True:
+            if orchestrator is not None:
+                orchestrator.check_model_cancellation()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(cmd, timeout)
@@ -753,6 +765,8 @@ def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
                 stdout, stderr = process.communicate(
                     input=pending_input, timeout=min(1, remaining)
                 )
+                if orchestrator is not None:
+                    orchestrator.check_model_cancellation()
                 return subprocess.CompletedProcess(
                     cmd, process.returncode, stdout, stderr
                 )
@@ -761,7 +775,7 @@ def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
                 output = error.output or b""
                 if isinstance(output, bytes):
                     output = output.decode("utf-8", errors="replace")
-                if finished_at is None:
+                if stream_result and finished_at is None:
                     # Only newline-terminated protocol records are complete.
                     for line in output.split("\n")[:-1]:
                         try:
@@ -791,6 +805,8 @@ def run_agy_stream(cmd, *, input, cwd, timeout=1800, exit_grace=5):
                         cmd, returncode or 0, stdout, stderr
                     )
     finally:
+        if orchestrator is not None:
+            orchestrator._active_model_call = False
         stop()
         for pipe in (process.stdin, process.stdout, process.stderr):
             if pipe is not None:
@@ -855,6 +871,7 @@ def call_agy(
     log_info(f"Running agy: {' '.join(display_cmd)} ...")
     result = run_agy_stream(
         cmd,
+        orchestrator=orchestrator,
         cwd=orchestrator.agent_workspace(),
         input=json.dumps(
             {"event": "user", "message": {"content": full_prompt}},

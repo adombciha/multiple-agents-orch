@@ -604,6 +604,11 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     )
     pause_parser.add_argument("--cancel", action="store_true")
     pause_parser.add_argument(
+        "--cancel-model",
+        action="store_true",
+        help="Cancel the current CLI model call and pause",
+    )
+    pause_parser.add_argument(
         "--source", choices=("cli", "gui"), default="cli", help=argparse.SUPPRESS
     )
     deliver_parser = subparsers.add_parser(
@@ -859,7 +864,12 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     elif args.command == "run":
         run_workflow(orchestrator)
     elif args.command == "pause":
-        set_pause_request(orchestrator, args.cancel, args.source)
+        if args.cancel_model:
+            if args.cancel:
+                raise ValueError("--cancel and --cancel-model cannot be combined")
+            orchestrator.request_pause(cancel_model=True)
+        else:
+            set_pause_request(orchestrator, args.cancel, args.source)
     elif args.command == "deliver":
         try:
             orchestrator.load_config_and_state()

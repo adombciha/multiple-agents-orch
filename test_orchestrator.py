@@ -332,7 +332,7 @@ def test_codex_auto_scores_live_model_and_effort(initialized_orchestrator, monke
     rank = Mock(side_effect=[["gpt-6-luna", "gpt-5.6-luna"], ["high", "medium", "low"]])
     monkeypatch.setattr(backends, "route_ollama_model_with_tev1", rank)
     run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
 
     assert (
         backends.call_codex(
@@ -366,7 +366,7 @@ def test_developer_codex_auto_requires_allowed_family(
         Mock(return_value={"gpt-6.1-terra": {"description": "Terra"}}),
     )
     run = Mock()
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
 
     with pytest.raises(RuntimeError, match="No available allowed Developer model"):
         backends.call_codex(
@@ -401,7 +401,7 @@ def test_explicit_codex_model_bypasses_runtime_scoring(
     select = Mock()
     monkeypatch.setattr(cloud_routing, "select_codex_model", select)
     run = Mock(return_value=Mock(returncode=0, stdout="ok", stderr=""))
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
 
     assert (
         backends.call_codex(initialized_orchestrator, "task", model="gpt-6-luna")
@@ -415,7 +415,7 @@ def test_developer_codex_rejects_explicit_other_family(
     initialized_orchestrator, monkeypatch
 ):
     run = Mock()
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
 
     with pytest.raises(RuntimeError, match="requires a Luna or Sol model"):
         backends.call_codex(
@@ -810,7 +810,7 @@ def test_codex_exec_is_read_only_and_uses_file_block_output(
             stderr="",
         )
     )
-    monkeypatch.setattr(backends.subprocess, "run", run)
+    monkeypatch.setattr(backends, "run_model_cli", run)
 
     result = backends.call_codex(initialized_orchestrator, "prompt", model="auto")
 

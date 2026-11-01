@@ -20,6 +20,10 @@ from orchestrator.core.config import DEFAULT_CONFIG
 from orchestrator.roles.base_agent import PONYTAIL_PROMPT, inject_ponytail_prompt
 
 
+class ModelCallCancelled(BaseException):
+    """Unwind provider fallback loops; only the workflow boundary handles cancellation."""
+
+
 class ResponseContractError(RuntimeError):
     """The provider responded, but not in the format required by this call."""
 
@@ -1061,20 +1065,31 @@ class AgentOrchestrator:
             except Exception as error:
                 log_warning(f"Could not update status snapshot: {error}")
 
-    def request_pause(self):
+    def request_pause(self, *, cancel_model: bool = False):
         """Atomically persist a safe pause request independently of workflow state."""
         self.ai_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=self.ai_dir, delete=False
         ) as f:
             temp_path = Path(f.name)
-            f.write("pause\n")
+            f.write("cancel-model\n" if cancel_model else "pause\n")
             f.flush()
             os.fsync(f.fileno())
         try:
             os.replace(temp_path, self.pause_request_path)
         finally:
             temp_path.unlink(missing_ok=True)
+
+    def check_model_cancellation(self):
+        try:
+            cancelled = (
+                self.pause_request_path.read_text(encoding="utf-8").strip()
+                == "cancel-model"
+            )
+        except FileNotFoundError:
+            cancelled = False
+        if cancelled:
+            raise ModelCallCancelled("Owner cancelled the current model call.")
 
     def pause_requested(self) -> bool:
         return self.pause_request_path.exists()
@@ -1659,8 +1674,10 @@ class AgentOrchestrator:
         if backend in {"codex", "agy"}:
             self._resolved_cloud_model = None
         try:
+            self.check_model_cancellation()
             response = callback()
-        except Exception as error:
+            self.check_model_cancellation()
+        except (Exception, ModelCallCancelled) as error:
             record_call(
                 self,
                 role=role,
@@ -1857,6 +1874,7 @@ class AgentOrchestrator:
             max_developer_calls = 6
 
         def request_route(backend: str, model: str, request_prompt: str) -> str:
+            self.check_model_cancellation()
             if task_id:
                 calls = self.state.setdefault("task_developer_calls", {})
                 used = int(calls.get(task_id, 0))
@@ -2636,7 +2654,11 @@ class AgentOrchestrator:
 
     def step(self):
         with self.execution_lock():
-            return self._step_unlocked()
+            try:
+                return self._step_unlocked()
+            except ModelCallCancelled:
+                self.check_pause_at_step_boundary()
+                return False
 
     def run_to_end(self):
         self.load_config_and_state()

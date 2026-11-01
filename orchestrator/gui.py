@@ -314,6 +314,9 @@ class GuiService:
             state,
             can_submit=can_submit,
             busy=worker_running,
+            can_cancel_model=bool(
+                getattr(self.orchestrator, "_active_model_call", False)
+            ),
             pause_requested=pause_requested,
             external_lock=bool(external_lock),
             git=preview,
@@ -373,6 +376,9 @@ class GuiService:
             "workflow_decision": decision,
             "human_review_kind": state.get("human_review_kind"),
             "reports": reports,
+            "can_cancel_model": bool(
+                getattr(self.orchestrator, "_active_model_call", False)
+            ),
             "worker_running": worker_running,
             "external_lock": external_lock,
             "test_progress": (
@@ -473,6 +479,14 @@ class GuiService:
         if self.orchestrator.pause_requested():
             raise RuntimeError("A pause has already been requested.")
         self.orchestrator.request_pause()
+        return self.status()
+
+    def cancel_model(self) -> dict:
+        if not self._worker_is_running() or not getattr(
+            self.orchestrator, "_active_model_call", False
+        ):
+            raise RuntimeError("No cancellable model call is running in this GUI.")
+        self.orchestrator.request_pause(cancel_model=True)
         return self.status()
 
     def continue_task(self, clear_route_failures: bool = False) -> dict:
@@ -1160,6 +1174,7 @@ def render_page(status: dict) -> str:
     decision = status.get("workflow_decision") or workflow_decision(
         {**status, "human_review_source": source, "human_review_details": reason},
         busy=busy,
+        can_cancel_model=bool(status.get("can_cancel_model")),
         pause_requested=bool(status.get("pause_requested")),
         external_lock=bool(status.get("external_lock")),
         can_submit=can_submit,
@@ -1456,6 +1471,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path not in {
             "/api/task",
             "/api/stop",
+            "/api/cancel-model",
             "/api/continue",
             "/api/approve",
             "/api/review",
@@ -1471,6 +1487,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 result = self.service._new_task(str(body.get("prompt", "")))
             elif path == "/api/stop":
                 result = self.service.stop()
+            elif path == "/api/cancel-model":
+                result = self.service.cancel_model()
             elif path == "/api/continue":
                 clear = body.get("clear_route_failures", False)
                 if not isinstance(clear, bool):

@@ -218,6 +218,7 @@ def workflow_decision(
     state: dict,
     *,
     busy: bool = False,
+    can_cancel_model: bool = False,
     pause_requested: bool = False,
     external_lock: bool = False,
     can_submit: bool = False,
@@ -303,6 +304,12 @@ def workflow_decision(
             "FAILED",
         }:
             button("目前步驟完成後停止", "stop", primary=True)
+        if can_cancel_model and not external_lock:
+            button(
+                "取消模型呼叫並暫停",
+                "cancel-model",
+                confirmation="取消會丟棄本次未完成回覆並保留任務與 worktree，不會繼續換模型重試。確定取消？",
+            )
     elif current == "WAITING_FOR_OWNER":
         kind = owner_review_kind(state)
         approved = kind == "approve_plan"
@@ -518,6 +525,8 @@ def next_actions(state: dict, delivery_pending: bool = False, **runtime) -> list
             command = "run"
         elif body.get("clear_route_failures"):
             command += " --clear-route-failures"
+        if command == "cancel-model":
+            command = "pause --cancel-model"
         if command == "stop":
             command = "pause"
         actions.append(

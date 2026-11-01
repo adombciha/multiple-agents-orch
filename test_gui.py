@@ -2573,3 +2573,36 @@ def test_gui_shows_live_test_runtime_and_escapes_recent_output(tmp_path, monkeyp
     app.save_state()
     monkeypatch.setattr(service, "_worker_is_running", lambda: False)
     assert service.status()["test_progress"] == {}
+
+
+def test_http_cancel_model_is_nonblocking_and_does_not_reset_or_write_state(
+    monkeypatch,
+):
+    service = make_service("IMPLEMENTING")
+    service.orchestrator._active_model_call = True
+    monkeypatch.setattr(service, "_worker_is_running", lambda: True)
+    # Cancellation must not acquire the worker's execution lock.
+    service.orchestrator.execution_lock = Mock(
+        side_effect=AssertionError("Execution lock is held")
+    )
+    server, thread = start_test_server(service)
+    try:
+        code, _ = http_request(server, "POST", "/api/cancel-model")
+        assert code == 403
+        service.orchestrator.request_pause.assert_not_called()
+        code, _ = http_request(
+            server, "POST", "/api/cancel-model", {"csrf_token": service.csrf_token}
+        )
+        assert code == 200
+        service.orchestrator.request_pause.assert_called_once_with(cancel_model=True)
+        service.orchestrator.save_state.assert_not_called()
+        service.orchestrator.execution_lock.assert_not_called()
+        service.orchestrator._active_model_call = False
+        code, _ = http_request(
+            server, "POST", "/api/cancel-model", {"csrf_token": service.csrf_token}
+        )
+        assert code == 409
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
