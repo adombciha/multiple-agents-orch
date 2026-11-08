@@ -235,3 +235,24 @@ This entry reflects the completion of the tool and its corresponding test file, 
   - `aeline/halo:latest`：1 呼叫，0 失败，输入token：2669，输出token：96，总token：2765。
   - `gemini-3.8-flash-high`：1 呼叫，1 失败，输入token：2546，输出token：0，总token：2546。
   - `gpt-6.1-sol`：9 呼叫，2 失败，输入token：34816，输出token：7622，总token：42438。
+
+**CHANGELOG**
+
+- **工具更新**
+  - `scripts/summarize_llm_usage.py`: 提供文字与JSON输出，按role、backend、model分组统计呼叫、成功/失败、累積耗時及平均耗時等指标，并依累積耗時固定排序。
+  - `test_summarize_llm_usage.py`: 新增离线测试功能，涵盖隔离运行、分组统计、排序、未知模型、数据验证、JSON输出及退出码等功能。
+
+- **使用方式**
+
+  ```bash
+  python -m scripts.summarize_llm_usage PATH --run-id RUN_ID
+  python -m scripts.summarize_llm_usage PATH --run-id RUN_ID --json
+  ```
+
+- **验证**
+  Git Status显示两个交付文件均为未追蹤檔案（`??`），Git Diff Stat为空。本次报告无法确认测试命令、退出码、通過數、完整離線回歸結果或QA/Reviewer结论，因此無法判定交付文件內容或行數。
+
+- **后续步骤**
+  達成两个交付文件的 deliverable，后续需補齐相關測試與完整離線回歸的實際命令、退出碼及結果，以及QA/Reviewer通過紀錄，再展示完整 Git 影響，等待 owner二次確認後才可合併。
+
+本次報告未使用工作區工具、重跑測試或執行 Git 操作；目前限制是缺少可核對的驗收證據。
