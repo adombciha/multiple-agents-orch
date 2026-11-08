@@ -214,3 +214,24 @@ This entry reflects the completion of the tool and its corresponding test file, 
 **关键字：** JSON、测试记录、summarize 测试结果、Python 脚本、命令行工具、错误处理、输出格式
 
 **作者：** Project Assistant
+
+## 0.31.0 - 2024-02-20
+
+- **新增功能**：
+  - `scripts/summarize_pytest.py`：提供命令行界面（CLI），支持 `--json` 参数，解析最后一个有效摘要，输出五项计数；支持处理子测试排除、繁體中文提示信息及返回码。
+  - `test_summarize_pytest.py`：对应摘要解析、错误处理、JSON 格式及 CLI 退出码的离线测试。
+
+- **验证结果**：
+  - Git Status 显示两个新增文件，均为未跟踪状态（`??`）。
+  - Git Diff Stat 为空，无法判断新增内容或更改行数。
+  - 未提供 pytest 执行输出或完整回归结果，无法声明测试通过数或回归成功。
+  - 未提供 GUI owner 核准、QA 和 Reviewer 的结果，无法独立确认各流程阶段已通过。
+
+- **后续步骤**：
+  - 补充相关测试和一次完整回归结果。
+  - 完成 owner 核准、QA 和 Reviewer 的记录，以完成验证闭环。
+
+- **LightLLM Token Usage**：
+  - `aeline/halo:latest`：1 呼叫，0 失败，输入token：2669，输出token：96，总token：2765。
+  - `gemini-3.8-flash-high`：1 呼叫，1 失败，输入token：2546，输出token：0，总token：2546。
+  - `gpt-6.1-sol`：9 呼叫，2 失败，输入token：34816，输出token：7622，总token：42438。
