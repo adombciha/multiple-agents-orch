@@ -245,8 +245,12 @@ def test_write_ai_company_overrides_do_not_mutate_default_config(tmp_path):
     assert state["state"] == "TESTING"
 
 
-def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(monkeypatch):
-    monkeypatch.setattr(backends, "_agy_models_cache", (0.0, ()))
+@pytest.mark.parametrize("clock_start", [0.0, 120.0, 1000.0])
+def test_agy_auto_model_uses_latest_available_family_and_keeps_explicit(
+    monkeypatch, clock_start
+):
+    monkeypatch.setattr(backends, "_agy_models_cache", None)
+    monkeypatch.setattr(backends.time, "monotonic", Mock(return_value=clock_start))
     run = Mock(
         return_value=Mock(
             returncode=0,
