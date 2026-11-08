@@ -1,5 +1,10 @@
 from __future__ import annotations
 import json
+import os
+import tempfile
+from copy import deepcopy
+from contextlib import suppress
+from pathlib import Path
 
 WEIGHT_MIN = 0.2
 WEIGHT_MAX = 3.0
@@ -16,10 +21,32 @@ def _ewma_update(current: float, score: float) -> float:
     return clamp((1 - ALPHA) * current + ALPHA * target)
 
 
-def _save_config(orchestrator) -> None:
-    orchestrator.config_path.write_text(
-        json.dumps(orchestrator.config, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+def _write_atomic(path: Path, text: str) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+
+def _save_config(orchestrator, config: dict) -> None:
+    """Publish the staged configuration only after its atomic disk replacement."""
+    text = json.dumps(config, indent=2, ensure_ascii=False, allow_nan=False)
+    with orchestrator.execution_lock():
+        _write_atomic(orchestrator.config_path, text)
+        orchestrator.config = config
 
 
 def get_weight(config: dict, role: str, level: str) -> float:
@@ -29,10 +56,11 @@ def get_weight(config: dict, role: str, level: str) -> float:
 
 def record_staff_event(orchestrator, role: str, level: str, score: float) -> float:
     """Update an internal staff member's trust weight (ollama-backed roles only)."""
-    weights = orchestrator.config.setdefault("worker_weights", {}).setdefault(role, {})
+    config = deepcopy(orchestrator.config)
+    weights = config.setdefault("worker_weights", {}).setdefault(role, {})
     updated = round(_ewma_update(float(weights.get(level, 1.0)), score), 3)
     weights[level] = updated
-    _save_config(orchestrator)
+    _save_config(orchestrator, config)
     return updated
 
 
@@ -46,13 +74,14 @@ def record_vendor_event(
 ) -> float:
     """Update a paid vendor's scorecard rating; internal staff (ollama) never lands here."""
     key = f"{backend}/{model or 'unknown'}"
-    vendors = orchestrator.config.setdefault("vendor_scores", {})
+    config = deepcopy(orchestrator.config)
+    vendors = config.setdefault("vendor_scores", {})
     entry = vendors.setdefault(key, {"rating": 1.0, "jobs": 0, "failures": 0})
     entry["rating"] = round(_ewma_update(float(entry.get("rating", 1.0)), score), 3)
     entry["jobs"] = int(entry.get("jobs", 0)) + 1
     if score < 0:
         entry["failures"] = int(entry.get("failures", 0)) + 1
-    _save_config(orchestrator)
+    _save_config(orchestrator, config)
     return entry["rating"]
 
 

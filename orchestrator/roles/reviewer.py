@@ -130,8 +130,12 @@ Derived Requirements:
 Implementation Plan:
 {plan}
 
-Use the recorded decision, approved_at timestamp, and request/plan hash match to assess the scope of approval.
+Use the program-validated controlled_implementation result and matches_current_file_scope, together with the recorded decision and request/plan hashes, to assess approval.
 A matching record proves approval of the current request and plan, not that approval preceded the first edit.
+When controlled_implementation=confirmed, the program persisted approval and its file baseline before persisting the linked implementation start and allowing managed writes. This confirms the controlled operations for the exact current scope; do not request another historical first-edit approval for those operations. Timestamps are diagnostic, not the ordering proof.
+source=owner identifies an explicit owner approve/pass decision. source=request_and_architect identifies the existing workflow's original implementation request plus an approved Architect plan when no separate owner gate was required; it does not claim an owner click or owner approved_at. Do not invent a separate owner gate for that valid workflow authorization.
+The baseline file_baseline records content, missing files, and file modes. Its pre_existing_changes were already present at approval and are NOT accepted by ordinary implementation approval; review them explicitly and require existing-changes acceptance when their authorization remains unresolved. pre_existing_changes_known=false means Git change history is unavailable, not that no earlier changes existed.
+controlled_implementation=unknown or not_started cannot establish historical edit timing. A mismatch blocks authorization for the changed request, plan, or file scope. Approval history preserves prior decisions and must never be treated as approval of a changed scope.
 A missing or mismatched record is unknown authorization, not proof of an unauthorized edit; never invent historical evidence.
 Only an existing-changes acceptance record with matches_current_changes=true settles the owner's choice to accept these existing changes despite unresolved first-edit approval timing. Do not request the same historical proof again for that accepted snapshot.
 This later acceptance does not establish prior approval, authorize new scope, resolve unrelated process blockers, prove tests passed, or confirm Git delivery. A mismatched acceptance must not be used.

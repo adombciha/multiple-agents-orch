@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import html
 import json
+import math
 import os
 import re
 import secrets
@@ -13,6 +14,7 @@ import sys
 import threading
 import time
 import tempfile
+import uuid
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.cookies import SimpleCookie
@@ -275,6 +277,33 @@ class GuiService:
             external_lock = RunLock.read_holder(self.orchestrator.ai_dir)
             worker_running = bool(external_lock)
         test_progress = getattr(self.orchestrator, "_test_progress", None)
+        local_activity = getattr(self.orchestrator, "_local_model_activity", None)
+        if local_activity is None and external_lock:
+            try:
+                local_activity = json.loads(
+                    (self.orchestrator.ai_dir / "local_model_activity.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                if local_activity.get("pid") != external_lock.get("pid"):
+                    local_activity = None
+            except (OSError, ValueError, AttributeError):
+                local_activity = None
+        try:
+            if not (
+                isinstance(local_activity, dict)
+                and local_activity.get("phase") in {"waiting", "running"}
+                and isinstance(local_activity.get("role"), str)
+                and isinstance(local_activity.get("model"), str)
+                and type(local_activity.get("started")) in {int, float}
+                and math.isfinite(local_activity["started"])
+                and type(local_activity.get("wait_seconds")) in {int, float}
+                and math.isfinite(local_activity["wait_seconds"])
+                and 0 <= local_activity["wait_seconds"] <= 300
+            ):
+                local_activity = None
+        except (TypeError, ValueError, OverflowError):
+            local_activity = None
         runtime = dict(getattr(self, "worker_status", {}))
         if not runtime:
             try:
@@ -381,6 +410,16 @@ class GuiService:
             ),
             "worker_running": worker_running,
             "external_lock": external_lock,
+            "local_model_activity": (
+                {
+                    **local_activity,
+                    "elapsed_seconds": max(
+                        0, int(time.monotonic() - local_activity["started"])
+                    ),
+                }
+                if worker_running and local_activity
+                else {}
+            ),
             "test_progress": (
                 {
                     **test_progress,
@@ -457,6 +496,7 @@ class GuiService:
                 "task_error_signatures": {},
                 "workflow_mode": "delivery",
                 "research_roles": [],
+                "run_id": uuid.uuid4().hex,
             }
             self.orchestrator.save_state()
 
@@ -1124,6 +1164,14 @@ def render_page(status: dict) -> str:
         "failed": "執行失敗",
         "idle": "已停止於決策點",
     }.get(runtime.get("phase"), "等待操作")
+    local_activity = status.get("local_model_activity", {})
+    if busy and local_activity:
+        model = f"{local_activity['role']} / {local_activity['model']}"
+        elapsed = local_activity["elapsed_seconds"]
+        if local_activity["phase"] == "waiting":
+            phase += f"；等待本機推論資源：{model}，已等待 {elapsed} 秒（上限 {local_activity['wait_seconds']} 秒）"
+        else:
+            phase += f"；本機模型推論中：{model}，已執行 {elapsed} 秒"
     test_progress = status.get("test_progress", {})
     if busy and current == "TESTING" and test_progress:
         phase += f"；測試已執行 {test_progress['elapsed_seconds']} 秒（上限 {test_progress['timeout']} 秒）"

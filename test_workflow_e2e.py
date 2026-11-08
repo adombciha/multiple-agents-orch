@@ -82,8 +82,9 @@ def offline_models(app, monkeypatch):
 
 @pytest.mark.parametrize("conflict", [False, True])
 @pytest.mark.parametrize("owner_gate", [False, True])
+@pytest.mark.parametrize("existing_target", [False, True])
 def test_start_pause_restart_test_review_and_real_delivery(
-    tmp_path, monkeypatch, conflict, owner_gate
+    tmp_path, monkeypatch, conflict, owner_gate, existing_target
 ):
     monkeypatch.setattr(
         "requests.sessions.Session.request",
@@ -96,6 +97,10 @@ def test_start_pause_restart_test_review_and_real_delivery(
         ".ai-company*\nbrain.db*\n__pycache__/\n", encoding="utf-8"
     )
     git(tmp_path, "add", ".gitignore")
+    initial_source = "def answer():\n    return 0\n"
+    if existing_target:
+        (tmp_path / "smoke.py").write_text(initial_source, encoding="utf-8")
+        git(tmp_path, "add", "smoke.py")
     git(tmp_path, "commit", "-m", "base")
     app = AgentOrchestrator(tmp_path)
     app.init_project()
@@ -158,9 +163,12 @@ def test_start_pause_restart_test_review_and_real_delivery(
         "human_review_details"
     )
     worktree = app.ai_dir / "worktree"
-    assert (worktree / "smoke.py").is_file()
+    assert (worktree / "smoke.py").read_text().strip() == "def answer():\n    return 42"
     assert "Exit Code: 0" in app.test_results_path.read_text()
-    assert not (tmp_path / "smoke.py").exists()
+    if existing_target:
+        assert (tmp_path / "smoke.py").read_text() == initial_source
+    else:
+        assert not (tmp_path / "smoke.py").exists()
     assert cli._deliver_waiting_workflow(app, None) == 0
     preview = app.get_delivery_preview()
     if conflict:

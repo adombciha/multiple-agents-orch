@@ -12,6 +12,9 @@ import time
 import uuid
 import requests
 from pathlib import Path
+from contextlib import nullcontext
+
+from orchestrator.core.local_resources import LocalResourceBusy, foreground_slot
 
 AGY_MODEL_ALIASES = {
     "gemini-3.5-flash": "auto:gemini-flash-medium",
@@ -20,13 +23,97 @@ AGY_MODEL_ALIASES = {
     "gemini-3.8-flash-medium": "Gemini 3.8 Flash (Medium)",
 }
 
-_agy_models_cache = (0.0, ())
-_tev1_circuit_open = False
-_tev1_routing_warning_logged = False
+_agy_models_cache = None
+_tev1_cooldowns = {}
+TEV1_COOLDOWN = 30
+
+
+def _set_local_model_activity(orchestrator, activity):
+    orchestrator._local_model_activity = activity
+    path = orchestrator.ai_dir / "local_model_activity.json"
+    temporary = None
+    try:
+        if activity is None:
+            path.unlink(missing_ok=True)
+            return
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(activity, handle)
+        os.replace(temporary, path)
+    except OSError:
+        # Runtime display must never change the model request outcome.
+        pass
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def ollama_post(orchestrator, url, *, json, timeout, role):
+    resource_dir = orchestrator.config.get("ollama_resource_dir", "")
+    wait = orchestrator.config.get("ollama_resource_wait_seconds", 60)
+    if not isinstance(resource_dir, str):
+        raise ValueError("ollama_resource_dir must be a string")
+    if (
+        type(wait) not in {int, float}
+        or not math.isfinite(wait)
+        or not 0 <= wait <= 300
+    ):
+        raise ValueError("ollama_resource_wait_seconds must be between 0 and 300")
+
+    def activity(phase):
+        _set_local_model_activity(
+            orchestrator,
+            {
+                "phase": phase,
+                "role": role,
+                "model": json.get("model"),
+                "started": time.monotonic(),
+                "wait_seconds": wait,
+                "pid": os.getpid(),
+            },
+        )
+
+    lease = (
+        foreground_slot(resource_dir, timeout=wait, on_wait=lambda: activity("waiting"))
+        if resource_dir
+        else nullcontext()
+    )
+    try:
+        with lease:
+            activity("running")
+            if url.endswith("/api/chat"):
+                orchestrator._ollama_chat_attempts = (
+                    getattr(orchestrator, "_ollama_chat_attempts", 0) + 1
+                )
+            return requests.post(url, json=json, timeout=timeout)
+    finally:
+        _set_local_model_activity(orchestrator, None)
+
+
+def _parse_agy_catalog(output: str) -> tuple[str, ...]:
+    names = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        name, separator, _ = line.partition("\t")
+        if not separator or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", name):
+            raise ValueError("invalid AGY catalog row")
+        names.append(name)
+    return tuple(names)
 
 
 def resolve_agy_model(model: str) -> str:
-    from orchestrator.core.cloud_routing import cloud_model_allowed
+    from orchestrator.core.cloud_routing import (
+        CATALOG_TTL,
+        ModelDiscoveryError,
+        cloud_model_allowed,
+        discover_cli_catalog,
+    )
 
     if not model.startswith("auto:"):
         resolved = AGY_MODEL_ALIASES.get(model, model)
@@ -35,19 +122,17 @@ def resolve_agy_model(model: str) -> str:
         return resolved
 
     global _agy_models_cache
-    if not _agy_models_cache[1] or time.monotonic() - _agy_models_cache[0] >= 300:
-        result = subprocess.run(
-            ["agy", "models"], capture_output=True, text=True, timeout=60, check=False
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Cannot list AGY models: {result.stderr.strip()}")
-        _agy_models_cache = (
-            time.monotonic(),
-            tuple(
-                line.split("\t", 1)[0]
-                for line in result.stdout.splitlines()
-                if "\t" in line
-            ),
+    if (
+        _agy_models_cache is None
+        or time.monotonic() - _agy_models_cache[0] >= CATALOG_TTL
+    ):
+        models = discover_cli_catalog("agy", _parse_agy_catalog)
+        _agy_models_cache = (time.monotonic(), models)
+    if not _agy_models_cache[1]:
+        raise ModelDiscoveryError("agy", "empty", "catalog contains no models")
+    if not any(cloud_model_allowed(name) for name in _agy_models_cache[1]):
+        raise ModelDiscoveryError(
+            "agy", "policy_excluded", "all catalog models are prohibited"
         )
 
     family, effort = model.removeprefix("auto:").rsplit("-", 1)
@@ -69,10 +154,16 @@ def resolve_agy_model(model: str) -> str:
     try:
         return max(matches)[1]
     except ValueError as exc:
-        raise RuntimeError(f"No AGY model available for {model}") from exc
+        raise ModelDiscoveryError(
+            "agy", "no_match", f"No AGY model available for {model}"
+        ) from exc
 
 
 def get_backend(orchestrator, role: str) -> str:
+    if orchestrator.config.get("qa_local_only", False) and (
+        role == "qa" or role.startswith("qa_")
+    ):
+        return "ollama"
     backends = orchestrator.config.get("backends", {})
     if role.startswith("developer_"):
         task_id = orchestrator.state.get("active_task_id")
@@ -260,6 +351,11 @@ def route_ollama_model_with_tev1(
     if not orchestrator.config.get("ollama_router_enabled", True):
         return None
 
+    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
+    if time.monotonic() < _tev1_cooldowns.get(url, 0):
+        return None
+
     chat_model_cache = getattr(orchestrator, "_ollama_chat_models_cache", None)
     installed_models = (
         set(chat_model_cache[1])
@@ -268,8 +364,6 @@ def route_ollama_model_with_tev1(
     )
     if not installed_models:
         return None
-
-    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
 
     if not _ollama_model_matches(router_model, installed_models):
         log_info(
@@ -301,17 +395,12 @@ def route_ollama_model_with_tev1(
     if cache is None:
         cache = orchestrator._tev1_routing_cache = {}
     task_id = orchestrator.state.get("active_task_id")
-    cache_key = (role, task_id, summary, tuple(available_candidates))
+    cache_key = (url, router_model, role, task_id, summary, tuple(available_candidates))
     if cache_key in cache:
         cached = cache[cache_key]
         return list(cached) if cached is not None else None
-    if _tev1_circuit_open:
-        cache[cache_key] = None
-        return None
 
     state_input = f"Role: {role}. Task: {summary}"
-
-    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
 
     try:
         criterion_chars = max(
@@ -374,25 +463,20 @@ def route_ollama_model_with_tev1(
             re.search(r"context|length|token|too\s+long", response_detail(result), re.I)
         )
 
-    def disable_router(result, previous_detail: str = "") -> None:
-        global _tev1_circuit_open, _tev1_routing_warning_logged
-        _tev1_circuit_open = True
-        if _tev1_routing_warning_logged:
-            return
-        _tev1_routing_warning_logged = True
-        detail = response_detail(result) or previous_detail
-        suffix = f" Response: {detail}" if detail else ""
+    def cool_down(reason: str) -> None:
+        _tev1_cooldowns[url] = time.monotonic() + TEV1_COOLDOWN
         log_warning(
-            f"Ollama /v1/systemone returned status {result.status_code}.{suffix} "
-            "Tev1 routing is disabled for this process; using static candidate order."
+            f"Tev1 router failed ({reason}); cooling down for {TEV1_COOLDOWN}s; "
+            "using static candidate order."
         )
 
     try:
         timeout = orchestrator.config.get("ollama_router_timeout", 10)
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = ollama_post(
+            orchestrator, url, json=payload, timeout=timeout, role=role
+        )
         if response.status_code != 200:
             if is_context_error(response):
-                previous_detail = response_detail(response)
                 retry_payload = make_payload(0, include_descriptions=False)
                 if (
                     len(
@@ -404,14 +488,14 @@ def route_ollama_model_with_tev1(
                 ):
                     cache[cache_key] = None
                     return None
-                response = requests.post(url, json=retry_payload, timeout=timeout)
+                response = ollama_post(
+                    orchestrator, url, json=retry_payload, timeout=timeout, role=role
+                )
                 if response.status_code != 200:
-                    disable_router(response, previous_detail)
-                    cache[cache_key] = None
+                    cool_down(f"HTTP {response.status_code}")
                     return None
             else:
-                disable_router(response)
-                cache[cache_key] = None
+                cool_down(f"HTTP {response.status_code}")
                 return None
         data = response.json()
         ans = data.get("answers", {}).get("selected_model", {})
@@ -437,10 +521,7 @@ def route_ollama_model_with_tev1(
             or not math.isclose(sum(probabilities.values()), 1.0, abs_tol=0.01)
             or probabilities[choice] < max(probabilities.values()) - 0.001
         ):
-            log_warning(
-                "Tev1 returned an invalid model probability distribution; using static local model order."
-            )
-            cache[cache_key] = None
+            cool_down("invalid model probability distribution")
             return None
 
         ranked = sorted(
@@ -457,9 +538,10 @@ def route_ollama_model_with_tev1(
         )
         cache[cache_key] = ranked
         return ranked
+    except LocalResourceBusy:
+        raise
     except Exception as exc:
-        log_info(f"Failed to query Tev1 router at {url}: {exc}; falling back.")
-        cache[cache_key] = None
+        cool_down(type(exc).__name__)
         return None
 
 
@@ -570,7 +652,9 @@ def call_ollama(
 
     try:
         timeout = orchestrator.config.get("ollama_timeout", 1800)
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = ollama_post(
+            orchestrator, url, json=payload, timeout=timeout, role=role
+        )
         if (
             "think" in payload
             and response.status_code == 400
@@ -583,7 +667,9 @@ def call_ollama(
             orchestrator._ollama_no_think_models = no_think_models
             retry_payload = dict(payload)
             retry_payload.pop("think")
-            response = requests.post(url, json=retry_payload, timeout=timeout)
+            response = ollama_post(
+                orchestrator, url, json=retry_payload, timeout=timeout, role=role
+            )
         response.raise_for_status()
         return response.json()["message"]["content"]
     except requests.exceptions.RequestException as e:
@@ -836,6 +922,7 @@ def call_agy(
         else "plan"
     )
     if mode == "accept-edits":
+        orchestrator.prepare_implementation()
         full_prompt += (
             "\n\nDo not edit files directly or use workspace tools. "
             "Return only the machine-readable file blocks required by the task."
@@ -921,7 +1008,10 @@ def call_agy(
 
 def token_fallback_model(orchestrator, role: str, error: Exception) -> str | None:
     from orchestrator.core.state import log_warning
-    from orchestrator.core.cloud_routing import cloud_model_allowed
+    from orchestrator.core.cloud_routing import ModelDiscoveryError, cloud_model_allowed
+
+    if isinstance(error, ModelDiscoveryError):
+        return None
 
     message = str(error).lower()
     if not quota_exhausted(error) and not any(
@@ -946,6 +1036,10 @@ def token_fallback_model(orchestrator, role: str, error: Exception) -> str | Non
 
 
 def quota_exhausted(error: Exception) -> bool:
+    from orchestrator.core.cloud_routing import ModelDiscoveryError
+
+    if isinstance(error, ModelDiscoveryError):
+        return False
     message = str(error).lower()
     return any(
         marker in message

@@ -228,6 +228,10 @@ def test_file_block_calls_do_not_receive_json_schema(
 ):
     app = initialized_orchestrator
     app.state["state"] = "IMPLEMENTING"
+    app.state["tasks"] = [{"id": "T1", "target_files": ["app.py"]}]
+    app.request_path.write_text("Implement app.py after owner approval.")
+    app.plan_path.write_text("Implement app.py using file blocks.")
+    app.record_implementation_approval("approve")
     response = "[FILE_START: app.py]\nvalue = 1\n[FILE_END: app.py]"
     run = Mock(return_value=agy_result(response))
     monkeypatch.setattr(backends, "run_agy_stream", run)

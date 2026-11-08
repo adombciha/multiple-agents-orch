@@ -202,13 +202,16 @@ def test_developer_explicit_and_cached_sol_are_allowed(
     app = initialized_orchestrator
     monkeypatch.setattr(app, "_get_compact_task_summary", Mock(return_value="task"))
     app._cloud_route_choices = {("codex", role, "task"): ("gpt-6.1-sol", "medium")}
-    catalog = Mock()
+    catalog = Mock(return_value={"gpt-6.1-sol": {}})
     monkeypatch.setattr(cloud_routing, "discover_codex_models", catalog)
+    monkeypatch.setattr(
+        backends, "route_ollama_model_with_tev1", Mock(return_value=None)
+    )
     run = Mock(return_value=Mock(returncode=0, stdout="result", stderr=""))
     monkeypatch.setattr(backends, "run_model_cli", run)
     assert backends.call_codex(app, "task", role=role, model="auto") == "result"
     assert backends.call_codex(app, "task", role=role, model="gpt-6.1-sol") == "result"
-    catalog.assert_not_called()
+    catalog.assert_called_once()
     assert run.call_count == 2
 
 

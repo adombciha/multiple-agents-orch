@@ -2,6 +2,8 @@ from __future__ import annotations
 import sys
 import json
 import hashlib
+import math
+from copy import deepcopy
 from datetime import datetime, timezone
 from orchestrator.roles.base_agent import (
     BaseAgent,
@@ -71,10 +73,17 @@ WEIGHT_ADJUSTMENT_SCHEMA = {
                 "properties": {
                     "role": {"type": "string", "enum": ["rd", "qa"]},
                     "level": {"type": "string", "enum": ["senior", "middle", "junior"]},
-                    "weight": {"type": "number"},
-                    "reason": {"type": "string"},
+                    "weight": {"type": "number", "minimum": 0.2, "maximum": 3.0},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "evidence_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "uniqueItems": True,
+                    },
                 },
-                "required": ["role", "level", "weight"],
+                "required": ["role", "level", "weight", "reason", "evidence_ids"],
                 "additionalProperties": False,
             },
             "maxItems": 6,
@@ -85,11 +94,64 @@ WEIGHT_ADJUSTMENT_SCHEMA = {
 }
 
 
+def _finite_number(value) -> bool:
+    try:
+        return type(value) in {int, float} and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _parse_weight_adjustments(response: str) -> list[dict]:
+    data = json.loads(response)
+    if not isinstance(data, dict) or set(data) != {"adjustments"}:
+        raise ValueError("Expected only an adjustments array")
+    adjustments = data["adjustments"]
+    if not isinstance(adjustments, list) or len(adjustments) > 6:
+        raise ValueError("Expected at most six adjustments")
+    seen = set()
+    for item in adjustments:
+        if not isinstance(item, dict) or set(item) != {
+            "role",
+            "level",
+            "weight",
+            "reason",
+            "evidence_ids",
+        }:
+            raise ValueError(
+                "Each adjustment requires role, level, weight, reason and evidence_ids"
+            )
+        role, level = item["role"], item["level"]
+        if role not in ("rd", "qa") or level not in ("senior", "middle", "junior"):
+            raise ValueError("Unknown staff role or level")
+        if (role, level) in seen:
+            raise ValueError("Duplicate staff role and level")
+        seen.add((role, level))
+        if not _finite_number(item["weight"]) or not (
+            scoring.WEIGHT_MIN <= item["weight"] <= scoring.WEIGHT_MAX
+        ):
+            raise ValueError("Weight must be a finite number in the staff range")
+        if (
+            not isinstance(item["reason"], str)
+            or not item["reason"].strip()
+            or len(item["reason"]) > 2000
+        ):
+            raise ValueError("A nonempty reason is required")
+        evidence_ids = item["evidence_ids"]
+        if (
+            not isinstance(evidence_ids, list)
+            or not 1 <= len(evidence_ids) <= 32
+            or any(not isinstance(value, str) or not value for value in evidence_ids)
+            or len(set(evidence_ids)) != len(evidence_ids)
+        ):
+            raise ValueError("Unique evidence IDs are required")
+    return adjustments
+
+
 def is_weight_adjustment_response(response: str) -> bool:
     try:
-        data = json.loads(response.strip())
-        return isinstance(data.get("adjustments"), list)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        _parse_weight_adjustments(response)
+        return True
+    except (TypeError, ValueError):
         return False
 
 
@@ -264,6 +326,7 @@ class ManagerAgent(BaseAgent):
         )
 
         log_header("WAITING FOR DELIVERY CONFIRMATION (Manager)")
+        self._restore_weight_review_report()
 
         if self.orchestrator.state.get("workflow_mode") == "research":
             self.orchestrator.state["state"] = "COMPLETED"
@@ -491,6 +554,7 @@ Be specific: name changed files, cite available test evidence, and distinguish c
         )
 
         log_header("7. COMPLETED (Manager)")
+        self._restore_weight_review_report()
 
         if self.orchestrator.state.get("workflow_mode") == "research":
             log_success("Research-only workflow finished.")
@@ -670,61 +734,154 @@ Be specific: name changed files, cite available test evidence, and distinguish c
         self.orchestrator.save_state()
         log_success("Multi-agent workflow process has finished successfully!")
 
-    def _review_worker_weights(self, telemetry: str) -> None:
-        """Manager performance review: propose small, clamped nudges to internal staff
-        trust weights based on how this run went. Vendor scorecards are informational
-        and out of scope here — vendors are billed per job, not managed by trust."""
-        from orchestrator.core.state import log_info, log_warning
+    def _write_weight_review_report(self, audit: dict) -> None:
+        from orchestrator.core.state import log_warning
 
-        worker_weights = self.orchestrator.config.get("worker_weights", {})
-        vendor_scores = self.orchestrator.config.get("vendor_scores", {})
+        marker = f"<!-- worker-weight-review: {audit['run_id']} -->"
+        try:
+            path = self.orchestrator.final_report_path
+            report = path.read_text(encoding="utf-8") if path.exists() else ""
+            if marker in report:
+                return
+            detail = json.dumps(audit, indent=2, ensure_ascii=False, allow_nan=False)
+            scoring._write_atomic(
+                path,
+                f"{report.rstrip()}\n\n{marker}\n## Staff Execution Reliability Review\n\n"
+                "Backend completion is not a contract, test, task or quality verdict.\n\n"
+                f"```json\n{detail}\n```\n",
+            )
+        except OSError as error:
+            log_warning(
+                f"Weight review is saved in config; report update failed: {error}"
+            )
+
+    def _restore_weight_review_report(self) -> bool:
+        from orchestrator.core.telemetry import current_run_id
+
+        run_id = current_run_id(self.orchestrator)
+        previous = self.orchestrator.config.get("last_worker_weight_review")
+        if run_id and isinstance(previous, dict) and previous.get("run_id") == run_id:
+            self._write_weight_review_report(previous)
+            return True
+        return False
+
+    def _review_worker_weights(self, telemetry: str) -> None:
+        """Apply one evidence-backed local-staff reliability review per run."""
+        from orchestrator.core.state import log_info, log_warning
+        from orchestrator.core.telemetry import current_run_id, worker_call_evidence
+
+        run_id = current_run_id(self.orchestrator)
+        if run_id is None:
+            return
+        if self._restore_weight_review_report():
+            return
+        evidence = worker_call_evidence(self.orchestrator)
+        if not evidence:
+            return
+        max_delta = self.orchestrator.config.get("weight_adjustment_max_delta", 0.3)
+        if not _finite_number(max_delta) or max_delta < 0:
+            log_warning("Skipping weight review; maximum delta is invalid.")
+            return
+        try:
+            worker_weights = {
+                role: {
+                    level: self.orchestrator.config.get("worker_weights", {})
+                    .get(role, {})
+                    .get(level, 1.0)
+                    for level in ("senior", "middle", "junior")
+                }
+                for role in ("rd", "qa")
+            }
+            if any(
+                not _finite_number(value)
+                or not scoring.WEIGHT_MIN <= value <= scoring.WEIGHT_MAX
+                for weights in worker_weights.values()
+                for value in weights.values()
+            ):
+                raise ValueError("Current staff weight is invalid")
+        except (AttributeError, TypeError, ValueError) as error:
+            log_warning(f"Skipping weight review; {error}")
+            return
         prompt = (
-            "You are closing the books on this run as the team's manager.\n\n"
-            f"Current internal staff trust weights (0.2-3.0, higher = more trusted):\n{json.dumps(worker_weights)}\n\n"
-            f"Current vendor scorecard (paid backends, informational only, do not touch):\n{json.dumps(vendor_scores)}\n\n"
-            f"Run telemetry:\n{telemetry or 'No telemetry recorded.'}\n\n"
-            "Propose small performance-review nudges to internal staff weights only "
-            "(role 'rd' or 'qa', level 'senior', 'middle', or 'junior'). Keep changes conservative. "
-            "Respond only with JSON matching the schema; use an empty 'adjustments' array if no change is warranted."
+            "Review local staff execution reliability using only the supplied current-run evidence.\n"
+            f"Current staff weights: {json.dumps(worker_weights)}\n"
+            f"Maximum adjustment: {max_delta}\n"
+            f"Current-run backend call evidence: {json.dumps(evidence)}\n"
+            "This is a bounded sample of the latest eight eligible calls per staff role/level, "
+            "not the complete run or a full performance history. "
+            "completed means only that the backend returned, before response validation. "
+            "It does not establish valid output, passing tests, task completion or output quality. "
+            "Never infer quality from it. Internal backend retries may be aggregated. "
+            "Do not attribute quota, discovery, cancellation or infrastructure errors to staff quality. "
+            "Adjust only the matching rd/qa level supported by actual ollama evidence, "
+            "with a nonempty execution-reliability reason and matching evidence_ids. "
+            "Vendor scorecards must remain untouched. "
+            "Return an empty adjustments array when evidence is insufficient."
         )
         try:
             response = self.call_manager(
                 prompt,
-                f"You are a Project Manager doing a staff performance review. {JSON_RULES}",
+                f"You are a Project Manager reviewing execution reliability only. {JSON_RULES}",
                 is_weight_adjustment_response,
                 WEIGHT_ADJUSTMENT_SCHEMA,
             )
-            data = json.loads(extract_json_response(response))
-        except Exception as e:
-            log_warning(f"Skipping weight review; Manager response was unusable: {e}")
+            adjustments = _parse_weight_adjustments(response)
+            by_id = {item["id"]: item for item in evidence}
+            config = deepcopy(self.orchestrator.config)
+            changes = []
+            for item in adjustments:
+                role, level = item["role"], item["level"]
+                cited = [by_id[value] for value in item["evidence_ids"]]
+                if any(
+                    record["role"] != role or record["level"] != level
+                    for record in cited
+                ):
+                    raise ValueError("Evidence belongs to another staff role or level")
+                current = config.get("worker_weights", {}).get(role, {}).get(level, 1.0)
+                if (
+                    not _finite_number(current)
+                    or not scoring.WEIGHT_MIN <= current <= scoring.WEIGHT_MAX
+                ):
+                    raise ValueError("Current staff weight is invalid")
+                lower = max(scoring.WEIGHT_MIN, current - max_delta)
+                upper = min(scoring.WEIGHT_MAX, current + max_delta)
+                bounded = scoring.clamp(
+                    round(scoring.clamp(item["weight"], lower, upper), 3), lower, upper
+                )
+                if bounded > current and not any(
+                    record["completed"] for record in cited
+                ):
+                    raise ValueError("An increase requires a completed backend call")
+                if bounded < current and not any(
+                    not record["completed"] for record in cited
+                ):
+                    raise ValueError(
+                        "A decrease requires an eligible failed backend call"
+                    )
+                config.setdefault("worker_weights", {}).setdefault(role, {})[
+                    level
+                ] = bounded
+                changes.append(
+                    {
+                        "role": role,
+                        "level": level,
+                        "original": current,
+                        "new": bounded,
+                        "reason": item["reason"].strip(),
+                        "evidence": cited,
+                    }
+                )
+            audit = {
+                "run_id": run_id,
+                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                "adjustments": changes,
+            }
+            config["last_worker_weight_review"] = audit
+            scoring._save_config(self.orchestrator, config)
+        except Exception as error:
+            log_warning(f"Skipping weight review; no adjustment was committed: {error}")
             return
-
-        max_delta = self.orchestrator.config.get("weight_adjustment_max_delta", 0.3)
-        changed = False
-        for item in data.get("adjustments", []):
-            if not isinstance(item, dict):
-                continue
-            role, level = item.get("role"), item.get("level")
-            if role not in {"rd", "qa"} or level not in {"senior", "middle", "junior"}:
-                continue
-            try:
-                proposed = float(item.get("weight"))
-            except (TypeError, ValueError):
-                continue
-            current = scoring.get_weight(self.orchestrator.config, role, level)
-            bounded = scoring.clamp(
-                scoring.clamp(proposed, current - max_delta, current + max_delta)
-            )
-            self.orchestrator.config.setdefault("worker_weights", {}).setdefault(
-                role, {}
-            )[level] = round(bounded, 3)
-            changed = True
-            log_info(
-                f"Manager weight review: {role}/{level} -> {bounded} ({item.get('reason', 'no reason given')})"
-            )
-
-        if changed:
-            self.orchestrator.config_path.write_text(
-                json.dumps(self.orchestrator.config, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
+        self._write_weight_review_report(audit)
+        log_info(
+            f"Manager execution reliability review saved for {len(changes)} staff entries."
+        )

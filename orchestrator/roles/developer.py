@@ -727,6 +727,9 @@ class DeveloperAgent(BaseAgent):
     ) -> list[str]:
         from orchestrator.core.state import log_success, log_warning
 
+        if not dry_run and self.orchestrator.state.get("state") == "IMPLEMENTING":
+            self.orchestrator.prepare_implementation()
+
         def reject(message: str, retry_context: str | None = None) -> None:
             log_warning(message)
             if validation_errors is not None:
@@ -1045,8 +1048,10 @@ class DeveloperAgent(BaseAgent):
         )
 
     def step_implementing(self):
+        from orchestrator.core.cloud_routing import ModelDiscoveryError
         from orchestrator.core.state import (
             DeveloperCallLimitReached,
+            ImplementationApprovalError,
             ResponseContractError,
             log_header,
             log_error,
@@ -1500,6 +1505,7 @@ class DeveloperAgent(BaseAgent):
                 return True
 
             try:
+                self.orchestrator.prepare_implementation()
                 dev_output = self.call_agent(
                     effective_role,
                     prompt,
@@ -1508,6 +1514,20 @@ class DeveloperAgent(BaseAgent):
                     if backend in ["ollama", "agy", "codex"]
                     else None,
                 )
+            except ImplementationApprovalError as error:
+                self.orchestrator.pause_for_human_review(
+                    "Orchestrator", str(error), "IMPLEMENTING", "IMPLEMENTING"
+                )
+                return
+            except ModelDiscoveryError as error:
+                self.orchestrator.pause_for_human_review(
+                    "Orchestrator",
+                    f"Model discovery is temporarily unavailable: {error}. "
+                    "Continue after the provider cooldown to retry this task.",
+                    "IMPLEMENTING",
+                    "IMPLEMENTING",
+                )
+                return
             except DeveloperCallLimitReached as error:
                 self.orchestrator.escalate_to_replan_or_pause(
                     "Developer", str(error), "IMPLEMENTING", "IMPLEMENTING"
@@ -1526,12 +1546,18 @@ class DeveloperAgent(BaseAgent):
                         f"Task {task['id']} omitted or invalidated target files: {error}",
                     )
                     return
-                written = self.parse_and_write_files(
-                    dev_output,
-                    task.get("target_files"),
-                    allowed_heading=task.get("section_heading"),
-                    allow_markdown_heading_changes=allow_markdown_heading_changes,
-                )
+                try:
+                    written = self.parse_and_write_files(
+                        dev_output,
+                        task.get("target_files"),
+                        allowed_heading=task.get("section_heading"),
+                        allow_markdown_heading_changes=allow_markdown_heading_changes,
+                    )
+                except ImplementationApprovalError as error:
+                    self.orchestrator.pause_for_human_review(
+                        "Orchestrator", str(error), "IMPLEMENTING", "IMPLEMENTING"
+                    )
+                    return
                 if set(written) == set(target_files):
                     log_success(
                         f"Successfully processed files written by Developer: {', '.join(written)}"

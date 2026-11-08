@@ -11,12 +11,14 @@ import time
 import hashlib
 import tempfile
 import threading
+import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 import requests
 
 from orchestrator.core.config import DEFAULT_CONFIG
+from orchestrator.core.local_resources import LocalResourceBusy
 
 from orchestrator.roles.base_agent import PONYTAIL_PROMPT, inject_ponytail_prompt
 
@@ -39,6 +41,10 @@ class DeveloperContractRetryExhausted(ResponseContractError):
 
 class DeveloperCallLimitReached(RuntimeError):
     """The current task exhausted its persisted Developer request budget."""
+
+
+class ImplementationApprovalError(RuntimeError):
+    """A writable operation lacks matching persisted owner approval evidence."""
 
 
 def developer_error_signature(error: str) -> str:
@@ -390,9 +396,11 @@ class AgentOrchestrator:
         if self.agent_context_path.exists():
             return json.loads(self.agent_context_path.read_text(encoding="utf-8"))
         return {
-            "request": self.request_path.read_text(encoding="utf-8")
-            if self.request_path.exists()
-            else "",
+            "request": (
+                self.request_path.read_text(encoding="utf-8")
+                if self.request_path.exists()
+                else ""
+            ),
             "tasks": self.state.get("tasks", []),
         }
 
@@ -478,33 +486,251 @@ class AgentOrchestrator:
     def implementation_approval_evidence(self) -> dict:
         record = self.state.get("implementation_approval", {})
         current = {
-            "request_sha256": hashlib.sha256(self.request_path.read_bytes()).hexdigest()
-            if self.request_path.is_file()
-            else None,
-            "plan_sha256": hashlib.sha256(self.plan_path.read_bytes()).hexdigest()
-            if self.plan_path.is_file()
-            else None,
+            "request_sha256": (
+                hashlib.sha256(self.request_path.read_bytes()).hexdigest()
+                if self.request_path.is_file()
+                else None
+            ),
+            "plan_sha256": (
+                hashlib.sha256(self.plan_path.read_bytes()).hexdigest()
+                if self.plan_path.is_file()
+                else None
+            ),
         }
-        return {
-            "record": record,
-            "matches_current_request_and_plan": bool(record)
+        matches = (
+            bool(record)
+            and record.get("decision") in {"approve", "pass", "request_and_architect"}
             and all(
                 current[key] is not None and record.get(key) == value
                 for key, value in current.items()
+            )
+        )
+        scope_error = ""
+        try:
+            scope = self.writable_implementation_file_scope()
+        except ImplementationApprovalError as error:
+            scope = []
+            scope_error = str(error)
+        scope_matches = (
+            matches
+            and not scope_error
+            and record.get("target_files") == scope
+            and (
+                record.get("decision") != "request_and_architect"
+                or not self.state.get("plan_requires_owner_approval")
+            )
+        )
+        start = record.get("implementation_start", {})
+        baseline = record.get("baseline", {})
+        controlled = bool(
+            scope_matches
+            and record.get("approval_id")
+            and baseline
+            and not self.agent_workspace().is_symlink()
+            and baseline.get("workspace") == str(self.agent_workspace().resolve())
+            and start.get("approval_id") == record["approval_id"]
+            and start.get("baseline_fingerprint") == baseline.get("fingerprint")
+            and start.get("target_files") == scope
+        )
+        if controlled:
+            try:
+                controlled = (
+                    self.read_state_snapshot().get("implementation_approval") == record
+                )
+            except (OSError, ValueError):
+                controlled = False
+        history = self.state.get("implementation_approval_history", [])
+        return {
+            "record": record,
+            "matches_current_request_and_plan": matches,
+            "matches_current_file_scope": bool(scope_matches),
+            "file_scope_error": scope_error,
+            "controlled_implementation": (
+                "confirmed"
+                if controlled
+                else (
+                    "mismatch"
+                    if record
+                    and (
+                        start
+                        or not matches
+                        or ("target_files" in record and not scope_matches)
+                    )
+                    else "not_started"
+                    if baseline and not start
+                    else "unknown"
+                )
             ),
+            "evidence_scope": "Orchestrator-managed operations after the recorded baseline; external edits and pre-existing changes are not authenticated.",
+            "approval_history": [
+                {
+                    **{
+                        key: previous.get(key)
+                        for key in (
+                            "approval_id",
+                            "decision",
+                            "source",
+                            "request_sha256",
+                            "plan_sha256",
+                            "recorded_at",
+                            "approved_at",
+                        )
+                    },
+                    "target_file_count": len(previous.get("target_files", [])),
+                    "baseline_fingerprint": previous.get("baseline", {}).get(
+                        "fingerprint"
+                    ),
+                    "implementation_started": bool(
+                        previous.get("implementation_start")
+                    ),
+                    "started_at": previous.get("implementation_start", {}).get(
+                        "started_at"
+                    ),
+                }
+                for previous in history[-3:]
+            ],
+            "approval_history_count": len(history),
         }
 
+    def implementation_file_scope(self) -> list[str]:
+        paths = set()
+        for task in self.state.get("tasks", []):
+            for path in task.get("target_files", []):
+                if (
+                    not isinstance(path, str)
+                    or not path.strip()
+                    or Path(path).is_absolute()
+                    or ".." in Path(path).parts
+                ):
+                    raise ImplementationApprovalError(
+                        f"Invalid implementation target file escapes the authorized scope: {path!r}"
+                    )
+                paths.add(str(Path(path)))
+        return sorted(paths)
+
+    def writable_implementation_file_scope(self) -> list[str]:
+        scope = self.implementation_file_scope()
+        workspace = self.agent_workspace()
+        for path in scope:
+            target = workspace
+            for part in Path(path).parts:
+                target /= part
+                if target.is_symlink():
+                    raise ImplementationApprovalError(
+                        f"Implementation approval cannot cover a target symlink: {path!r}"
+                    )
+        return scope
+
+    def revoke_implementation_approval(self) -> None:
+        record = self.state.pop("implementation_approval", None)
+        if record:
+            self.state.setdefault("implementation_approval_history", []).append(record)
+
     def record_implementation_approval(self, decision: str):
-        """Bind an explicit owner decision to the request and plan being approved."""
-        if self.request_path.is_file() and self.plan_path.is_file():
+        """Persist an owner decision or the existing request/Architect authorization."""
+        if decision not in {"approve", "pass", "request_and_architect"}:
+            raise ImplementationApprovalError(
+                "Unsupported implementation approval decision."
+            )
+        if decision == "request_and_architect" and self.state.get(
+            "plan_requires_owner_approval"
+        ):
+            raise ImplementationApprovalError(
+                "This request requires explicit owner approval."
+            )
+        if not self.request_path.is_file() or not self.plan_path.is_file():
+            return
+        with self.execution_lock():
+            scope = self.writable_implementation_file_scope()
+            baseline = self.existing_changes_snapshot(include_baseline=True)
+            evidence = self.implementation_approval_evidence()
+            record = evidence["record"]
+            if evidence["matches_current_file_scope"] and (
+                evidence["controlled_implementation"] == "confirmed"
+                or record.get("baseline") == baseline
+            ):
+                return
+            previous = deepcopy(self.state)
+            self.revoke_implementation_approval()
             self.state["implementation_approval"] = {
+                "approval_id": uuid.uuid4().hex,
                 "decision": decision,
+                "source": (
+                    "request_and_architect"
+                    if decision == "request_and_architect"
+                    else "owner"
+                ),
                 "request_sha256": hashlib.sha256(
                     self.request_path.read_bytes()
                 ).hexdigest(),
                 "plan_sha256": hashlib.sha256(self.plan_path.read_bytes()).hexdigest(),
-                "approved_at": time.time(),
+                "recorded_at": time.time(),
+                "target_files": scope,
+                "baseline": baseline,
             }
+            if decision != "request_and_architect":
+                self.state["implementation_approval"]["approved_at"] = time.time()
+            try:
+                self.save_state()
+            except Exception:
+                self.state = previous
+                raise
+
+    def prepare_implementation(self) -> dict:
+        """Persist the controlled start before any provider or response can write."""
+        with self.execution_lock():
+            evidence = self.implementation_approval_evidence()
+            if evidence["file_scope_error"]:
+                raise ImplementationApprovalError(evidence["file_scope_error"])
+            if not evidence["matches_current_request_and_plan"]:
+                raise ImplementationApprovalError(
+                    "Owner approval is missing or does not match the current request and plan."
+                )
+            if not evidence["matches_current_file_scope"]:
+                raise ImplementationApprovalError(
+                    "Owner approval does not cover the current target file scope; obtain approval for this scope."
+                )
+            record = evidence["record"]
+            if not record.get("baseline") or not record.get("approval_id"):
+                raise ImplementationApprovalError(
+                    "Legacy approval has no file baseline; historical first-edit timing is unknown. Obtain a current approval before further implementation."
+                )
+            workspace = self.agent_workspace()
+            if workspace.is_symlink() or record["baseline"].get("workspace") != str(
+                workspace.resolve()
+            ):
+                raise ImplementationApprovalError(
+                    "Implementation workspace changed after approval; obtain approval for the current workspace."
+                )
+            persisted = self.read_state_snapshot().get("implementation_approval", {})
+            if persisted != record:
+                raise ImplementationApprovalError(
+                    "Implementation approval evidence is not persisted; writable operations are blocked."
+                )
+            if record.get("implementation_start"):
+                if evidence["controlled_implementation"] != "confirmed":
+                    raise ImplementationApprovalError(
+                        "The controlled implementation start does not match its approval and baseline."
+                    )
+                return evidence
+            if record["baseline"] != self.existing_changes_snapshot(
+                include_baseline=True
+            ):
+                raise ImplementationApprovalError(
+                    "Files, file types, or workspace baseline changed after approval and before implementation; show the changes and obtain fresh approval."
+                )
+            record["implementation_start"] = {
+                "approval_id": record["approval_id"],
+                "baseline_fingerprint": record["baseline"]["fingerprint"],
+                "target_files": record["target_files"],
+                "started_at": time.time(),
+            }
+            try:
+                self.save_state()
+            except Exception:
+                record.pop("implementation_start", None)
+                raise
+            return self.implementation_approval_evidence()
 
     @staticmethod
     def owner_acceptance_required(state: dict) -> bool:
@@ -512,7 +738,7 @@ class AgentOrchestrator:
 
         return owner_review_kind(state) == "accept_existing"
 
-    def existing_changes_snapshot(self) -> dict:
+    def existing_changes_snapshot(self, *, include_baseline: bool = False) -> dict:
         """Bind task files and, in Git workspaces, all tracked and untracked changes."""
         cwd = self.agent_workspace()
         if cwd.is_symlink() or not cwd.resolve().is_relative_to(
@@ -521,11 +747,8 @@ class AgentOrchestrator:
             raise RuntimeError(
                 "Acceptance workspace escapes the project or is a symlink."
             )
-        paths = {
-            path
-            for task in self.state.get("tasks", [])
-            for path in task.get("target_files", [])
-        }
+        paths = set(self.implementation_file_scope())
+        changed_paths = set()
         git = {}
         if self.has_git:
             git = {
@@ -541,20 +764,21 @@ class AgentOrchestrator:
                     ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD"], cwd
                 ),
             }
-            paths.update(
+            changed_paths.update(
                 path
                 for path in self._checked_git_output(
                     ["diff", "--name-only", "--no-renames", "-z", git["baseline"]], cwd
                 ).split("\0")
                 if path
             )
-            paths.update(
+            changed_paths.update(
                 path
                 for path in self._checked_git_output(
                     ["ls-files", "--others", "--exclude-standard", "-z"], cwd
                 ).split("\0")
                 if path
             )
+            paths.update(changed_paths)
         internal = self.ai_dir.resolve()
         paths = {
             path
@@ -592,6 +816,15 @@ class AgentOrchestrator:
         snapshot["fingerprint"] = delivery_snapshot_id(
             {**snapshot, "contents": contents, "modes": modes, "git": git}
         )
+        if include_baseline:
+            snapshot.update(
+                file_baseline={
+                    path: {"sha256": contents[path], "mode": modes[path]}
+                    for path in sorted(paths)
+                },
+                pre_existing_changes=sorted(changed_paths & paths),
+                pre_existing_changes_known=self.has_git,
+            )
         return snapshot
 
     def present_existing_changes(self) -> dict:
@@ -1187,7 +1420,11 @@ class AgentOrchestrator:
         *,
         decision_kind: str | None = None,
     ):
-        from orchestrator.core.status import next_actions, owner_review_kind, workflow_decision
+        from orchestrator.core.status import (
+            next_actions,
+            owner_review_kind,
+            workflow_decision,
+        )
         from orchestrator.core.telemetry import summary_markdown
 
         requirements = (
@@ -1274,9 +1511,11 @@ class AgentOrchestrator:
                 feedback,
                 resume_state,
                 pass_state,
-                decision_kind="revise"
-                if source in {"Architect", "Manager", "Reviewer", "QA"}
-                else "resume",
+                decision_kind=(
+                    "revise"
+                    if source in {"Architect", "Manager", "Reviewer", "QA"}
+                    else "resume"
+                ),
             )
             return False
         self.state["plan_escalations"] = self.state.get("plan_escalations", 0) + 1
@@ -1491,7 +1730,7 @@ class AgentOrchestrator:
                 prompt,
                 system_prompt,
                 role,
-                model,
+                selected_model,
                 image_paths,
                 **(
                     {"response_schema": response_schema}
@@ -1592,6 +1831,8 @@ class AgentOrchestrator:
             return self.call_agent_ollama_fallback(role, prompt, system_prompt)
         try:
             return self.call_agy(prompt, system_prompt, role=role)
+        except (ImplementationApprovalError, LocalResourceBusy):
+            raise
         except Exception as e:
             if backends.quota_exhausted(e):
                 backends.mark_backend_quota_exhausted(self, "agy")
@@ -1660,6 +1901,8 @@ class AgentOrchestrator:
                         else {}
                     ),
                 )
+            except LocalResourceBusy:
+                raise
             except Exception as error:
                 errors.append(f"{candidate}: {error}")
         raise RuntimeError(
@@ -1671,7 +1914,15 @@ class AgentOrchestrator:
     ):
         from orchestrator.core.telemetry import record_call
 
+        if (
+            self.config.get("qa_local_only", False)
+            and (role == "qa" or role.startswith("qa_"))
+            and backend != "ollama"
+        ):
+            raise RuntimeError("QA is restricted to local Ollama models.")
         started = time.monotonic()
+        if backend == "ollama":
+            self._ollama_chat_attempts = 0
         if backend in {"codex", "agy"}:
             self._resolved_cloud_model = None
         try:
@@ -1679,11 +1930,21 @@ class AgentOrchestrator:
             response = callback()
             self.check_model_cancellation()
         except (Exception, ModelCallCancelled) as error:
+            if isinstance(error, LocalResourceBusy):
+                error.inference_attempts = (
+                    self._ollama_chat_attempts if backend == "ollama" else 0
+                )
+                if not error.inference_attempts:
+                    raise
             record_call(
                 self,
                 role=role,
                 backend=backend,
-                model=getattr(self, "_resolved_cloud_model", None) or model,
+                model=(
+                    getattr(self, "_resolved_cloud_model", None) or model
+                    if backend in {"codex", "agy"}
+                    else model
+                ),
                 prompt=prompt,
                 system_prompt=system_prompt,
                 output=None,
@@ -1696,7 +1957,11 @@ class AgentOrchestrator:
             self,
             role=role,
             backend=backend,
-            model=getattr(self, "_resolved_cloud_model", None) or model,
+            model=(
+                getattr(self, "_resolved_cloud_model", None) or model
+                if backend in {"codex", "agy"}
+                else model
+            ),
             prompt=prompt,
             system_prompt=system_prompt,
             output=response,
@@ -1730,6 +1995,7 @@ class AgentOrchestrator:
         response_schema: dict | None = None,
     ) -> str | None:
         from orchestrator.core import backends
+        from orchestrator.core.cloud_routing import ModelDiscoveryError
 
         def contract_error(response: str) -> str | None:
             if response_validator is None:
@@ -1764,20 +2030,28 @@ class AgentOrchestrator:
             )
 
         routes = self.config.get("role_model_routes", {}).get(role, [])
+        if self.config.get("qa_local_only", False) and (
+            role == "qa" or role.startswith("qa_")
+        ):
+            routes = [["ollama", "auto"]]
         structured_qa = role.startswith("qa_") and response_schema is not None
         if not routes and structured_qa:
             backend = self.get_backend(role)
             routes = [
                 [
                     backend,
-                    "auto"
-                    if backend in {"ollama", "codex"}
-                    else self.get_active_model_for_role(role, backend),
+                    (
+                        "auto"
+                        if backend in {"ollama", "codex"}
+                        else self.get_active_model_for_role(role, backend)
+                    ),
                 ]
             ]
         if not routes:
             return None
         errors = []
+        discovery_error = None
+        non_discovery_failure = False
         implementing = self.state.get("state") == "IMPLEMENTING" and role.startswith(
             "developer"
         )
@@ -1829,6 +2103,7 @@ class AgentOrchestrator:
                     else:
                         effective_routes.append([backend, model])
             else:
+                non_discovery_failure = True
                 log_warning(
                     "No installed Ollama chat-capable models were discovered; skipping local routes."
                 )
@@ -1887,36 +2162,47 @@ class AgentOrchestrator:
                     )
                 calls[task_id] = used + 1
                 self.save_state()
-            if backend == "ollama":
-                return self.call_agent_ollama_fallback(
-                    role,
-                    request_prompt,
-                    system_prompt,
-                    model=model,
-                    **({"image_paths": image_paths} if image_paths else {}),
-                    **(
-                        {"response_schema": response_schema}
-                        if response_schema is not None
-                        else {}
-                    ),
-                )
-            if backend == "codex":
-                return self.call_codex(
-                    request_prompt, system_prompt, role=role, model=model
-                )
-            if backend == "agy":
-                return self.call_agy(
-                    request_prompt,
-                    system_prompt,
-                    role=role,
-                    model=model,
-                    **(
-                        {"response_schema": response_schema}
-                        if response_schema is not None
-                        else {}
-                    ),
-                )
-            raise ValueError(f"Unsupported backend in route: {backend}")
+            try:
+                if backend == "ollama":
+                    return self.call_agent_ollama_fallback(
+                        role,
+                        request_prompt,
+                        system_prompt,
+                        model=model,
+                        **({"image_paths": image_paths} if image_paths else {}),
+                        **(
+                            {"response_schema": response_schema}
+                            if response_schema is not None
+                            else {}
+                        ),
+                    )
+                if backend == "codex":
+                    return self.call_codex(
+                        request_prompt, system_prompt, role=role, model=model
+                    )
+                if backend == "agy":
+                    return self.call_agy(
+                        request_prompt,
+                        system_prompt,
+                        role=role,
+                        model=model,
+                        **(
+                            {"response_schema": response_schema}
+                            if response_schema is not None
+                            else {}
+                        ),
+                    )
+                raise ValueError(f"Unsupported backend in route: {backend}")
+            except (ModelDiscoveryError, LocalResourceBusy) as error:
+                if (
+                    task_id
+                    and calls.get(task_id) == used + 1
+                    and not getattr(error, "inference_attempts", 0)
+                ):
+                    # No model executed; refund only this reservation.
+                    calls[task_id] = used
+                    self.save_state()
+                raise
 
         def validate_response(response: str) -> str | None:
             self.validate_routed_response(role, response, response_schema)
@@ -1937,8 +2223,10 @@ class AgentOrchestrator:
         for backend, model in effective_routes:
             route = f"{backend}/{model}"
             if not backends.backend_available(self, backend):
+                non_discovery_failure = True
                 continue
             if route in contract_failures:
+                non_discovery_failure = True
                 error = contract_failures[route].get(
                     "error", "Developer output contract previously failed"
                 )
@@ -1946,6 +2234,7 @@ class AgentOrchestrator:
                 log_info(f"Skipping contract-failed model route: {route}")
                 continue
             if route in failed_routes:
+                non_discovery_failure = True
                 log_info(f"Skipping unavailable model route: {route}")
                 continue
             try:
@@ -2038,8 +2327,19 @@ class AgentOrchestrator:
                     raise ResponseContractError(validation_error)
                 return response
             except Exception as error:
-                if isinstance(error, DeveloperCallLimitReached):
+                if isinstance(
+                    error,
+                    (
+                        DeveloperCallLimitReached,
+                        ImplementationApprovalError,
+                        LocalResourceBusy,
+                    ),
+                ):
                     raise
+                if isinstance(error, ModelDiscoveryError):
+                    discovery_error = error
+                else:
+                    non_discovery_failure = True
                 errors.append(f"{backend}/{model}: {error}")
                 if (
                     isinstance(error, ResponseContractError)
@@ -2070,7 +2370,12 @@ class AgentOrchestrator:
                 exhausted = backends.quota_exhausted(error)
                 if (
                     not isinstance(
-                        error, (ResponseContractError, backends.InputContextExceeded)
+                        error,
+                        (
+                            ResponseContractError,
+                            backends.InputContextExceeded,
+                            ModelDiscoveryError,
+                        ),
                     )
                     and not exhausted
                     and route not in failed_routes
@@ -2080,9 +2385,12 @@ class AgentOrchestrator:
                 if exhausted:
                     backends.mark_backend_quota_exhausted(self, backend)
                 log_warning(f"{backend}/{model} failed: {error}; trying next route.")
-        raise RuntimeError(
-            f"All configured routes failed for {role}: {'; '.join(errors)}"
-        )
+        detail = f"All configured routes failed for {role}: {'; '.join(errors)}"
+        if discovery_error is not None and not non_discovery_failure:
+            raise ModelDiscoveryError(
+                "routes", "unavailable", detail[:1200]
+            ) from discovery_error
+        raise RuntimeError(detail)
 
     def validate_routed_response(
         self, role: str, response: str, response_schema: dict | None = None
@@ -2128,6 +2436,8 @@ class AgentOrchestrator:
     ) -> str:
         from orchestrator.core import backends
 
+        if self.state.get("state") == "IMPLEMENTING" and role.startswith("developer"):
+            self.prepare_implementation()
         backend = self.get_backend(role)
         log_info(f"Requesting Agent '{role}' (Backend: {backend})...")
 
@@ -2152,6 +2462,8 @@ class AgentOrchestrator:
             try:
                 return self.call_codex(prompt, system_prompt, role=role)
             except Exception as e:
+                if isinstance(e, LocalResourceBusy):
+                    raise
                 if backends.quota_exhausted(e):
                     backends.mark_backend_quota_exhausted(self, "codex")
                     return self.call_agy_quota_fallback(role, prompt, system_prompt)
@@ -2161,6 +2473,8 @@ class AgentOrchestrator:
                         return self.call_codex(
                             prompt, system_prompt, role=role, model=fallback_model
                         )
+                    except LocalResourceBusy:
+                        raise
                     except Exception as retry_error:
                         e = retry_error
                 log_warning(f"Codex backend failed: {e}")
@@ -2180,6 +2494,8 @@ class AgentOrchestrator:
                         else {}
                     ),
                 )
+            except (ImplementationApprovalError, LocalResourceBusy):
+                raise
             except Exception as e:
                 if response_schema is not None and isinstance(e, ResponseContractError):
                     raise RuntimeError(
@@ -2199,6 +2515,8 @@ class AgentOrchestrator:
                                 else {}
                             ),
                         )
+                    except (ImplementationApprovalError, LocalResourceBusy):
+                        raise
                     except Exception as retry_error:
                         e = retry_error
                 if backends.quota_exhausted(e):
@@ -2279,10 +2597,12 @@ class AgentOrchestrator:
                 archive.add(
                     wt_path,
                     arcname="worktree",
-                    filter=lambda info: None
-                    if info.name == "worktree/.git"
-                    or info.name.startswith("worktree/.git/")
-                    else info,
+                    filter=lambda info: (
+                        None
+                        if info.name == "worktree/.git"
+                        or info.name.startswith("worktree/.git/")
+                        else info
+                    ),
                 )
             self._checked_git_output(
                 [
@@ -2626,9 +2946,9 @@ class AgentOrchestrator:
         qa_level = self.state.get("last_qa_level", level)
         return {
             "rd_level": level,
-            "qa_level": qa_level
-            if qa_level in {"junior", "middle", "senior"}
-            else level,
+            "qa_level": (
+                qa_level if qa_level in {"junior", "middle", "senior"} else level
+            ),
         }
 
     def consult_specialists(

@@ -210,6 +210,7 @@ def test_combined_code_task_survives_replan_and_implementation(
         )
     )
     monkeypatch.setattr(app, "call_agent", call)
+    app.record_implementation_approval("approve")
     app.step_implementing()
     call.assert_called_once()
     assert app.state["state"] == "TESTING"

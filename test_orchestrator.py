@@ -101,9 +101,20 @@ def initialized_orchestrator(tmp_path, no_git, monkeypatch):
     write_ai_company(tmp_path)
     app = AgentOrchestrator(tmp_path)
     app.load_config_and_state()
-    monkeypatch.setattr(backends, "_tev1_circuit_open", False)
-    monkeypatch.setattr(backends, "_tev1_routing_warning_logged", False)
+    monkeypatch.setattr(backends, "_tev1_cooldowns", {})
+    monkeypatch.setattr(cloud_routing, "_catalog_failures", {})
     return app
+
+
+def approve_test_implementation(app):
+    """Give implementation-focused fixtures the same persisted owner gate as production."""
+    if not app.request_path.exists():
+        app.request_path.write_text(
+            "Implement the assigned test task.", encoding="utf-8"
+        )
+    if not app.plan_path.exists():
+        app.plan_path.write_text("Implement the assigned files.", encoding="utf-8")
+    app.record_implementation_approval("approve")
 
 
 def test_initialized_orchestrator_fixture_loads_temp_config_and_state(
@@ -427,7 +438,7 @@ def test_developer_codex_rejects_explicit_other_family(
     run.assert_not_called()
 
 
-def test_agy_auto_scores_available_efforts_once(initialized_orchestrator, monkeypatch):
+def test_agy_auto_revalidates_available_efforts(initialized_orchestrator, monkeypatch):
     monkeypatch.setattr(
         backends,
         "resolve_agy_model",
@@ -456,7 +467,7 @@ def test_agy_auto_scores_available_efforts_once(initialized_orchestrator, monkey
     )
 
     assert selected == repeated == "gemini-3.8-flash-high"
-    assert rank.call_count == 1
+    assert rank.call_count == 2
     assert rank.call_args.kwargs["require_installed"] is False
 
 
@@ -851,6 +862,7 @@ def test_agy_sends_large_prompt_over_stdin(initialized_orchestrator, monkeypatch
     prompt = "x" * 140_000
     initialized_orchestrator.state["state"] = "IMPLEMENTING"
 
+    approve_test_implementation(initialized_orchestrator)
     assert (
         backends.call_agy(
             initialized_orchestrator,
@@ -1788,6 +1800,7 @@ def test_agy_developer_corrects_invalid_contract_before_next_route(
     monkeypatch.setattr(initialized_orchestrator, "call_agy", agy)
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", ollama)
 
+    approve_test_implementation(initialized_orchestrator)
     result = initialized_orchestrator.call_agent(
         "developer_junior",
         "prompt",
@@ -1867,6 +1880,7 @@ def test_ollama_developer_retries_invalid_contract_once(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent_ollama_fallback", call)
 
+    approve_test_implementation(initialized_orchestrator)
     result = initialized_orchestrator.call_agent(
         "developer_junior",
         "prompt",
@@ -1903,6 +1917,7 @@ def test_ollama_developer_does_not_retry_out_of_scope_contract(
         )
 
     with pytest.raises(RuntimeError, match="outside the task contract"):
+        approve_test_implementation(initialized_orchestrator)
         initialized_orchestrator.call_agent(
             "developer_junior", "prompt", response_validator=reject
         )
@@ -1923,6 +1938,7 @@ def test_implementing_route_failures_are_scoped_to_active_task(
     )
 
     with pytest.raises(RuntimeError):
+        approve_test_implementation(initialized_orchestrator)
         initialized_orchestrator.call_agent("developer_junior", "prompt")
 
     assert initialized_orchestrator.state["task_failed_model_routes"]["T-1"] == [
@@ -1996,6 +2012,7 @@ def test_implementing_request_limit_escalates_to_plan_reconsideration(
     monkeypatch.setattr(app, "call_agy", call)
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
 
+    approve_test_implementation(app)
     app.step_implementing()
 
     assert app.state["state"] == "DEVELOPING_PLAN"
@@ -2067,6 +2084,7 @@ def test_developer_route_accepts_markdown_edit_blocks(
         initialized_orchestrator, "call_agy", Mock(return_value=response)
     )
 
+    approve_test_implementation(initialized_orchestrator)
     assert initialized_orchestrator.call_agent("developer_junior", "prompt") == response
 
 
@@ -2095,6 +2113,7 @@ def test_implementing_prompt_requires_only_file_blocks(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert "respond only with [file_start" in call_agent.call_args.args[2].lower()
@@ -2135,6 +2154,7 @@ def test_implementing_prompt_includes_only_current_target_files(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -2177,6 +2197,7 @@ def test_implementing_missing_section_heading_falls_back_to_whole_file(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert "## Installation" in target.read_text(encoding="utf-8")
@@ -2225,6 +2246,7 @@ def test_split_scoped_fix_tasks_keep_section_contract(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert all(
@@ -2271,6 +2293,7 @@ def test_translation_task_receives_read_only_primary_readme(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -2317,6 +2340,7 @@ def test_fix_task_on_existing_markdown_downgrades_to_targeted_edits(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     task = initialized_orchestrator.state["tasks"][0]
@@ -2356,6 +2380,7 @@ def test_whole_markdown_task_keeps_declared_file_block_contract(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -2410,6 +2435,7 @@ def test_direct_developer_task_stays_pending_when_no_file_changes(
         initialized_orchestrator, "call_agent", Mock(return_value="No edits made")
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
@@ -2452,6 +2478,7 @@ def test_incomplete_or_extra_file_response_does_not_write_or_complete(
         initialized_orchestrator, "call_agent", Mock(return_value=output)
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["tasks"][0]["status"] == "pending"
@@ -2494,6 +2521,7 @@ def test_existing_multi_file_task_uses_edit_blocks_for_every_target(
     call_agent = Mock(return_value=response)
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     task = initialized_orchestrator.state["tasks"][0]
@@ -2541,6 +2569,7 @@ def test_large_multi_file_task_splits_before_prompting_models(
     )
     monkeypatch.setattr(app, "call_agent", call_agent)
 
+    approve_test_implementation(app)
     app.step_implementing()
 
     assert [task["id"] for task in app.state["tasks"]] == ["T3-1", "T3-2"]
@@ -2599,6 +2628,7 @@ def test_repeated_invalid_edits_replan_after_same_failure(
     monkeypatch.setattr(brain, "remember", Mock())
 
     for _ in range(3):
+        approve_test_implementation(app)
         app.step_implementing()
 
     assert app.state["state"] == "DEVELOPING_PLAN"
@@ -2661,6 +2691,7 @@ def test_stale_old_retry_includes_current_file_excerpt(
     monkeypatch.setattr(backends, "backend_available", Mock(return_value=True))
     monkeypatch.setattr(app, "call_agent_ollama_fallback", ollama_call)
 
+    approve_test_implementation(app)
     app.step_implementing()
 
     retry_prompt = ollama_call.call_args_list[1].args[1]
@@ -2697,6 +2728,7 @@ def test_implementing_skips_read_only_inventory_tasks(
     call_agent = Mock()
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["tasks"][0]["status"] == "completed"
@@ -2737,6 +2769,7 @@ def test_legacy_fix_task_inherits_original_target_files(
         Mock(return_value="[FILE_START: app.py]\nfixed\n[FILE_END: app.py]"),
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
@@ -2781,6 +2814,7 @@ def test_human_review_task_inherits_original_target_files(
         Mock(return_value="[FILE_START: app.py]\nfixed\n[FILE_END: app.py]"),
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["tasks"][-1]["target_files"] == ["app.py"]
@@ -2825,6 +2859,7 @@ def test_multi_file_fix_task_splits_and_keeps_route_state(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     split_tasks = initialized_orchestrator.state["tasks"]
@@ -2883,6 +2918,7 @@ def test_multi_file_task_with_new_target_splits_contracts(
         ),
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     tasks = initialized_orchestrator.state["tasks"]
@@ -2921,6 +2957,7 @@ def test_implementing_pauses_when_all_model_routes_fail(
         Mock(side_effect=RuntimeError("all routes failed")),
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
@@ -3011,6 +3048,7 @@ def test_cloud_routes_accept_recorded_developer_prompt_edit(
     assert result == response
     assert errors == []
     provider.assert_called_once()
+    approve_test_implementation(initialized_orchestrator)
     assert initialized_orchestrator.parse_and_write_files(result, [filepath]) == [
         filepath
     ]
@@ -3222,6 +3260,7 @@ def test_implementing_prompt_uses_functional_scope_over_parent_description(
     )
     monkeypatch.setattr(app, "call_agent", call_agent)
 
+    approve_test_implementation(app)
     app.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -3372,6 +3411,7 @@ def test_implementing_pauses_when_file_contract_writes_nothing(
         "# Existing\n\n## Keep\n", encoding="utf-8"
     )
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert initialized_orchestrator.state["state"] == "IMPLEMENTING"
@@ -4032,6 +4072,7 @@ def test_implementing_navigation_task_requests_file_edit_blocks(
     )
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     assert "[FILE_EDIT_START: README_zh-CN.md]" in call_agent.call_args.args[1]
@@ -6067,6 +6108,17 @@ def test_task_backend_override_moves_its_route_ahead_of_router_ranking(
 def test_manager_review_worker_weights_applies_clamped_adjustment(
     initialized_orchestrator, monkeypatch
 ):
+    initialized_orchestrator.state["run_id"] = "d9428888122b4e1fbe015df5a8a7ff12"
+    record_call(
+        initialized_orchestrator,
+        role="developer_junior",
+        backend="ollama",
+        model="offline",
+        prompt="prompt",
+        system_prompt=None,
+        output="output",
+        elapsed_seconds=0.1,
+    )
     initialized_orchestrator.config["worker_weights"] = {
         "rd": {"senior": 1.0, "middle": 1.0, "junior": 1.0},
         "qa": {"senior": 1.5, "middle": 1.0, "junior": 0.6},
@@ -6082,7 +6134,8 @@ def test_manager_review_worker_weights_applies_clamped_adjustment(
                             "role": "rd",
                             "level": "junior",
                             "weight": 2.9,
-                            "reason": "great run",
+                            "reason": "Backend completed the recorded call.",
+                            "evidence_ids": ["call:1"],
                         }
                     ]
                 }
@@ -6098,6 +6151,17 @@ def test_manager_review_worker_weights_applies_clamped_adjustment(
 def test_manager_review_worker_weights_skips_on_invalid_response(
     initialized_orchestrator, monkeypatch
 ):
+    initialized_orchestrator.state["run_id"] = "d9428888122b4e1fbe015df5a8a7ff12"
+    record_call(
+        initialized_orchestrator,
+        role="developer_junior",
+        backend="ollama",
+        model="offline",
+        prompt="prompt",
+        system_prompt=None,
+        output="output",
+        elapsed_seconds=0.1,
+    )
     original = copy.deepcopy(initialized_orchestrator.config["worker_weights"])
     monkeypatch.setattr(
         initialized_orchestrator.manager, "call_manager", Mock(return_value="not json")
@@ -6167,6 +6231,7 @@ def test_brain_injected_for_ollama_backend_prompt(
     call_agent = Mock(return_value="[FILE_START: app.py]\nok\n[FILE_END: app.py]")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -6200,6 +6265,7 @@ def test_brain_not_injected_for_vendor_backend_prompt(
     call_agent = Mock(return_value="No edits needed")
     monkeypatch.setattr(initialized_orchestrator, "call_agent", call_agent)
 
+    approve_test_implementation(initialized_orchestrator)
     initialized_orchestrator.step_implementing()
 
     prompt = call_agent.call_args.args[1]
@@ -6456,8 +6522,8 @@ def test_route_ollama_model_logs_bounded_http_error_details(
     )
 
     message = log.call_args.args[0]
-    assert "status 400" in message
-    assert "bad request" in message
+    assert "HTTP 400" in message
+    assert "bad request" not in message
     assert len(message) < 500
     log.assert_called_once()
 
@@ -6687,7 +6753,7 @@ def test_tev1_retries_context_limit_once_without_criteria(
     assert post.call_args_list[1].kwargs["json"]["questions"]["selected_model"][
         "criteria"
     ] == {candidate: None for candidate in candidates}
-    assert backends._tev1_circuit_open is False
+    assert not backends._tev1_cooldowns
 
 
 def test_tev1_caches_ranking_for_same_task_and_candidates(
@@ -6735,7 +6801,7 @@ def test_tev1_caches_ranking_for_same_task_and_candidates(
     assert post.call_count == 2
 
 
-def test_tev1_http_failure_opens_process_circuit_once(
+def test_tev1_http_failure_cools_down_endpoint_once(
     initialized_orchestrator, monkeypatch
 ):
     from orchestrator.core import state
@@ -6764,7 +6830,7 @@ def test_tev1_http_failure_opens_process_circuit_once(
         is None
     )
 
-    assert backends._tev1_circuit_open is True
+    assert backends._tev1_cooldowns
     post.assert_called_once()
     warning.assert_called_once()
 
@@ -7694,6 +7760,7 @@ def test_developer_repair_bounds_feedback_preserves_target_and_raw_logs(
     )
     monkeypatch.setattr(app, "call_agent", call)
     monkeypatch.setattr(brain, "inject_prompt", Mock(return_value=""))
+    approve_test_implementation(app)
     app.step_implementing()
     prompt = call.call_args.args[1]
     assert f"[CURRENT_FILE: app.py]\n{source}\n[END_CURRENT_FILE: app.py]" in prompt

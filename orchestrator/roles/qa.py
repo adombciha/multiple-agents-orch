@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 from orchestrator.roles.base_agent import BaseAgent
 from orchestrator.core import scoring, brain
+from orchestrator.core.local_resources import LocalResourceBusy
 
 
 def _extract_marker(qa_reports, marker: str) -> str | None:
@@ -485,6 +486,16 @@ class QAAgent(BaseAgent):
                     response_validator=valid_json,
                     response_schema=QA_RESPONSE_SCHEMA,
                 )
+            except LocalResourceBusy as error:
+                self.orchestrator.pause_for_human_review(
+                    "QA_RESPONSE",
+                    f"Local inference resource busy: {error}. "
+                    "The pending local inference request was not sent; retry TESTING when the local resource is available.",
+                    "TESTING",
+                    "TESTING",
+                    decision_kind="resume",
+                )
+                return
             except RuntimeError as error:
                 invalid_workers.append(worker_id)
                 qa_reports.append(

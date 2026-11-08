@@ -120,6 +120,7 @@ def clear_run_state(
     orchestrator.state["active_task_id"] = None
     orchestrator.state.pop("pending_plan_feedback", None)
     orchestrator.state.pop("implementation_approval", None)
+    orchestrator.state.pop("implementation_approval_history", None)
     orchestrator.state.pop("existing_changes_acceptance", None)
     orchestrator.state.pop("owner_acceptance_preview", None)
     orchestrator.state.pop("owner_acceptance_pending", None)
@@ -415,9 +416,9 @@ def apply_review_decision(
     if decision == "accept-existing":
         orchestrator.accept_existing_changes(snapshot_id)
     elif decision == "revise":
-        orchestrator.state.pop("implementation_approval", None)
         orchestrator.state.pop("existing_changes_acceptance", None)
         if orchestrator.state.get("human_review_source") in {"Architect", "Manager"}:
+            orchestrator.revoke_implementation_approval()
             feedback = orchestrator.state.get("pending_plan_feedback", "")
             latest = orchestrator.state.get("human_review_details", "")
             orchestrator.state["pending_plan_feedback"] = "\n\n".join(

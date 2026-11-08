@@ -80,6 +80,7 @@ class ArchitectAgent(BaseAgent):
                     decision_kind="approve_plan",
                 )
                 return
+            self.orchestrator.record_implementation_approval("request_and_architect")
             self.orchestrator.state["state"] = "IMPLEMENTING"
             self.orchestrator.save_state()
         else:

@@ -144,6 +144,7 @@ def call(
     image_paths: list[str] | None = None,
 ) -> str:
     from orchestrator.core.state import log_error, log_info
+    from orchestrator.core.backends import ollama_post
     from pathlib import Path
     import base64
 
@@ -201,7 +202,9 @@ def call(
     mode = "json_sections" if section_mode else "json_files"
     log_info(f"GPT Ollama calling model: {model} mode={mode}")
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = ollama_post(
+            orchestrator, url, json=payload, timeout=timeout, role=role
+        )
         if payload.get("think") and response.status_code == 400:
             log_info(
                 f"GPT model {model} does not accept think={think}; retrying without thinking."
@@ -210,7 +213,9 @@ def call(
             orchestrator._ollama_no_think_models = no_think_models
             retry_payload = dict(payload)
             retry_payload.pop("think")
-            response = requests.post(url, json=retry_payload, timeout=timeout)
+            response = ollama_post(
+                orchestrator, url, json=retry_payload, timeout=timeout, role=role
+            )
         response.raise_for_status()
         content = response.json()["message"]["content"]
         try:
@@ -236,7 +241,9 @@ def call(
             retry_payload["options"] = {
                 "num_predict": max(16384, retry_payload["options"]["num_predict"] * 2)
             }
-            response = requests.post(url, json=retry_payload, timeout=timeout)
+            response = ollama_post(
+                orchestrator, url, json=retry_payload, timeout=timeout, role=role
+            )
             response.raise_for_status()
             content = response.json()["message"]["content"]
             result = (

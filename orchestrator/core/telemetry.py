@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections import defaultdict
+import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,14 +22,20 @@ def _token_count(model: str | None, messages: list[dict]) -> tuple[int | None, s
 def _error_category(error: Exception | None) -> str | None:
     if error is None:
         return None
+    from orchestrator.core.cloud_routing import ModelDiscoveryError
+
+    if isinstance(error, ModelDiscoveryError):
+        return "discovery"
     text = str(error).lower()
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
     if any(
         marker in text
         for marker in ("quota", "rate limit", "429", "spending-limit", "token budget")
     ):
         return "quota"
+    if "cancel" in type(error).__name__.lower() or "cancel" in text:
+        return "cancelled"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
     if "contract" in text or "json" in text or "file block" in text:
         return "contract"
     return type(error).__name__
@@ -38,6 +45,71 @@ def _usage_path(orchestrator) -> Path:
     return orchestrator.ai_dir / orchestrator.config.get(
         "llm_usage_log", "llm_usage.jsonl"
     )
+
+
+def current_run_id(orchestrator) -> str | None:
+    value = orchestrator.state.get("run_id")
+    if not isinstance(value, str):
+        return None
+    try:
+        identity = uuid.UUID(value)
+    except ValueError:
+        return None
+    return value if identity.version == 4 and identity.hex == value else None
+
+
+def worker_call_evidence(orchestrator) -> list[dict]:
+    """Return current-run local call completions, not output-quality verdicts."""
+    run_id = current_run_id(orchestrator)
+    if run_id is None:
+        return []
+    roles = {
+        f"{prefix}_{level}": (role, level)
+        for prefix, role in (("developer", "rd"), ("qa", "qa"))
+        for level in ("senior", "middle", "junior")
+    }
+    recent = defaultdict(lambda: deque(maxlen=8))
+    try:
+        with _usage_path(orchestrator).open(encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    return []
+                source_role = record.get("role")
+                category = record.get("error_category")
+                if (
+                    record.get("run_id") != run_id
+                    or record.get("backend") != "ollama"
+                    or not isinstance(source_role, str)
+                    or source_role not in roles
+                    or type(record.get("success")) is not bool
+                    or (category is not None and not isinstance(category, str))
+                ):
+                    continue
+                if record["success"] and category is not None:
+                    continue
+                if not record["success"] and category not in {"timeout", "contract"}:
+                    # Quota, cancellation and unknown infrastructure failures are not staff evidence.
+                    continue
+                role, level = roles[source_role]
+                recent[(role, level)].append(
+                    {
+                        "id": f"call:{number}",
+                        "run_id": run_id,
+                        "source": "backend_call",
+                        "source_role": source_role,
+                        "role": role,
+                        "level": level,
+                        "backend": "ollama",
+                        "completed": record["success"],
+                        "error_category": category,
+                    }
+                )
+    except (OSError, UnicodeError, ValueError):
+        return []
+    return [item for key in sorted(recent) for item in recent[key]]
 
 
 def record_call(
@@ -84,6 +156,7 @@ def record_call(
         total_tokens = (input_tokens or 0) + (output_tokens or 0)
 
     record = {
+        "run_id": current_run_id(orchestrator),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "role": role,
         "backend": backend,

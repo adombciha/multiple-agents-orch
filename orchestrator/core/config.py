@@ -5,6 +5,8 @@ DEFAULT_CONFIG = {
     "ollama_model": "gemma4:latest",
     "ollama_keep_alive": 0,
     "ollama_timeout": 1800,
+    "ollama_resource_dir": "",
+    "ollama_resource_wait_seconds": 60,
     "ollama_num_predict": 8192,
     "ollama_num_ctx": 32768,  # Hardware budget; requests use only the estimated context needed.
     "ollama_think": "high",
@@ -22,6 +24,7 @@ DEFAULT_CONFIG = {
     "developer_contract_retries_per_route": 1,
     "developer_retry_response_chars": 3000,
     "max_ollama_routes_per_call": 2,
+    "qa_local_only": False,
     "ollama_router_max_criterion_chars": 160,
     "ollama_router_max_payload_chars": 6000,
     "backends": {
