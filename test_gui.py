@@ -1337,7 +1337,7 @@ def assert_gui_decision(page, title, label=None, action=None):
     ]
     assert headings == [title]
     assert '<html lang="zh-Hant">' in page
-    assert "<h1>AI Company Orchestrator</h1>" in page
+    assert "<h1>工作流程控制台</h1>" in page
     assert document.by_id("overview-title")["text"] == "任務概況"
     assert document.by_id("next-title")["text"] == "下一步"
     assert document.by_id("delivery-title")["text"] == "交付展示與確認"
@@ -1398,6 +1398,62 @@ def assert_gui_decision(page, title, label=None, action=None):
             )
             assert control["attrs"]["onclick"] == expected
     return document
+
+
+@pytest.mark.parametrize(
+    "status, active, completed",
+    [
+        ({"state": "PLANNING"}, "需求", 0),
+        ({"state": "REVIEWING_PLAN"}, "計畫", 1),
+        (
+            {
+                "state": "WAITING_FOR_OWNER",
+                "review": {"source": "Architect", "reason": ARCHITECT_APPROVAL},
+                "plan_requires_owner_approval": True,
+                "resume_state": "IMPLEMENTING",
+                "pass_state": "IMPLEMENTING",
+            },
+            "核准",
+            2,
+        ),
+        ({"state": "WAITING_FOR_OWNER"}, None, 0),
+        ({"state": "FAILED"}, None, 0),
+        ({"state": "RESEARCHING"}, "研究", 0),
+        ({"state": "WAITING_FOR_DELIVERY"}, "交付", 6),
+        ({"state": "COMPLETED", "delivery": {"delivered": False}}, "交付", 6),
+        ({"state": "COMPLETED", "delivery": {"delivered": True}}, None, 7),
+        ({"state": "IMPLEMENTING", "delivery": {"delivered": True}}, "實作", 3),
+    ],
+)
+def test_workflow_steps_distinguish_approval_delivery_and_unknown_progress(
+    status, active, completed
+):
+    document = GuiPage(gui.render_page(status))
+    current = [
+        node for node in document.nodes if node["attrs"].get("aria-current") == "step"
+    ]
+    assert len(current) == (1 if active else 0)
+    if active:
+        assert active in current[0]["text"]
+    done = [
+        node
+        for node in document.nodes
+        if node["tag"] == "li" and "done" in node["attrs"].get("class", "").split()
+    ]
+    assert len(done) == completed
+
+
+def test_evidence_summary_does_not_treat_report_text_as_a_pass():
+    page = gui.render_page({"reports": {"qa": "QA_STATUS: PASSED from an older run"}})
+    document = GuiPage(page)
+    evidence = document.by_id("evidence-summary")
+    assert "可檢視報告" in evidence["text"]
+    assert "尚無紀錄" in evidence["text"]
+    assert "已通過" not in evidence["text"]
+    assert document.by_id("report-qa")["text"] == "QA_STATUS: PASSED from an older run"
+    assert 'href="#report-qa"' in page
+    assert document.by_id("task-management")["tag"] == "details"
+    assert "open" not in document.by_id("task-management")["attrs"]
 
 
 def owner_status(source, reason, resume_state, pass_state, **fields):

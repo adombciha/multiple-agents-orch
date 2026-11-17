@@ -973,7 +973,7 @@ async function refreshPage(afterAction) {
     const response = await fetch('/', {credentials:'same-origin', cache:'no-store'});
     if (!response.ok) throw new Error('Status request failed');
     const incoming = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports', 'reset-actions', 'delivery-actions', 'display-actions', 'decision-copy', 'current-review'];
+    const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports', 'reset-actions', 'delivery-actions', 'display-actions', 'decision-copy', 'current-review', 'evidence-summary'];
     if (!ids.every(id => incoming.getElementById(id)) || !incoming.body.dataset.csrf ||
         !incoming.getElementById('state') ||
         !incoming.getElementById('task-form').querySelector('textarea'))
@@ -1012,6 +1012,7 @@ async function refreshPage(afterAction) {
     if (confirmingDelivery && changed && !deliveryRefreshRequested && !deliveryCompleted) invalidateDelivery();
     pendingWorkflow = incoming.getElementById('workflow-status');
     applyWorkflowUpdate();
+    patchRegion(document.getElementById('evidence-summary'), incoming.getElementById('evidence-summary'));
     const nextDecision = incoming.getElementById('decision-copy');
     decisionTitle = nextDecision.querySelector('h3').textContent;
     decisionExplanation = nextDecision.querySelector('p').textContent;
@@ -1243,6 +1244,48 @@ def render_page(status: dict) -> str:
         for action in decision[key]:
             button(**action, target=target)
 
+    stages = ["需求", "計畫", "核准", "實作", "測試", "審查", "交付"]
+    delivery_complete = current == "COMPLETED" and delivered
+    stage_index = {
+        "PLANNING": 0,
+        "DEVELOPING_PLAN": 1,
+        "REVIEWING_PLAN": 1,
+        "IMPLEMENTING": 3,
+        "TESTING": 4,
+        "REVIEWING_CODE": 5,
+        "WAITING_FOR_DELIVERY": 6,
+        "COMPLETED": 6,
+    }.get(status.get("resume_state") if current == "WAITING_FOR_OWNER" else current)
+    if decision.get("kind") == "approve_plan":
+        stage_index = 2
+    if current == "RESEARCHING":
+        stages, stage_index = ["研究"], 0
+    steps = []
+    for index, label in enumerate(stages):
+        done = delivery_complete or stage_index is not None and index < stage_index
+        active = not delivery_complete and index == stage_index
+        steps.append(
+            f'<li class="step {"done" if done else "active" if active else "upcoming"}"'
+            f'{" aria-current=\"step\"" if active else ""}>'
+            f'<span class="step-marker" aria-hidden="true">{"✓" if done else index + 1}</span>'
+            f'<span>{label}</span><span class="sr-only">'
+            f'{"（已經過）" if done else "（目前階段）" if active else "（尚未到達）"}</span></li>'
+        )
+    state_label = {
+        "WAITING_FOR_DELIVERY": "待交付確認",
+        "WAITING_FOR_OWNER": "等待你的決策",
+        "COMPLETED": "已完成交付" if delivered else "待確認交付狀態",
+    }.get(current, stage_labels.get(current, current))
+    state_tone = (
+        "complete"
+        if delivery_complete
+        else "failed"
+        if current == "FAILED"
+        else "pending"
+        if current in {"WAITING_FOR_OWNER", "WAITING_FOR_DELIVERY", "COMPLETED"}
+        else "running"
+    )
+
     task_items = []
     task_occurrences: dict[str, int] = {}
     for task in tasks:
@@ -1260,6 +1303,8 @@ def render_page(status: dict) -> str:
             icon, label = "○", "待處理"
         description = str(task.get("description", ""))
         target_files = task.get("target_files", [])
+        if not isinstance(target_files, list):
+            target_files = []
         canonical = json.dumps(
             {
                 "id": task_id,
@@ -1280,7 +1325,16 @@ def render_page(status: dict) -> str:
             f'<span class="badge"><span aria-hidden="true">{icon}</span> {label}</span></div>'
             f'<details data-detail="{_safe_text(key)}"><summary>'
             f'{_safe_text(description.splitlines()[0][:120] if description else "查看任務描述")}'
-            "</summary><pre>" + _report_html(description) + "</pre></details></li>"
+            '</summary><pre tabindex="0">'
+            + _report_html(description)
+            + "</pre></details>"
+            + '<div class="file-chips">'
+            + "".join(
+                f"<code>{_safe_text(path)}</code>"
+                for path in target_files
+                if isinstance(path, str)
+            )
+            + "</div></li>"
         )
     report_names = {
         "review": "人工審核報告",
@@ -1290,11 +1344,26 @@ def render_page(status: dict) -> str:
         "plan": "實作計畫",
     }
     report_html = "".join(
-        f'<details data-report="{_safe_text(name)}" data-detail="report-{_safe_text(name)}">'
+        f'<details name="workflow-reports" data-report="{_safe_text(name)}" data-detail="report-{_safe_text(name)}">'
         f"<summary>{_safe_text(report_names.get(name, name))}</summary>"
-        f"<pre>{_report_html(value)}</pre></details>"
+        f'<pre id="report-{_safe_text(name)}" tabindex="0">{_report_html(value)}</pre></details>'
         for name, value in reports.items()
         if value
+    )
+    evidence_html = "".join(
+        f'<li><div><strong>{label}</strong><span class="muted">'
+        f'{"可檢視報告" if reports.get(name) else "尚無紀錄"}</span></div>'
+        + (
+            f'<a href="#report-{name}">查看證據<span class="sr-only">：{label}</span></a>'
+            if reports.get(name)
+            else ""
+        )
+        + "</li>"
+        for name, label in (
+            ("tests", "測試結果"),
+            ("qa", "QA 報告"),
+            ("review", "審核報告"),
+        )
     )
     git_html = (
         '<details data-detail="git-impact" open><summary>Git 影響（Git impact）</summary>'
@@ -1305,7 +1374,9 @@ def render_page(status: dict) -> str:
         + f'<div id="delivery-actions" class="actions">{"".join(delivery_buttons)}</div>'
         + "</details>"
         if git
-        else '<p class="muted">尚未展示 Git 影響。</p><div id="delivery-actions" class="actions"></div>'
+        else '<div class="empty-state"><strong>尚未展示 Git 影響。</strong>'
+        '<p class="muted">到達交付階段後，先展示並檢視變更，再另行確認交付。</p></div>'
+        '<div id="delivery-actions" class="actions"></div>'
     )
     error = str(runtime.get("error", ""))
     validation_error = (
@@ -1322,77 +1393,84 @@ def render_page(status: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AI Company Orchestrator</title>
+<title>工作流程控制台 · Orchestrator</title>
 <style>
-:root{{color-scheme:light;--bg:#F8FAFC;--card:#FFFFFF;--text:#0F172A;--muted:#475569;--border:#CBD5E1;--primary:#1E3A5F;--error:#DC2626}}
-*{{box-sizing:border-box}}
-body{{font:16px/1.5 system-ui,sans-serif;color:var(--text);background:var(--bg);max-width:1200px;margin:32px auto;padding:0 24px}}
-h1{{font-size:28px;margin:0 0 24px}} h2{{font-size:20px;margin:0 0 16px}} h3{{font-size:18px}}
-p{{margin:8px 0 16px}} .muted{{color:var(--muted);font-size:14px;overflow-wrap:anywhere}}
-.card{{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:24px;margin-bottom:24px;min-width:0}}
-.overview{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:24px}}
-dl{{margin:0}} dt{{font-size:14px;color:var(--muted)}} dd{{margin:4px 0 16px;overflow-wrap:anywhere}}
-pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:16px;border-radius:8px;max-height:32rem;overflow:auto;font-size:14px}}
-button{{font:inherit;min-height:44px;padding:8px 16px;border:1px solid var(--border);border-radius:8px;cursor:pointer}}
-.primary{{background:var(--primary);color:white;border-color:var(--primary);font-weight:600}}
-.secondary{{background:var(--card);color:var(--text)}}
-button:disabled{{opacity:.55;cursor:not-allowed}}
-button:hover:enabled{{box-shadow:0 0 0 1px var(--primary)}}
-:focus-visible{{outline:3px solid #2563EB;outline-offset:3px}}
-textarea{{display:block;width:100%;min-height:160px;font:inherit;line-height:1.5;border:1px solid var(--border);border-radius:8px;padding:12px;margin:8px 0 16px}}
-label{{font-weight:600}} .actions{{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}}
-.badge{{font-weight:600}} ul{{padding:0;list-style:none}} li{{border-top:1px solid var(--border);padding:16px 0}}
-.task-heading{{display:flex;flex-wrap:wrap;gap:16px}} details{{margin:12px 0}} summary{{cursor:pointer;overflow-wrap:anywhere}}
-.feedback{{color:var(--muted);overflow-wrap:anywhere}} .error{{color:var(--error)}}
-#reset-area{{border-top:1px solid var(--border);padding-top:24px}} [hidden]{{display:none!important}}
-@media(max-width:767px){{body{{margin:16px auto;padding:0 16px}} .overview{{grid-template-columns:1fr;gap:0}} .card{{padding:16px}} button{{max-width:100%}}}}
+:root{{color-scheme:light;--bg:#F7F9FC;--card:#FFF;--text:#172338;--muted:#52637B;--border:#DAE2ED;--primary:#245BE5;--error:#B42318;--success:#087655;--amber:#985508}}
+*{{box-sizing:border-box}} html{{scroll-padding-top:24px}} body{{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif;display:grid;grid-template-columns:220px minmax(0,1fr)}}
+a{{color:#1D4ED8;text-underline-offset:4px}} a:hover{{color:#173EAD}} .sr-only,.skip-link:not(:focus){{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}} .skip-link:focus{{position:fixed;top:12px;left:12px;z-index:10;background:white;padding:12px}}
+.app-sidebar{{position:sticky;top:0;height:100vh;background:white;border-right:1px solid var(--border);padding:28px 20px;display:flex;flex-direction:column;gap:32px}} .brand{{font-weight:750;font-size:19px;display:flex;gap:10px;align-items:center}}.brand-mark{{display:grid;place-items:center;background:var(--primary);color:white;border-radius:10px;width:36px;height:36px;font:700 18px monospace;flex-shrink:0}}
+.app-sidebar nav{{display:grid;gap:8px}}.app-sidebar a{{display:flex;align-items:center;min-height:44px;padding:10px 14px;border-radius:9px;text-decoration:none;color:var(--muted);font-weight:600}}.app-sidebar a:hover{{background:#EFF4FF;color:#1D4ED8}}.app-sidebar .management-link{{margin-top:auto;border-top:1px solid var(--border);border-radius:0;padding-top:20px;font-size:14px}}
+main{{width:100%;max-width:1440px;margin:auto;padding:28px 36px;min-width:0}}.topbar{{display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--border);padding-bottom:22px;margin-bottom:28px}}.topbar h1{{font-size:22px;margin:0}}.project-name{{font-size:14px;color:var(--muted);overflow-wrap:anywhere}}.connection-details{{font-size:14px;max-width:320px}}.connection-details summary{{color:var(--muted)}}
+h2{{font-size:20px;margin:0 0 18px;letter-spacing:-.02em}}h3{{font-size:22px;line-height:1.4;margin:0 0 12px}}p{{margin:8px 0 16px}}.muted{{color:var(--muted);font-size:14px;overflow-wrap:anywhere}}.card{{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:24px;margin-bottom:22px;min-width:0;box-shadow:0 1px 3px #17233806}}
+.status-heading{{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}}.status-heading h2{{margin:0}}.state-badge,.badge{{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:650;border-radius:999px;padding:5px 12px;background:#EEF3FC;color:#294A86}}.state-badge.pending{{background:#FFF4DB;color:var(--amber)}}.state-badge.complete{{background:#E8F8F0;color:var(--success)}}.state-badge.failed{{background:#FDEDEB;color:var(--error)}}
+.workflow-steps{{list-style:none;display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;padding:0;margin:22px 0 12px}}.workflow-steps .step{{display:flex;gap:8px;justify-content:center;align-items:center;border:1px solid var(--border);border-radius:8px;min-height:50px;font-size:14px;color:var(--muted)}}.workflow-steps .done{{background:#EFFAF5;border-color:#B6E4D0;color:var(--success)}}.workflow-steps .active{{background:#FFF7E6;border-color:#D89A29;color:var(--amber);font-weight:700}}.step-marker{{font:600 14px monospace}}.status-meta{{display:flex;gap:12px 24px;flex-wrap:wrap;align-items:center;color:var(--muted);font-size:14px}}.status-meta p{{margin:0}}.runtime-details{{font-size:14px}}.runtime-details summary{{min-height:44px;align-content:center}}
+.next-card{{border-color:#E9C574;background:#FFFCF4}}.next-card h2{{font-size:14px;color:var(--amber);letter-spacing:.04em}}.next-card h3{{font-size:26px}}.next-card #decision-copy p{{max-width:76ch;color:#634826}}.actions{{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}}.actions:empty{{display:none}}.action-row{{display:flex;flex-wrap:wrap;align-items:center;gap:12px}}.action-row .actions{{margin:4px 0}}.delivery-link{{font-size:14px;min-height:44px;display:inline-flex;align-items:center}}
+button{{font:inherit;min-height:44px;padding:10px 18px;border:1px solid var(--border);border-radius:8px;cursor:pointer}}button:disabled{{opacity:.55;cursor:not-allowed}}.primary{{background:var(--primary);color:white;border-color:var(--primary);font-weight:650}}.secondary{{background:white;color:var(--text)}}button:hover:enabled{{box-shadow:0 0 0 2px #245BE530}}button.primary:hover:enabled{{background:#1D4ED8}}:focus-visible{{outline:3px solid #245BE5;outline-offset:3px}}
+.work-grid{{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,1fr);gap:22px;align-items:start}}.task-list{{list-style:none;margin:0;padding:0}}.task-list>li{{padding:18px 0;border-top:1px solid var(--border)}}.task-list>li:first-child{{border:0;padding-top:0}}.task-heading{{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}}.task-list summary{{list-style-position:inside;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;min-height:44px;align-content:center}}.file-chips{{display:flex;gap:6px;flex-wrap:wrap}}.file-chips code{{font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);overflow-wrap:anywhere}}
+.evidence-list{{list-style:none;margin:0;padding:0}}.evidence-list li{{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)}}.evidence-list li:last-child{{border:0}}.evidence-list strong,.evidence-list span{{display:block}}.evidence-list a{{min-height:44px;align-content:center;font-size:14px;white-space:nowrap}}.evidence-note{{margin:14px 0 0}}
+pre{{font:14px/1.65 ui-monospace,"SFMono-Regular",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:16px;border:1px solid var(--border);border-radius:8px;max-height:32rem;overflow:auto}}details{{margin:10px 0}}summary{{cursor:pointer;overflow-wrap:anywhere;min-height:44px;align-content:center}}#reports details{{border:1px solid var(--border);border-radius:8px;margin:10px 0}}#reports summary{{padding:10px 16px;font-weight:600}}#reports details[open] summary{{background:#EFF4FF;color:#1D4ED8}}#reports pre{{margin:12px;border:0}}.empty-state{{text-align:center;background:var(--bg);border:1px dashed var(--border);border-radius:8px;padding:28px 20px}}.empty-state p{{margin:8px 0 0}}
+textarea{{display:block;width:100%;min-height:130px;resize:vertical;font:inherit;border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0}}label{{font-weight:650}}#task-form{{border-top:1px solid #E9DAB6;padding-top:20px;margin-top:20px}}.feedback{{color:var(--muted);overflow-wrap:anywhere;font-size:14px}}.feedback:empty,.error:empty{{display:none}}.error{{color:var(--error);overflow-wrap:anywhere}}#task-management>summary{{font-weight:650}}#reset-area .secondary{{color:var(--error);border-color:#E8C3BD}}[hidden]{{display:none!important}}
+@media(max-width:1100px){{body{{grid-template-columns:180px minmax(0,1fr)}}main{{padding:24px}}.brand{{font-size:16px}}.work-grid{{grid-template-columns:1fr}}}}
+@media(max-width:760px){{body{{display:block}}.app-sidebar{{position:static;height:auto;padding:14px 16px;gap:12px;border-right:0;border-bottom:1px solid var(--border)}}.app-sidebar nav{{display:flex;gap:4px;flex-wrap:wrap}}.app-sidebar a{{padding:8px 12px}}.app-sidebar .management-link{{margin:0;border:0;padding:8px 12px}}.brand{{font-size:18px}}main{{padding:20px 16px}}.topbar{{align-items:start;gap:12px;flex-wrap:wrap;margin-bottom:20px}}.topbar h1{{font-size:20px}}.card{{padding:18px}}.workflow-steps{{grid-template-columns:repeat(4,minmax(0,1fr))}}.workflow-steps .step{{font-size:13px;gap:5px}}.next-card h3{{font-size:23px}}.work-grid{{gap:0}}.connection-details{{width:100%;max-width:none}}.actions button{{max-width:100%}}.evidence-list li{{gap:8px}}}}
 </style>
 </head>
 <body data-csrf="{_safe_text(status.get('csrf', ''))}" data-busy-message="{_safe_text(explanation if busy else '')}">
-<header>
-<h1>AI Company Orchestrator</h1>
+<a class="skip-link" href="#main-content">跳至主要內容</a>
+<aside class="app-sidebar" aria-label="工作流程導覽">
+<div class="brand"><span class="brand-mark" aria-hidden="true">&gt;_</span>工作流程控制台</div>
+<nav aria-label="頁面區段">
+<a href="#overview-title">總覽</a><a href="#tasks-title">任務清單</a>
+<a href="#delivery-title">交付變更</a><a href="#reports-title">報告</a>
+</nav>
+<a class="management-link" href="#task-management" onclick="document.getElementById('task-management').open=true">任務管理 · 重設與重新規劃</a>
+</aside>
+<main id="main-content">
+<header class="topbar">
+<h1>工作流程控制台</h1>
+<details class="connection-details"><summary id="connection-status">已載入，等待背景更新</summary>
+<p id="last-refresh" role="status"></p><p id="refresh-error" class="error" role="status"></p></details>
 </header>
-<main>
-<div class="overview">
 <section class="card" aria-labelledby="overview-title">
-<h2 id="overview-title">任務概況</h2>
 <div id="workflow-status">
-<dl>
-<dt>專案</dt><dd>{_safe_text(status.get("project_name", "目前專案"))}</dd>
-<dt>目前階段</dt><dd>{_safe_text(stage_labels.get(stage, stage))} <small>({_safe_text(stage)})</small></dd>
-<dt>任務完成數</dt><dd>{_safe_text(progress.get("completed_tasks", 0))} / {_safe_text(progress.get("total_tasks", len(tasks)))}</dd>
-</dl>
-<p>狀態：<span id="state" class="badge">{_safe_text(current)}</span></p>
-<p class="muted">執行狀態：{_safe_text(phase)}</p>
+<div class="status-heading"><h2 id="overview-title">任務概況</h2><span class="state-badge {state_tone}">{_safe_text(state_label)}</span></div>
+<p class="project-name">{_safe_text(status.get("project_name", "目前專案"))} · 本機工作區</p>
+<ol class="workflow-steps" aria-label="工作流程階段">{''.join(steps)}</ol>
+<div class="status-meta"><p>任務完成數：{_safe_text(progress.get("completed_tasks", 0))} / {_safe_text(progress.get("total_tasks", len(tasks)))}</p>
+<p>執行狀態：{_safe_text(phase)}</p></div>
 <p class="error" role="alert">{_safe_text(error)}</p>
+<details class="runtime-details"><summary>進階狀態</summary><p>目前階段：{_safe_text(stage_labels.get(stage, stage))}</p><p>狀態代碼：<code id="state">{_safe_text(current)}</code></p></details>
 </div>
 <p id="workflow-reading-status" class="feedback" role="status" aria-atomic="true"></p>
-<dl><dt>連線狀態</dt><dd id="connection-status">已載入，等待背景更新</dd>
-<dt>最後成功更新時間</dt><dd><p id="last-refresh" role="status"></p></dd></dl>
-<p id="refresh-error" class="error" role="status"></p>
 </section>
-<section class="card" aria-labelledby="next-title">
+<section class="card next-card" aria-labelledby="next-title">
 <h2 id="next-title">下一步</h2>
 <div id="decision-copy"><h3>{_safe_text(title)}</h3><p>{_safe_text(explanation)}</p></div>
 <p id="decision-status" class="feedback" role="status"></p>
-<div id="actions" class="actions">{''.join(buttons)}</div>
+<div class="action-row"><div id="actions" class="actions">{''.join(buttons)}</div>
+<div id="display-actions" class="actions">{''.join(display_buttons)}</div>
+<a class="delivery-link" href="#delivery-title">查看交付變更與確認 ↓</a></div>
 <form id="task-form" {'' if can_submit else 'hidden'}>
 <label for="task-prompt">新任務需求</label>
-<textarea id="task-prompt" name="prompt" maxlength="100000" required placeholder="輸入新任務" aria-describedby="prompt-help"></textarea>
+<textarea id="task-prompt" name="prompt" maxlength="100000" required placeholder="描述你希望完成的任務" aria-describedby="prompt-help"></textarea>
 <p id="prompt-help" class="muted">一次處理一個任務，請描述預期結果與限制。</p>
 <button type="submit" data-action="task{{}}" data-enabled="{str(can_submit).lower()}" class="{'primary' if can_submit else 'secondary'}" {'' if can_submit else 'disabled'}>提交任務</button>
 </form>
 <p id="action-feedback" class="feedback" role="status" aria-atomic="true"></p>
 </section>
-</div>
+<div class="work-grid">
 <section class="card" aria-labelledby="tasks-title">
 <h2 id="tasks-title">任務清單</h2>
 <p id="tasks-reading-status" class="feedback" role="status"></p>
-<ul id="tasks">{''.join(task_items)}</ul>
+<ul id="tasks" class="task-list">{''.join(task_items)}</ul>
 </section>
+<aside class="card" aria-labelledby="evidence-title">
+<h2 id="evidence-title">驗收證據</h2>
+<div id="evidence-summary"><ul class="evidence-list">{evidence_html}</ul></div>
+<p class="muted evidence-note">報告存在不代表驗收通過。交付仍需檢視變更及二次確認。</p>
+</aside>
+</div>
 <section class="card" aria-labelledby="delivery-title">
 <h2 id="delivery-title">交付展示與確認</h2>
-<div id="display-actions" class="actions">{''.join(display_buttons)}</div>
 <div id="git" data-snapshot-id="{_safe_text(snapshot_id)}" data-presented="{str(presented).lower()}" data-validation-error="{_safe_text(validation_error)}" data-delivered="{str(delivered).lower()}">
 <p id="git-reading-status" class="feedback" role="status"></p>
 <div data-preview>{git_html}</div>
@@ -1400,17 +1478,19 @@ label{{font-weight:600}} .actions{{display:flex;flex-wrap:wrap;gap:8px;margin:16
 <p id="delivery-feedback" class="feedback" role="status" aria-atomic="true"></p>
 </section>
 <section class="card" aria-labelledby="reports-title">
-<h2 id="reports-title">報告</h2><p class="muted">展開查看完整內容；報告可能屬於先前階段，請以目前狀態及原因判斷下一步。</p>
+<h2 id="reports-title">報告與紀錄</h2><p class="muted">選擇報告查看內容。報告可能屬於先前階段，請以目前狀態及原因判斷下一步。</p>
 <p id="review-reading-status" class="feedback" role="status"></p>
 <details id="current-review" data-detail="current-review"><summary>目前審核原因：{_safe_text(source or "尚無來源")}</summary>
-<pre id="review-reason">{_report_html(reason)}</pre></details>
+<pre id="review-reason" tabindex="0">{_report_html(reason)}</pre></details>
 <p id="reports-reading-status" class="feedback" role="status"></p>
 <div id="reports">{report_html}</div>
 </section>
+<details id="task-management" class="card"><summary>任務管理</summary>
 <section id="reset-area" aria-labelledby="reset-title">
-<h2 id="reset-title">任務管理</h2>
+<h2 id="reset-title" class="sr-only">任務管理</h2>
+<p class="muted">以下操作會影響目前任務。請先確認備份與保留範圍。</p>
 <div id="reset-actions" class="actions">{''.join(reset_buttons)}</div>
-</section>
+</section></details>
 </main>
 <script>{_GUI_SCRIPT}</script>
 </body>
