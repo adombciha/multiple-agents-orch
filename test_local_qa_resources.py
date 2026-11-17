@@ -226,7 +226,7 @@ def test_local_inference_posts_hold_foreground_slot_and_publish_activity(
         monkeypatch.setattr(
             backends,
             "discover_installed_ollama_models",
-            Mock(return_value={"tev1:4b", "halo:9b", "other:7b"}),
+            Mock(return_value={"d3:4b", "halo:9b", "other:7b"}),
         )
         assert backends.route_ollama_model_with_tev1(
             app, "qa_middle", ["halo:9b", "other:7b"], "Check"
@@ -302,7 +302,7 @@ def test_busy_router_propagates_without_cooldown_or_static_fallback(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", "halo:9b", "other:7b"}),
+        Mock(return_value={"d3:4b", "halo:9b", "other:7b"}),
     )
     post = Mock(side_effect=LocalResourceBusy("Local inference resource remained busy"))
     monkeypatch.setattr(backends, "ollama_post", post)

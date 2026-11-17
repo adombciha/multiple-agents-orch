@@ -10,7 +10,7 @@ DEFAULT_CONFIG = {
     "ollama_num_predict": 8192,
     "ollama_num_ctx": 32768,  # Hardware budget; requests use only the estimated context needed.
     "ollama_think": "high",
-    "ollama_router_model": "tev1:4b",
+    "ollama_router_model": "d3:4b",
     "ollama_router_enabled": True,
     "ollama_router_min_confidence": 0.5,
     "ollama_router_timeout": 10,

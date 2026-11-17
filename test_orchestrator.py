@@ -6285,7 +6285,7 @@ def test_discover_installed_ollama_models_success_and_cache(
             json=Mock(
                 return_value={
                     "models": [
-                        {"name": "tev1:4b"},
+                        {"name": "d3:4b"},
                         {"name": "granite4.2:8b"},
                         {"name": "gemma4:latest"},
                     ]
@@ -6296,12 +6296,12 @@ def test_discover_installed_ollama_models_success_and_cache(
     monkeypatch.setattr(backends.requests, "get", get_mock)
 
     models = backends.discover_installed_ollama_models(initialized_orchestrator)
-    assert models == {"tev1:4b", "granite4.2:8b", "gemma4:latest"}
+    assert models == {"d3:4b", "granite4.2:8b", "gemma4:latest"}
     assert get_mock.call_count == 1
 
     # Second call uses cache and does not repeat request
     models_cached = backends.discover_installed_ollama_models(initialized_orchestrator)
-    assert models_cached == {"tev1:4b", "granite4.2:8b", "gemma4:latest"}
+    assert models_cached == {"d3:4b", "granite4.2:8b", "gemma4:latest"}
     assert get_mock.call_count == 1
 
 
@@ -6317,9 +6317,12 @@ def test_discover_installed_ollama_models_error_handling(
     assert models == set()
 
 
+@pytest.mark.parametrize("configured", [True, False])
 def test_discover_ollama_chat_models_tracks_installed_models_and_excludes_router(
-    initialized_orchestrator, monkeypatch
+    initialized_orchestrator, monkeypatch, configured
 ):
+    if not configured:
+        initialized_orchestrator.config.pop("ollama_router_model")
     monkeypatch.setattr(
         backends.requests,
         "get",
@@ -6329,7 +6332,7 @@ def test_discover_ollama_chat_models_tracks_installed_models_and_excludes_router
                 json=Mock(
                     return_value={
                         "models": [
-                            {"name": "tev1:4b"},
+                            {"name": "d3:4b"},
                             {"name": "embeddinggemma:latest"},
                             {"name": "new-coder:latest"},
                         ]
@@ -6378,8 +6381,8 @@ def test_discover_ollama_chat_models_refreshes_after_model_changes(
     initialized_orchestrator, monkeypatch
 ):
     installed_lists = [
-        {"models": [{"name": "tev1:4b"}, {"name": "old-model"}]},
-        {"models": [{"name": "tev1:4b"}, {"name": "new-model"}]},
+        {"models": [{"name": "d3:4b"}, {"name": "old-model"}]},
+        {"models": [{"name": "d3:4b"}, {"name": "new-model"}]},
     ]
     monkeypatch.setattr(
         backends.requests,
@@ -6413,13 +6416,17 @@ def test_discover_ollama_chat_models_refreshes_after_model_changes(
     assert list(second) == ["new-model"]
 
 
+@pytest.mark.parametrize("configured", [True, False])
 def test_route_ollama_model_with_tev1_selects_candidate(
-    initialized_orchestrator, monkeypatch
+    initialized_orchestrator, monkeypatch, configured
 ):
+    assert initialized_orchestrator.config["ollama_router_model"] == "d3:4b"
+    if not configured:
+        initialized_orchestrator.config.pop("ollama_router_model")
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", "granite4.2:8b", "qwen3.5:9b"}),
+        Mock(return_value={"d3:4b", "granite4.2:8b", "qwen3.5:9b"}),
     )
 
     post_mock = Mock(
@@ -6452,7 +6459,7 @@ def test_route_ollama_model_with_tev1_selects_candidate(
     assert chosen == ["qwen3.5:9b", "granite4.2:8b"]
 
     payload = post_mock.call_args.kwargs["json"]
-    assert payload["model"] == "tev1:4b"
+    assert payload["model"] == "d3:4b"
     assert payload["state"] == "Role: developer_middle. Task: Refactor parser module"
     assert payload["questions"]["selected_model"]["criteria"] == {
         "granite4.2:8b": None,
@@ -6466,7 +6473,7 @@ def test_route_ollama_model_with_tev1_ranks_all_candidates(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", "model-a", "model-b", "model-c"}),
+        Mock(return_value={"d3:4b", "model-a", "model-b", "model-c"}),
     )
     monkeypatch.setattr(
         backends.requests,
@@ -6504,7 +6511,7 @@ def test_route_ollama_model_logs_bounded_http_error_details(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", "model-a", "model-b"}),
+        Mock(return_value={"d3:4b", "model-a", "model-b"}),
     )
     monkeypatch.setattr(
         backends.requests,
@@ -6538,7 +6545,7 @@ def test_route_ollama_model_with_tev1_fallback_conditions(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", "granite4.2:8b", "qwen3.5:9b"}),
+        Mock(return_value={"d3:4b", "granite4.2:8b", "qwen3.5:9b"}),
     )
 
     # Low confidence still provides a usable ranking.
@@ -6618,7 +6625,7 @@ def test_tev1_payload_truncates_long_criteria_to_configured_budget(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     probabilities = {candidate: 1 / len(candidates) for candidate in candidates}
     post = Mock(
@@ -6663,7 +6670,7 @@ def test_tev1_payload_drops_criteria_and_skips_unfit_candidates(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     probabilities = {candidate: 1 / len(candidates) for candidate in candidates}
     post = Mock(
@@ -6701,7 +6708,7 @@ def test_tev1_payload_drops_criteria_and_skips_unfit_candidates(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *oversized}),
+        Mock(return_value={"d3:4b", *oversized}),
     )
     assert (
         backends.route_ollama_model_with_tev1(app, "developer_senior", oversized)
@@ -6718,7 +6725,7 @@ def test_tev1_retries_context_limit_once_without_criteria(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     result = Mock(
         status_code=200,
@@ -6768,7 +6775,7 @@ def test_tev1_caches_ranking_for_same_task_and_candidates(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     post = Mock(
         return_value=Mock(
@@ -6814,7 +6821,7 @@ def test_tev1_http_failure_cools_down_endpoint_once(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     post = Mock(return_value=Mock(status_code=503, text="router unavailable"))
     monkeypatch.setattr(backends.requests, "post", post)
@@ -6846,7 +6853,7 @@ def test_tev1_skips_router_for_more_than_twenty_six_choices(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     post = Mock()
     monkeypatch.setattr(backends.requests, "post", post)
@@ -6860,14 +6867,34 @@ def test_tev1_skips_router_for_more_than_twenty_six_choices(
     post.assert_not_called()
 
 
-def test_call_ollama_strictly_rejects_tev1_as_executor(initialized_orchestrator):
+@pytest.mark.parametrize(
+    "router_model, model",
+    [
+        (None, "d3:4b"),
+        (None, "d3"),
+        ("d3:4b", "d3:4b"),
+        ("custom-router:4b", "custom-router:4b"),
+        ("custom-router:4b", "custom-router"),
+        ("d3:4b", "tev1:4b"),
+    ],
+)
+def test_call_ollama_strictly_rejects_router_as_executor(
+    initialized_orchestrator, monkeypatch, router_model, model
+):
+    if router_model is None:
+        initialized_orchestrator.config.pop("ollama_router_model")
+    else:
+        initialized_orchestrator.config["ollama_router_model"] = router_model
+    post = Mock()
+    monkeypatch.setattr(backends.requests, "post", post)
     with pytest.raises(RuntimeError, match="restricted to decision routing"):
         backends.call_ollama(
             initialized_orchestrator,
             prompt="write code",
             role="developer",
-            model="tev1:4b",
+            model=model,
         )
+    post.assert_not_called()
 
 
 def test_call_role_model_routes_prioritizes_tev1_decision(

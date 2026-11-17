@@ -285,7 +285,7 @@ def discover_ollama_chat_models(
     ):
         return cached[2]
 
-    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+    router_model = orchestrator.config.get("ollama_router_model", "d3:4b")
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/show"
     chat_models = {}
     for model in sorted(installed):
@@ -345,13 +345,13 @@ def route_ollama_model_with_tev1(
     criteria: dict[str, str | None] | None = None,
     require_installed: bool = True,
 ) -> list[str] | None:
-    """Rank runtime candidates using Tev1 choice probabilities."""
+    """Rank runtime candidates using the configured router's choice probabilities."""
     from orchestrator.core.state import log_info, log_warning
 
     if not orchestrator.config.get("ollama_router_enabled", True):
         return None
 
-    router_model = orchestrator.config.get("ollama_router_model", "tev1:4b")
+    router_model = orchestrator.config.get("ollama_router_model", "d3:4b")
     url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
     if time.monotonic() < _tev1_cooldowns.get(url, 0):
         return None
@@ -367,7 +367,7 @@ def route_ollama_model_with_tev1(
 
     if not _ollama_model_matches(router_model, installed_models):
         log_info(
-            f"Tev1 router '{router_model}' is not installed at Ollama endpoint; falling back."
+            f"Ollama router '{router_model}' is not installed at Ollama endpoint; falling back."
         )
         return None
 
@@ -387,7 +387,9 @@ def route_ollama_model_with_tev1(
     if len(available_candidates) == 1:
         return available_candidates
     if len(available_candidates) > 26:
-        log_warning("Tev1 supports at most 26 choices; using static local model order.")
+        log_warning(
+            "Decision routing supports at most 26 choices; using static local model order."
+        )
         return None
 
     summary = (task_summary or f"Execution for role {role}").strip()[:120]
@@ -449,7 +451,7 @@ def route_ollama_model_with_tev1(
         > max_payload_chars
     ):
         log_warning(
-            "Tev1 request exceeds the configured payload character limit; using static candidate order."
+            "Ollama router request exceeds the configured payload character limit; using static candidate order."
         )
         cache[cache_key] = None
         return None
@@ -466,7 +468,7 @@ def route_ollama_model_with_tev1(
     def cool_down(reason: str) -> None:
         _tev1_cooldowns[url] = time.monotonic() + TEV1_COOLDOWN
         log_warning(
-            f"Tev1 router failed ({reason}); cooling down for {TEV1_COOLDOWN}s; "
+            f"Ollama router failed ({reason}); cooling down for {TEV1_COOLDOWN}s; "
             "using static candidate order."
         )
 
@@ -534,7 +536,7 @@ def route_ollama_model_with_tev1(
         )
         qualifier = "low confidence; " if confidence < min_conf else ""
         log_info(
-            f"Tev1 ranked {role} options ({qualifier}confidence {confidence:.2f}): {scores}"
+            f"Ollama router ranked {role} options ({qualifier}confidence {confidence:.2f}): {scores}"
         )
         cache[cache_key] = ranked
         return ranked
@@ -624,7 +626,8 @@ def call_ollama(
     model = model or orchestrator.get_active_model_for_role(role, "ollama")
     if not model:
         raise RuntimeError("No installed Ollama chat-capable model is available.")
-    if "tev1" in model.lower():
+    router_model = orchestrator.config.get("ollama_router_model", "d3:4b")
+    if "tev1" in model.lower() or _ollama_model_matches(model, {router_model}):
         raise RuntimeError(
             f"Model '{model}' is restricted to decision routing via /v1/systemone and cannot be used as task executor."
         )

@@ -245,7 +245,7 @@ class CheckOllamaModelsTests(unittest.TestCase):
                 ),
                 "embed:latest": {"capabilities": ["embedding"]},
                 "unknown:latest": {},
-                "tev1:99b": completion(),
+                "d3:99b": completion(),
             }
         )
         original = diagnostic.backends.ollama_request_options
@@ -256,8 +256,8 @@ class CheckOllamaModelsTests(unittest.TestCase):
 
         self.assertEqual(report["exit_code"], 2)
         rows = self.rows(report)
-        self.assertEqual(rows["tev1:99b"]["classification"], "router")
-        self.assertNotIn("request", rows["tev1:99b"])
+        self.assertEqual(rows["d3:99b"]["classification"], "router")
+        self.assertNotIn("request", rows["d3:99b"])
         self.assertEqual(rows["embed:latest"]["classification"], "excluded")
         self.assertEqual(rows["unknown:latest"]["classification"], "unclassified")
         self.assertEqual(rows["vision:3b"]["classification"], "completion")
@@ -287,7 +287,7 @@ class CheckOllamaModelsTests(unittest.TestCase):
                     "ollama_think",
                 },
             )
-            self.assertEqual(call.args[0].config["ollama_router_model"], "tev1")
+            self.assertEqual(call.args[0].config["ollama_router_model"], "d3")
         queried = [
             call[2]["json"]["model"] for call in self.http.calls if call[0] == "POST"
         ]
@@ -364,7 +364,7 @@ class CheckOllamaModelsTests(unittest.TestCase):
             {
                 "keep:1": completion(),
                 "removed:1": completion(),
-                "tev1:4b": completion(),
+                "d3:4b": completion(),
             }
         )
         first_code, first_text = self.cli("--url", URL, "--json")
@@ -372,17 +372,17 @@ class CheckOllamaModelsTests(unittest.TestCase):
             {
                 "keep:1": completion(context=2048),
                 "added:2": completion(),
-                "tev1:123b": completion(),
+                "d3:123b": completion(),
             }
         )
         second_code, second_text = self.cli("--url", URL, "--json")
         first = self.rows(json.loads(first_text))
         second = self.rows(json.loads(second_text))
         self.assertEqual((first_code, second_code), (0, 0))
-        self.assertEqual(set(first), {"keep:1", "removed:1", "tev1:4b"})
-        self.assertEqual(set(second), {"keep:1", "added:2", "tev1:123b"})
+        self.assertEqual(set(first), {"keep:1", "removed:1", "d3:4b"})
+        self.assertEqual(set(second), {"keep:1", "added:2", "d3:123b"})
         self.assertEqual(second["keep:1"]["metadata"]["context_length"], 2048)
-        for rows, router in ((first, "tev1:4b"), (second, "tev1:123b")):
+        for rows, router in ((first, "d3:4b"), (second, "d3:123b")):
             self.assertEqual(rows[router]["classification"], "router")
             self.assertNotIn("request", rows[router])
 
@@ -504,8 +504,8 @@ class CheckOllamaModelsTests(unittest.TestCase):
         )
 
     def test_router_show_failure_is_partial_without_request_calculation(self):
-        self.http.install({"tev1:8b": completion(), "good:1": completion()})
-        self.http.shows["tev1:8b"] = response(status=500, text="router metadata")
+        self.http.install({"d3:8b": completion(), "good:1": completion()})
+        self.http.shows["d3:8b"] = response(status=500, text="router metadata")
         with mock.patch.object(
             diagnostic.backends,
             "ollama_request_options",
@@ -513,7 +513,7 @@ class CheckOllamaModelsTests(unittest.TestCase):
         ) as options:
             report = diagnostic.diagnose(URL)
         self.assertEqual(report["exit_code"], 2)
-        row = self.rows(report)["tev1:8b"]
+        row = self.rows(report)["d3:8b"]
         self.assertEqual(row["classification"], "router")
         self.assertNotIn("request", row)
         self.assertEqual([call.args[1] for call in options.call_args_list], ["good:1"])

@@ -258,7 +258,7 @@ def test_tev1_cooldown_crosses_candidates_and_recovers_same_choice(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates, "c"}),
+        Mock(return_value={"d3:4b", *candidates, "c"}),
     )
     post = (
         Mock(side_effect=failure)
@@ -293,7 +293,7 @@ def test_tev1_endpoint_changes_do_not_reuse_cooldown_or_success(
     monkeypatch.setattr(
         backends,
         "discover_installed_ollama_models",
-        Mock(return_value={"tev1:4b", *candidates}),
+        Mock(return_value={"d3:4b", *candidates}),
     )
     post = Mock(
         side_effect=[
@@ -485,7 +485,7 @@ def test_codex_fallback_selection_can_be_reranked_after_router_recovers(
         cloud_routing, "discover_codex_models", Mock(return_value=models)
     )
     monkeypatch.setattr(
-        backends, "discover_installed_ollama_models", Mock(return_value={"tev1:4b"})
+        backends, "discover_installed_ollama_models", Mock(return_value={"d3:4b"})
     )
     post = Mock(side_effect=backends.requests.Timeout("secret token"))
     monkeypatch.setattr(backends.requests, "post", post)
