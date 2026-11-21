@@ -18,6 +18,7 @@ from html.parser import HTMLParser
 import pytest
 
 from orchestrator.gui import render_page
+from test_acceptance_ui import CRITERION
 from test_gui import OWNER_REVIEW_CASES, owner_status
 
 
@@ -51,7 +52,7 @@ HARNESS = r"""
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const payload = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
-const fragments = new Map(), mutations = [], textMutations = [];
+const fragments = new Map(), mutations = [], textMutations = [], scrollTargets = [];
 const escape = text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;')
   .replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 class Text {
@@ -158,6 +159,7 @@ class Element {
     }
   }
   focus() { document.activeElement = this; }
+  scrollIntoView() { scrollTargets.push(this); }
 }
 function page(spec) {
   const root = build(spec), body = root.querySelector('body');
@@ -230,6 +232,7 @@ const posts = () => requests.filter(item => item.options.method === 'POST');
 const buttons = () => document.querySelectorAll('button[data-action]');
 const confirmButton = () => document.querySelector('[data-action="confirm-delivery"]');
 const displayButton = () => document.querySelector('[data-action="deliver{}"]');
+const viewPreviewButton = () => document.nodes['delivery-preview-view'];
 const feedback = id => document.nodes[id].textContent;
 const readingNotice = '資料已更新，目前保留閱讀內容';
 const dispatch = type => {
@@ -265,6 +268,16 @@ const assertConfirmation = () => {
   assert.ok(expanded && expanded.querySelector('pre'));
   assert.equal(button.disabled, false);
   assert.equal(button.className, 'primary');
+};
+const assertRevealedPreview = version => {
+  const git = document.nodes.git;
+  assert.equal(git.dataset.snapshotId, version);
+  assert.ok(git.querySelector('[data-preview]').textContent.includes('impact-' + version));
+  const heading = git.querySelector('details[data-detail="git-impact"] summary');
+  assert.ok(heading.parent.open);
+  assert.equal(document.activeElement, heading);
+  assert.equal(scrollTargets.at(-1), heading);
+  assert.ok(viewPreviewButton().hidden && viewPreviewButton().disabled);
 };
 const allDisabled = () => assert.ok(buttons().every(node => node.disabled));
 const currentPhase = version => assert.ok(document.nodes['workflow-status'].textContent.includes('phase-' + version));
@@ -339,6 +352,8 @@ function failResponse(kind) {
     }};
   };
 }
+// Node can exit with unresolved promises when no real timers are scheduled.
+process.exitCode = 1;
 (async () => {
   const testCase = process.argv[1];
   if (testCase.startsWith('flow-')) {
@@ -697,6 +712,150 @@ function failResponse(kind) {
       assert.equal(feedback('decision-status'), '');
       break;
     }
+    case 'explicit-preview-selected': {
+      const preview = document.nodes.git.querySelector('[data-preview]');
+      const details = preview.querySelector('details[data-detail="git-impact"]');
+      const text = details.querySelector('pre').childNodes[0];
+      assert.ok(details.open);
+      assertConfirmation();
+      details.querySelector('pre').scrollTop = 60;
+      details.querySelector('pre').scrollLeft = 8;
+      selection = {isCollapsed:false, anchorNode:text, focusNode:text};
+      const selected = selection;
+      let selectionPreserved = false;
+      context.event = {button:0, preventDefault() { selectionPreserved = true; }};
+      run(displayButton().attrs.onmousedown);
+      assert.ok(selectionPreserved);
+      const result = {delivery_preview_presented:true, delivery_snapshot_id:'new'};
+      const display = defer(), reread = defer(), readingStatus = defer();
+      request = (url, options) => {
+        if (options.method === 'POST') return display.promise;
+        readingStatus.resolve();
+        return reread.promise;
+      };
+      const displaying = click(displayButton());
+      assert.match(feedback('action-feedback'), /正在.*展示 Git 影響/);
+      assert.equal(document.nodes['decision-copy'].querySelector('h3').textContent,
+        '正在展示 Git 影響');
+      assert.ok(displayButton().disabled);
+      assert.ok(confirmButton().disabled);
+      await click(displayButton());
+      display.resolve(response('new', result));
+      await readingStatus.promise;
+      assert.match(feedback('action-feedback'), /本次快照 new.*更新/);
+      assert.ok(displayButton().disabled);
+      assert.ok(confirmButton().disabled);
+      reread.resolve(response());
+      await displaying;
+      oldPreview();
+      assert.equal(selection, selected);
+      assert.equal(details.querySelector('pre').childNodes[0], text);
+      assert.equal(confirmButton().dataset.snapshotId, 'old');
+      assert.ok(confirmButton().disabled);
+      await click(confirmButton());
+      await run("post('/api/deliver', {confirm:true,snapshot_id:'new'})");
+      assert.deepEqual(posts().map(({url, options}) => [url, JSON.parse(options.body)]),
+        [['/api/deliver', {}]]);
+      const view = viewPreviewButton();
+      assert.ok(view && !view.hidden && !view.disabled,
+        JSON.stringify({responseSnapshot:result.delivery_snapshot_id,
+          visibleSnapshot:document.nodes.git.dataset.snapshotId,
+          confirmationSnapshot:confirmButton().dataset.snapshotId,
+          confirmationDisabled:confirmButton().disabled,
+          actionFeedback:feedback('action-feedback'),
+          deliveryFeedback:feedback('delivery-feedback')}));
+      assert.equal(view.textContent.trim(), '查看本次快照');
+      assert.match(feedback('action-feedback'), /本次|new/);
+      document.activeElement = view;
+      request = async () => response();
+      await run('refresh()');
+      oldPreview();
+      assert.equal(viewPreviewButton(), view);
+      assert.ok(!view.hidden && !view.disabled);
+      assert.equal(selection, selected);
+      assert.equal(document.activeElement, view);
+      assert.deepEqual([details.querySelector('pre').scrollTop, details.querySelector('pre').scrollLeft], [60, 8]);
+      assert.deepEqual([window.scrollX, window.scrollY], [20, 400]);
+      assert.equal(scrollTargets.length, 0);
+      const requestCount = requests.length;
+      await click(view);
+      assert.equal(requests.length, requestCount);
+      assertRevealedPreview('new');
+      assertConfirmation();
+      assert.equal(posts().length, 1);
+      break;
+    }
+    case 'explicit-preview-direct': {
+      const {version, race, blocked, workerStatus} = payload.expected;
+      const preview = document.nodes.git.querySelector('[data-preview]');
+      const details = preview.querySelector('details[data-detail="git-impact"]');
+      if (details) {
+        document.activeElement = details.querySelector('summary');
+        assert.ok(details.open);
+      }
+      let poll, inFlight;
+      if (race) {
+        poll = defer();
+        request = () => poll.promise;
+        inFlight = run('refresh()');
+      }
+      request = async (url, options) => options.method === 'POST' ?
+        response(version, {delivery_preview_presented:true, delivery_snapshot_id:version,
+          worker_status:workerStatus}) :
+        response(version);
+      const displaying = click(displayButton());
+      if (race) {
+        poll.resolve(response('stale'));
+        await inFlight;
+        assert.ok(!document.nodes['workflow-status'].textContent.includes('phase-stale'));
+      }
+      await displaying;
+      assertRevealedPreview(version);
+      assert.match(feedback('action-feedback'), /本次|已展示/);
+      assert.deepEqual(requests.map(({url}) => url), race ? ['/', '/api/deliver', '/'] : ['/api/deliver', '/']);
+      if (blocked) {
+        assert.equal(confirmButton().dataset.snapshotId, version);
+        assert.ok(confirmButton().disabled);
+        await click(confirmButton());
+      } else {
+        assertConfirmation();
+        assert.match(feedback('delivery-feedback'), /另行確認/);
+      }
+      assert.deepEqual(posts().map(({url, options}) => [url, JSON.parse(options.body)]),
+        [['/api/deliver', {}]]);
+      break;
+    }
+    case 'explicit-preview-superseded': {
+      const {reread, background} = payload.expected;
+      const preview = document.nodes.git.querySelector('[data-preview]');
+      const text = preview.querySelector('pre').childNodes[0];
+      selection = {isCollapsed:false, anchorNode:text, focusNode:text};
+      const show = version => response(version, {
+        delivery_preview_presented:true, delivery_snapshot_id:version});
+      request = async (url, options) => options.method === 'POST' ? show('new') : response(reread);
+      await click(displayButton());
+      if (background) {
+        assert.ok(viewPreviewButton() && !viewPreviewButton().hidden);
+        request = async () => response(background);
+        await run('refresh()');
+      }
+      oldPreview();
+      assert.ok(!viewPreviewButton() || viewPreviewButton().hidden || viewPreviewButton().disabled);
+      assert.ok(confirmButton().disabled);
+      assert.ok(!displayButton().disabled);
+      assert.match(feedback('action-feedback') + feedback('delivery-feedback'), /重新展示/);
+      await click(confirmButton());
+      assert.equal(posts().length, 1);
+
+      selection = {isCollapsed:true};
+      request = async (url, options) => options.method === 'POST' ? show('stale') : response('stale');
+      await click(displayButton());
+      assertRevealedPreview('stale');
+      assertConfirmation();
+      assert.deepEqual(posts().map(({url, options}) => [url, JSON.parse(options.body)]),
+        [['/api/deliver', {}], ['/api/deliver', {}]]);
+      break;
+    }
     case 'snapshot-focused':
     case 'snapshot-changed':
     case 'snapshot-invalid':
@@ -713,16 +872,18 @@ function failResponse(kind) {
       if (testCase === 'snapshot-focused') document.activeElement = preview.querySelector('summary');
       else selection = {isCollapsed:false, anchorNode:preview.querySelector('pre').childNodes[0],
         focusNode:preview.querySelector('pre').childNodes[0]};
-      const selected = selection;
+      const selected = selection, focused = document.activeElement;
       await run('refresh()');
       oldPreview(); assert.equal(preview.querySelector('pre'), text);
       assert.equal(text.innerHTML, html); assert.equal(selection, selected);
+      assert.equal(document.activeElement, focused);
       invalidConfirmation();
       assertDisplayDecision('Git 影響已變更，請重新展示', /舊確認已停用.*重新展示/);
       const before = posts().length;
       await click(confirmButton());
       await run("post('/api/deliver', {confirm:true,snapshot_id:'old'})");
       assert.equal(posts().length, before);
+      if (testCase === 'snapshot-focused') break;
       request = async (url, options) => options.method === 'POST' ?
         response('new', {delivery_preview_presented:true, delivery_snapshot_id:'new'}) : response();
       next.nodes.git.dataset.presented = 'true'; next.nodes.git.dataset.snapshotId = 'new';
@@ -730,18 +891,16 @@ function failResponse(kind) {
       await click(displayButton());
       assert.equal(posts().length, before + 1); oldPreview();
       assert.ok(confirmButton().disabled);
-      assert.match(feedback('delivery-feedback'), /新展示尚未套用/);
-      assertDisplayDecision('新 Git 展示尚待套用', /保留閱讀內容.*套用新展示後才能另行確認/);
+      assert.ok(viewPreviewButton() && !viewPreviewButton().hidden && !viewPreviewButton().disabled);
+      assertDisplayDecision('新 Git 展示尚待套用', /保留閱讀內容.*查看本次快照.*另行確認/);
       assert.equal(selection, selected);
       selection = {isCollapsed:true}; document.activeElement = document.body;
-      await run('refresh()'); oldPreview();
-      closeReading(preview); dispatch('toggle');
+      dispatch('selectionchange');
+      oldPreview();
+      await click(viewPreviewButton());
       assert.equal(run('deliverySnapshotId'), 'new');
-      assert.ok(preview.textContent.includes('impact-new'));
-      assert.equal(confirmButton().dataset.snapshotId, 'new');
+      assertRevealedPreview('new');
       assertConfirmation();
-      assert.equal(confirmButton().disabled, false);
-      assert.equal(confirmButton().className, 'primary');
       assert.equal(document.nodes['decision-copy'].querySelector('h3').textContent,
         '已展示 Git 影響，等待二次確認');
       assert.equal(document.nodes['decision-copy'].textContent, next.nodes['decision-copy'].textContent);
@@ -912,10 +1071,17 @@ function failResponse(kind) {
       clock += 60000; await run('refresh()'); assertApplied(1);
       if (payload.endpoint === 'task') assert.equal(document.input.value, '');
       else if (payload.endpoint === 'display') {
-        assert.equal(confirmButton().disabled, false);
-        assert.equal(run('deliverySnapshotId'), 'new');
-        assert.match(feedback('delivery-feedback'), /另行確認/);
+        oldPreview(); invalidConfirmation();
+        assert.match(feedback('action-feedback'), /無法確認最新交付狀態.*重新展示/);
+        assert.ok(!viewPreviewButton() || viewPreviewButton().hidden);
         assert.equal(posts().length, count);
+        request = async (url, options) => options.method === 'POST' ?
+          response('new', {delivery_preview_presented:true, delivery_snapshot_id:'new'}) : response();
+        await click(displayButton());
+        assertRevealedPreview('new');
+        assertConfirmation();
+        assert.equal(posts().length, count + 1);
+        assert.deepEqual(JSON.parse(posts().at(-1).options.body), {});
       } else invalidConfirmation();
       break;
     }
@@ -1061,7 +1227,7 @@ function failResponse(kind) {
   assert.ok(requests.every(item => item.options.credentials === 'same-origin'));
   assert.ok(requests.filter(item => !item.options.method).every(item =>
     item.url === '/' && item.options.cache === 'no-store'));
-})().catch(error=>{console.error(error);process.exitCode=1;});
+})().then(() => { process.exitCode = 0; }, error => console.error(error));
 """
 
 
@@ -1247,6 +1413,7 @@ FAILURES = [
         "task-membership",
         "range-selection",
         "decision-preserved",
+        "explicit-preview-selected",
         "snapshot-changed",
         "snapshot-invalid",
         "snapshot-content-changed",
@@ -1470,6 +1637,74 @@ def test_gui_post_owner_decision_refreshes_before_enabling_actions(endpoint):
 @pytest.mark.parametrize("failure", ["http", "network", "json"])
 def test_gui_delivery_post_failure_requires_another_display(endpoint, failure):
     run_harness("delivery-post-errors", endpoint=endpoint, failure=failure)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["first", "same", "new", "inflight-poll", "failed-criterion", "historical-error"],
+)
+def test_gui_explicit_preview_reveals_without_selection(mode):
+    snapshots = {}
+    worker_status = None
+    if mode == "first":
+        snapshots["old"] = {
+            "delivery_preview_presented": False,
+            "delivery_snapshot_id": "",
+            "git": {},
+        }
+    if mode == "failed-criterion":
+        snapshots["new"] = {
+            "git": {
+                "diff_stat": "impact-new",
+                "acceptance": [{**CRITERION, "status": "failed", "evidence": ""}],
+            }
+        }
+    if mode == "historical-error":
+        worker_status = {"phase": "failed", "error": "Git impact changed"}
+        snapshots = {
+            version: {"worker_status": worker_status} for version in ("old", "new")
+        }
+    run_harness(
+        "explicit-preview-direct",
+        snapshots=snapshots,
+        expected={
+            "version": "old" if mode == "same" else "new",
+            "race": mode == "inflight-poll",
+            "blocked": mode == "failed-criterion",
+            "workerStatus": worker_status,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "reread,background",
+    [
+        ("old", None),
+        ("stale", None),
+        ("new", "stale"),
+        ("new", "invalid"),
+        ("new", "validation-error"),
+    ],
+)
+def test_gui_explicit_preview_requires_redisplay_when_status_disagrees(
+    reread, background
+):
+    run_harness(
+        "explicit-preview-superseded",
+        snapshots={
+            "invalid": {
+                "delivery_preview_presented": False,
+                "delivery_snapshot_id": "",
+                "git": {},
+            },
+            "validation-error": {
+                "delivery_snapshot_id": "new",
+                "git": {"diff_stat": "impact-new"},
+                "worker_status": {"phase": "failed", "error": "Git impact changed"},
+            },
+        },
+        expected={"reread": reread, "background": background},
+    )
 
 
 @pytest.mark.parametrize("failure", ["http", "network", "body", "parse"])

@@ -817,7 +817,8 @@ let actionVersion = 0;
 let statusCurrent = true;
 let observedDeliveryError = document.getElementById('git').dataset.validationError || '';
 let deliveryInvalid = !!observedDeliveryError;
-let deliveryRefreshRequested = false;
+let previewPending = false;
+let requestedPreview = null;
 let latestControls = new Map();
 let latestStyles = new Map();
 const pendingReadings = new Map();
@@ -850,6 +851,10 @@ function selectedWithin(node) {
   if (node.contains(selection.anchorNode) || node.contains(selection.focusNode)) return true;
   return Array.from({length:selection.rangeCount || 0}, (_, i) => selection.getRangeAt(i))
     .some(range => range.intersectsNode(node));
+}
+function preserveDeliverySelection(event) {
+  const preview = document.getElementById('git').querySelector('[data-preview]');
+  if (event.button === 0 && selectedWithin(preview)) event.preventDefault();
 }
 function protectedNode(node) {
   return selectedWithin(node) || node.contains(document.activeElement);
@@ -937,23 +942,25 @@ function applyWorkflowUpdate() {
     readingNotice + '。最新任務概況：' + pendingWorkflow.textContent.trim().replace(/\s+/g, ' '));
   if (applied) pendingWorkflow = null;
 }
-function applyGitUpdate() {
+function applyGitUpdate(reveal=false) {
   if (!pendingGit) return;
   const {nextGit, completed, waitingForDelivery} = pendingGit;
   const git = document.getElementById('git');
   const currentPreview = git.querySelector('[data-preview]');
   const nextPreview = nextGit.querySelector('[data-preview]');
   const confirming = !!git.querySelector('[data-action="confirm-delivery"]');
-  if (confirming && waitingForDelivery && !deliveryRefreshRequested && !completed) return;
+  if (!reveal && (requestedPreview || (confirming && waitingForDelivery && !completed))) return;
   const currentText = currentPreview.querySelector('pre'), nextText = nextPreview.querySelector('pre');
   const sameContent = git.dataset.snapshotId === nextGit.dataset.snapshotId &&
     (currentText ? currentText.innerHTML : '') === (nextText ? nextText.innerHTML : '');
-  if ((!sameContent || (completed && confirming)) && readingProtected(currentPreview)) {
+  if (!reveal && (!sameContent || (completed && confirming)) && readingProtected(currentPreview)) {
     message('git-reading-status', readingNotice);
     return;
   }
   if (sameContent)
     patchList(document.getElementById('delivery-actions'), nextGit.querySelector('#delivery-actions'), 'action');
+  else if (reveal)
+    currentPreview.innerHTML = nextPreview.innerHTML;
   else
     patchRegion(currentPreview, nextPreview);
   deliverySnapshotId = completed ? '' : nextGit.dataset.snapshotId;
@@ -962,24 +969,30 @@ function applyGitUpdate() {
   git.dataset.validationError = nextGit.dataset.validationError;
   git.dataset.delivered = nextGit.dataset.delivered;
   if (waitingForDelivery && nextGit.dataset.presented === 'true' && deliverySnapshotId &&
-      (deliveryRefreshRequested || !confirming || !sameContent)) {
+      (reveal || !confirming || !sameContent)) {
     // Newly applied confirmation controls must be visible with their snapshot.
     currentPreview.querySelectorAll('details[data-detail="git-impact"]').forEach(node => {
       node.open = true;
     });
   }
-  if (deliveryRefreshRequested && nextGit.dataset.presented === 'true' && deliverySnapshotId) {
-    deliveryInvalid = false;
-    deliveryRefreshRequested = false;
-    message('delivery-feedback', 'Git 影響已重新展示，請檢視後另行確認。');
-  }
   if (!waitingForDelivery) {
     deliveryInvalid = false;
-    deliveryRefreshRequested = false;
     if (!completed) message('delivery-feedback', '');
   }
   pendingGit = null;
   message('git-reading-status', '');
+}
+function revealDeliveryPreview() {
+  if (actionPending || !statusCurrent || !requestedPreview || !pendingGit) return;
+  applyGitUpdate(true);
+  requestedPreview = null;
+  deliveryInvalid = false;
+  message('action-feedback', `已展示本次快照 ${deliverySnapshotId}。`);
+  message('delivery-feedback', '請檢視 Git 影響與驗收結果，再另行確認交付。');
+  const heading = document.getElementById('git').querySelector('details[data-detail="git-impact"] summary');
+  heading.focus({preventScroll:true});
+  heading.scrollIntoView({block:'start'});
+  updateAvailability();
 }
 function flushReadingUpdates() {
   if (actionPending) return;
@@ -996,9 +1009,15 @@ function updateDecisionCopy() {
   const waitingForPreview = pendingGit && pendingGit.waitingForDelivery && pendingGit.changed &&
     pendingGit.nextGit.dataset.presented === 'true';
   const hasConfirmation = !!document.getElementById('git').querySelector('[data-action="confirm-delivery"]');
-  if (latestControls.get('deliver{}') === true &&
-      ((deliveryInvalid && hasConfirmation) || deliveryRefreshRequested || waitingForPreview)) {
-    if (deliveryRefreshRequested || (!deliveryInvalid && waitingForPreview)) {
+  if (previewPending) {
+    title = '正在展示 Git 影響';
+    explanation = '請等候本次快照。';
+  } else if (latestControls.get('deliver{}') === true &&
+      ((deliveryInvalid && hasConfirmation) || requestedPreview || waitingForPreview)) {
+    if (requestedPreview) {
+      title = '新 Git 展示尚待套用';
+      explanation = '目前保留閱讀內容；請使用「查看本次快照」開啟新展示，再另行確認交付。';
+    } else if (!deliveryInvalid && waitingForPreview) {
       title = '新 Git 展示尚待套用';
       explanation = '目前保留閱讀內容；請收合 Git 區塊並結束選取或焦點閱讀，套用新展示後才能另行確認交付。';
     } else {
@@ -1018,7 +1037,11 @@ function updateDecisionCopy() {
 }
 function updateAvailability() {
   updateDecisionCopy();
+  const view = document.getElementById('delivery-preview-view');
+  view.hidden = !requestedPreview;
+  view.disabled = view.hidden || actionPending || !statusCurrent;
   controls().forEach(node => {
+    if (node === view) return;
     const confirm = node.dataset.action === 'confirm-delivery';
     const bound = !!node.dataset.snapshotId;
     node.className = latestStyles.get(node.dataset.action) || 'secondary';
@@ -1032,8 +1055,15 @@ function updateAvailability() {
 }
 function invalidateDelivery() {
   deliveryInvalid = true;
-  message('delivery-feedback', 'Git 展示已變更或驗證未通過，請重新展示並檢視 Git 影響；舊確認已停用。');
+  if (!requestedPreview)
+    message('delivery-feedback', 'Git 展示已變更或驗證未通過，請重新展示並檢視 Git 影響；舊確認已停用。');
   updateAvailability();
+}
+function rejectDeliveryPreview(reason) {
+  const {id} = requestedPreview;
+  requestedPreview = null;
+  invalidateDelivery();
+  message('action-feedback', `本次快照 ${id} 無法展示：${reason}。請重新展示 Git 影響。`);
 }
 async function refresh(afterAction=false) {
   if (actionPending && !afterAction) return false;
@@ -1083,11 +1113,19 @@ async function refreshPage(afterAction) {
     const validationError = nextGit.dataset.validationError || '';
     if (validationError && validationError !== observedDeliveryError) invalidateDelivery();
     observedDeliveryError = validationError;
+    if (requestedPreview) {
+      // The worker may still report the error that prompted this successful preview.
+      const newError = validationError !== requestedPreview.error && validationError;
+      if (newError || !waitingForDelivery || nextGit.dataset.presented !== 'true' ||
+          nextGit.dataset.snapshotId !== requestedPreview.id ||
+          !nextPreview.querySelector('details[data-detail="git-impact"] summary'))
+        rejectDeliveryPreview(newError || '最新交付狀態與回應不符');
+    }
     const currentText = currentPreview.querySelector('pre'), nextText = nextPreview.querySelector('pre');
     const changed = git.dataset.snapshotId !== nextGit.dataset.snapshotId ||
       (currentText ? currentText.innerHTML : '') !== (nextText ? nextText.innerHTML : '') ||
       (git.dataset.presented === 'true' && nextGit.dataset.presented !== 'true');
-    if (confirmingDelivery && changed && !deliveryRefreshRequested && !deliveryCompleted) invalidateDelivery();
+    if (confirmingDelivery && changed && !requestedPreview && !deliveryCompleted) invalidateDelivery();
     pendingWorkflow = incoming.getElementById('workflow-status');
     applyWorkflowUpdate();
     patchRegion(document.getElementById('evidence-summary'), incoming.getElementById('evidence-summary'));
@@ -1105,7 +1143,6 @@ async function refreshPage(afterAction) {
     patchList(document.getElementById('display-actions'), incoming.getElementById('display-actions'), 'action');
     if (deliveryCompleted) {
       deliveryInvalid = false;
-      deliveryRefreshRequested = false;
       deliverySnapshotId = '';
       // Disable confirmation now; applyGitUpdate removes it after reading ends.
       updateAvailability();
@@ -1179,11 +1216,17 @@ async function post(url, body={}) {
   }
   actionPending = true;
   actionVersion += 1;
+  const previewing = url === '/api/deliver' && !body.confirm;
+  if (previewing) {
+    previewPending = true;
+    requestedPreview = null;
+    deliveryInvalid = true;
+    message('delivery-feedback', '');
+  }
   updateAvailability();
   message('action-feedback', url === '/api/deliver' ?
     (body.confirm ? '正在驗證並處理交付，請等待結果。' : '正在準備交付資料並展示 Git 影響，請等待結果。') :
     '操作處理中，請稍候。');
-  let displayed = false;
   try {
     const response = await fetch(url, {
       method:'POST', credentials:'same-origin',
@@ -1193,18 +1236,22 @@ async function post(url, body={}) {
     const data = await response.json();
     if (!response.ok) {
       if (url === '/api/deliver' || url === '/api/acceptance') invalidateDelivery();
-      message('action-feedback', '操作未完成：' + (data.error || '伺服器拒絕操作，請檢查最新狀態。'));
+      message('action-feedback', '操作未完成：' + (data.error || '伺服器拒絕操作，請檢查最新狀態。') +
+        (previewing ? ' 請重新展示 Git 影響。' : ''));
       alert(data.error || '操作失敗');
+    } else if (previewing) {
+      const id = data.delivery_snapshot_id;
+      if (data.delivery_preview_presented === true && typeof id === 'string' && id) {
+        requestedPreview = {id, error:data.worker_status?.phase === 'failed' ? data.worker_status.error : ''};
+        message('action-feedback', `已取得本次快照 ${id}，正在更新交付預覽。`);
+      } else {
+        invalidateDelivery();
+        message('action-feedback', '展示未完成：伺服器未回傳有效快照。請重新展示 Git 影響。');
+      }
     } else {
       if (url === '/api/task') {
         const input = document.querySelector('#task-form textarea');
         if (input.value === body.prompt) input.value = '';
-      }
-      displayed = url === '/api/deliver' && !body.confirm &&
-        data.delivery_preview_presented === true && !!data.delivery_snapshot_id;
-      if (displayed) {
-        deliveryRefreshRequested = true;
-        invalidateDelivery();
       }
       if (url === '/api/acceptance' && body.action === 'verify') {
         invalidateDelivery();
@@ -1215,13 +1262,23 @@ async function post(url, body={}) {
     }
   } catch(error) {
     if (url === '/api/deliver' || url === '/api/acceptance') invalidateDelivery();
-    message('action-feedback', '連線或回應異常，操作結果尚未確認；請先等待狀態更新。');
+    message('action-feedback', '連線或回應異常，操作結果尚未確認；' +
+      (previewing ? '請在狀態更新後重新展示 Git 影響。' : '請先等待狀態更新。'));
   } finally {
-    await refresh(true);
+    const current = await refresh(true);
     actionPending = false;
+    previewPending = false;
+    if (previewing && requestedPreview) {
+      if (!current) {
+        rejectDeliveryPreview('無法確認最新交付狀態');
+      } else if (selectedWithin(document.getElementById('git').querySelector('[data-preview]'))) {
+        message('action-feedback', `本次快照 ${requestedPreview.id} 已準備好。請選擇「查看本次快照」以開啟。`);
+        message('delivery-feedback', '新展示尚未套用，目前保留閱讀內容。');
+      } else {
+        revealDeliveryPreview();
+      }
+    }
     updateAvailability();
-    if (displayed && deliveryRefreshRequested)
-      message('delivery-feedback', '新展示尚未套用，目前保留閱讀內容；收合此區並結束閱讀後會更新，確認仍暫停。');
   }
 }
 document.getElementById('task-form').onsubmit = async (event) => {
@@ -1351,6 +1408,8 @@ def render_page(status: dict) -> str:
             if identity == "confirm-delivery" or action == "acceptance"
             else ""
         )
+        if action == "deliver" and target is display_buttons:
+            attributes += ' onmousedown="preserveDeliverySelection(event)"'
         (buttons if target is None else target).append(
             f'<button type="button" data-action="{_safe_text(key)}"'
             f' data-enabled="{str(enabled).lower()}"'
@@ -1590,7 +1649,7 @@ def render_page(status: dict) -> str:
         acceptance_html = '<p class="muted">此任務未建立驗收條件</p>'
     git_html = (
         '<details data-detail="git-impact" open><summary>Git 影響（Git impact）</summary>'
-        "<pre>"
+        '<pre tabindex="0">'
         + _report_html(
             json.dumps(
                 {key: value for key, value in git.items() if key != "acceptance"},
@@ -1682,6 +1741,7 @@ textarea{{display:block;width:100%;min-height:130px;resize:vertical;font:inherit
 <p id="decision-status" class="feedback" role="status"></p>
 <div class="action-row"><div id="actions" class="actions">{''.join(buttons)}</div>
 <div id="display-actions" class="actions">{''.join(display_buttons)}</div>
+<button type="button" id="delivery-preview-view" data-action="view-delivery-preview" data-enabled="false" class="secondary" aria-controls="git" onclick="revealDeliveryPreview()" hidden disabled>查看本次快照</button>
 <a class="delivery-link" href="#delivery-title">查看交付變更與確認 ↓</a></div>
 <form id="task-form" {'' if can_submit else 'hidden'}>
 <label for="task-prompt">新任務需求</label>
