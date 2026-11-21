@@ -39,7 +39,7 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 
 | Key                                                                     | Purpose and default behavior                                                                                                                  |
 | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ollama_url`, `ollama_model`                                            | Ollama endpoint and default model (`http://localhost:11434`, `gemma4:latest`).                                                                |
+| `ollama_url`, `ollama_model`                                            | Ollama endpoint and default model (`auto`, `gemma4:latest`).                                                                                  |
 | `test_command`, `max_revisions`                                         | QA command and automatic plan/code revision limit; defaults are `python3 -m pytest -q` and `2`.                                               |
 | `backends`                                                              | Backend assigned to roles.                                                                                                                    |
 | `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | Model lists and per-role model/backend routing.                                                                                               |
@@ -47,6 +47,12 @@ Run `python3 orchestrator.py init` before editing `.ai-company/config.json`. Mis
 | `require_delivery_confirmation`, `gui_port`                             | Require explicit delivery confirmation (default `true`) and set the local GUI port (default `8765`).                                          |
 | `backend_escalation_path`, `staffing_limits`                            | Backend escalation and RD/QA staffing limits.                                                                                                 |
 | `telemetry_enabled`, `llm_usage_log`                                    | LiteLLM token metadata logging and JSONL path; defaults to `llm_usage.jsonl` in the workflow directory and does not store prompts or outputs. |
+
+With `ollama_url: "auto"` (the default), Ollama first probes loopback, then reads and probes the current Windows/WSL default gateway. The detected address stays in memory; connection failures clear it and the model caches so later calls detect again. Interrupted inference requests are not replayed automatically. Explicit URLs keep their configured destination.
+
+```bash
+python3 orchestrator.py set-ollama-url auto
+```
 
 ## Automatic model selection
 

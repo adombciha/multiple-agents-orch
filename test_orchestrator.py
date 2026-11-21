@@ -51,6 +51,7 @@ def write_ai_company(
     ai_dir.mkdir()
 
     config = copy.deepcopy(DEFAULT_CONFIG)
+    config["ollama_url"] = "http://localhost:11434"
     if config_overrides:
         merge(config, config_overrides)
 
@@ -120,7 +121,10 @@ def approve_test_implementation(app):
 def test_initialized_orchestrator_fixture_loads_temp_config_and_state(
     initialized_orchestrator,
 ):
-    assert initialized_orchestrator.config == DEFAULT_CONFIG
+    assert initialized_orchestrator.config == {
+        **DEFAULT_CONFIG,
+        "ollama_url": "http://localhost:11434",
+    }
     assert initialized_orchestrator.state["state"] == "PLANNING"
     assert initialized_orchestrator.has_git is False
 
@@ -1219,19 +1223,27 @@ def test_call_ollama_does_not_use_stale_default_without_installed_models(
 def test_configure_ollama_uses_detected_windows_endpoint(
     initialized_orchestrator, monkeypatch
 ):
-    monkeypatch.setattr(
-        orchestrator_main, "ollama_available", Mock(side_effect=[False, True])
+    from orchestrator.core import ollama_endpoint
+
+    initialized_orchestrator.config["ollama_url"] = "auto"
+    initialized_orchestrator.config_path.write_text(
+        json.dumps(initialized_orchestrator.config), encoding="utf-8"
     )
+    before = initialized_orchestrator.config_path.read_bytes()
+    monkeypatch.setattr(ollama_endpoint, "available", Mock(side_effect=[False, True]))
     monkeypatch.setattr(
-        initialized_orchestrator,
+        ollama_endpoint,
         "get_windows_host_ip",
-        Mock(return_value="172.17.144.1"),
+        Mock(return_value="192.0.2.10"),
     )
     monkeypatch.setattr(orchestrator_main.sys.stdin, "isatty", Mock(return_value=False))
 
     orchestrator_main.configure_ollama(initialized_orchestrator)
 
-    assert initialized_orchestrator.config["ollama_url"] == "http://172.17.144.1:11434"
+    assert initialized_orchestrator.config["ollama_url"] == "auto"
+    assert initialized_orchestrator._resolved_ollama_url == "http://192.0.2.10:11434"
+    assert initialized_orchestrator.config_path.read_bytes() == before
+    assert initialized_orchestrator.state["ollama_reachable"] is True
 
 
 def test_review_revise_reset_revisions_clears_counter_before_incrementing(

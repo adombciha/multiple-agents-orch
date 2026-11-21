@@ -8,8 +8,7 @@ import uuid
 import shutil
 import tempfile
 from datetime import datetime, timezone
-from urllib.error import URLError
-from urllib.request import urlopen
+import requests
 from pathlib import Path
 from orchestrator.core.state import (
     AgentOrchestrator,
@@ -20,7 +19,7 @@ from orchestrator.core.state import (
     log_error,
     log_header,
 )
-from orchestrator.core import scoring
+from orchestrator.core import scoring, ollama_endpoint
 from orchestrator.core.status import continue_decision, next_actions, owner_action_target, STAGE_LABELS
 
 REFERENCE_BLOCK_START = (
@@ -586,39 +585,25 @@ def _deliver_waiting_workflow(
 
 
 def ollama_available(url: str) -> bool:
-    try:
-        with urlopen(f"{url.rstrip('/')}/api/tags", timeout=2):
-            return True
-    except (OSError, URLError):
-        return False
+    return ollama_endpoint.available(url)
 
 
 def configure_ollama(orchestrator: AgentOrchestrator):
-    local_url = orchestrator.config["ollama_url"]
-    if ollama_available(local_url):
-        log_success(f"Ollama is available at {local_url}")
-        orchestrator.state["ollama_reachable"] = True
-        orchestrator.save_state()
-        return
-    windows_url = f"http://{orchestrator.get_windows_host_ip()}:11434"
-    if ollama_available(windows_url):
-        log_info(f"Windows Ollama detected at {windows_url}")
-        if not sys.stdin.isatty() or input(
-            "Use this Windows Ollama endpoint? [Y/n] "
-        ).strip().lower() not in {"n", "no"}:
-            orchestrator.config["ollama_url"] = windows_url
-            orchestrator.config_path.write_text(
-                json.dumps(orchestrator.config, indent=2), encoding="utf-8"
-            )
-            log_success(f"Ollama API URL set to {windows_url}")
-            orchestrator.state["ollama_reachable"] = True
-            orchestrator.save_state()
+    try:
+        url = ollama_endpoint.resolve(orchestrator)
+        reachable = orchestrator.config.get(
+            "ollama_url", "auto"
+        ) == "auto" or ollama_available(url)
+    except requests.ConnectionError:
+        reachable = False
+    if reachable:
+        log_success(f"Ollama is available at {url}")
     else:
         log_error(
             "No Ollama endpoint detected. Start Ollama locally or on the Windows host before running a task."
         )
-        orchestrator.state["ollama_reachable"] = False
-        orchestrator.save_state()
+    orchestrator.state["ollama_reachable"] = reachable
+    orchestrator.save_state()
 
 
 def set_pause_request(
@@ -802,7 +787,7 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
         "set-ollama-url", help="Set the Ollama API URL"
     )
     ollama_url_parser.add_argument(
-        "url", help="Ollama API base URL, for example http://172.17.144.1:11434"
+        "url", help="auto, or an explicit Ollama API base URL"
     )
 
     weights_parser = subparsers.add_parser(

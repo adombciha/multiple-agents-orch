@@ -35,13 +35,19 @@ PM は要件を分析して任意の specialists を配置します。その結�
 
 | Key                                                                     | 用途とデフォルト動作                                                                                                                 |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `ollama_url`, `ollama_model`                                            | Ollama endpoint とデフォルト model（`http://localhost:11434`、`gemma4:latest`）。                                                    |
+| `ollama_url`, `ollama_model`                                            | Ollama endpoint とデフォルト model（`auto`、`gemma4:latest`）。                                                                      |
 | `test_command`, `max_revisions`                                         | QA command と自動 plan/code revision の上限。デフォルトは `python3 -m pytest -q` と `2` です。                                       |
 | `backends`                                                              | roles に割り当てる backend。                                                                                                         |
 | `model_tiers`, `role_models`, `role_model_backends`, `role_model_tiers` | model のリストと role ごとの model/backend routing。                                                                                 |
 | `use_ponytail`, `use_worktree`                                          | 簡潔な prompting と Git-worktree isolation。デフォルトはそれぞれ `false` と `true` です。                                            |
 | `backend_escalation_path`, `staffing_limits`                            | backend escalation と RD/QA staffing の上限。                                                                                        |
 | `telemetry_enabled`, `llm_usage_log`                                    | LiteLLM の token metadata 記録と JSONL path。デフォルトは workflow directory の `llm_usage.jsonl` で、prompt/output は保存しません。 |
+
+既定の `ollama_url: "auto"` は loopback を先に確認し、失敗した場合は Windows／WSL の現在のデフォルトゲートウェイを取得して確認します。検出したアドレスはメモリ内だけに保持し、接続失敗時にモデルキャッシュとともに破棄して再検出します。中断した推論は自動再送せず、明示した URL の接続先は維持します。
+
+```bash
+python3 orchestrator.py set-ollama-url auto
+```
 
 ## 自動モデル選択
 

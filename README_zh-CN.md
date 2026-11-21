@@ -37,13 +37,19 @@ PM 产生需求，Architect 审核计划，Developer 实作，QA 验证，Review
 
 | Key                                                                     | 用途与默认行为                                                                                                     |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `ollama_url`、`ollama_model`                                            | Ollama endpoint 与默认 model（`http://localhost:11434`、`gemma4:latest`）。                                        |
+| `ollama_url`、`ollama_model`                                            | Ollama endpoint 与默认 model（`auto`、`gemma4:latest`）。                                                          |
 | `test_command`、`max_revisions`                                         | QA command 与自动 plan/code revision 上限；默认值为 `python3 -m pytest -q` 和 `2`。                                |
 | `backends`                                                              | 分配给各 role 的 backend。                                                                                         |
 | `model_tiers`、`role_models`、`role_model_backends`、`role_model_tiers` | model 列表及每个 role 的 model/backend 路由。                                                                      |
 | `use_ponytail`、`use_worktree`                                          | 极简提示与 Git-worktree 隔离；默认分别为 `false` 和 `true`。                                                       |
 | `backend_escalation_path`、`staffing_limits`                            | backend 升级路径及 RD/QA staffing 限制。                                                                           |
 | `telemetry_enabled`、`llm_usage_log`                                    | LiteLLM token metadata 记录开关与 JSONL 路径；默认记录到 workflow 目录的 `llm_usage.jsonl`，不保存 prompt/output。 |
+
+默认 `ollama_url: "auto"` 先测试 loopback，失败后实时读取并测试 Windows／WSL 默认网关。检测地址仅保存在内存中；连接失败会清除地址与模型缓存，后续调用重新检测。中断的推理不会自动重发；手动指定的 URL 保持原目的地。
+
+```bash
+python3 orchestrator.py set-ollama-url auto
+```
 
 ## 自动选择模型
 

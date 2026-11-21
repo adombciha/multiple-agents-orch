@@ -17,9 +17,11 @@
 
 ### 路由器探索與候選條件
 
-- 安裝模型清單由 `GET {ollama_url}/api/tags` 取得；程式讀取 JSON 的 `models` 陣列，取各項 `name` 欄位。成功結果快取 60 秒，請求 timeout 使用 `ollama_router_timeout`（預設 10 秒）。
+`ollama_url` 預設為 `auto`：先驗證 loopback，失敗後讀取並驗證當下 Windows／WSL 預設閘道。下方 `resolved_ollama_url` 是執行時解析的服務位址，不將偵測出的 IP 寫回設定檔。明確指定網址則使用該網址。
+
+- 安裝模型清單由 `GET {resolved_ollama_url}/api/tags` 取得；程式讀取 JSON 的 `models` 陣列，取各項 `name` 欄位。成功結果快取 60 秒，請求 timeout 使用 `ollama_router_timeout`（預設 10 秒）。
 - 預設路由器模型為 `d3:4b`。路由器未在安裝清單中、沒有可用候選，或候選只有一個時，不呼叫 `/v1/systemone`，改回傳未選定或直接使用唯一候選。
-- 路由器請求為 `POST {ollama_url}/v1/systemone`，timeout 使用 `ollama_router_timeout`（預設 10 秒）。Payload 形狀如下：
+- 路由器請求為 `POST {resolved_ollama_url}/v1/systemone`，timeout 使用 `ollama_router_timeout`（預設 10 秒）。Payload 形狀如下：
 
 ```json
 {

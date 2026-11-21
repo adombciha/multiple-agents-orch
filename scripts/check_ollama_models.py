@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from orchestrator.core import backends
+from orchestrator.core import backends, ollama_endpoint
 from orchestrator.core.config import DEFAULT_CONFIG
 
 
@@ -170,7 +170,12 @@ def diagnose(url):
     """Inspect a service without constructing or persisting an orchestrator."""
     report = _report(url)
     try:
-        base = _base_url(url)
+        if url == "auto":
+            context = SimpleNamespace(config={"ollama_url": "auto"})
+            base = _base_url(ollama_endpoint.resolve(context))
+        else:
+            base = _base_url(url)
+        report["url"] = base
         config = {
             key: deepcopy(DEFAULT_CONFIG[key])
             for key in (
@@ -332,7 +337,7 @@ class _Parser(argparse.ArgumentParser):
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = _Parser(description="唯讀查詢 Ollama 模型與既有請求預算")
-    parser.add_argument("--url", default="http://localhost:11434")
+    parser.add_argument("--url", default=DEFAULT_CONFIG["ollama_url"])
     parser.add_argument("--json", action="store_true", help="輸出完整 JSON")
     try:
         args = parser.parse_args(arguments)

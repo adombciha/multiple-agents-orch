@@ -258,11 +258,8 @@ class AgentOrchestrator:
         else:
             log_info(f"State file already exists: {self.state_path}")
 
-        # Suggest Windows Host IP for Ollama setup
-        host_ip = self.get_windows_host_ip()
-        log_info(f"Suggested Windows Host IP: {host_ip}")
         log_info(
-            f"If Ollama is running on Windows, set 'ollama_url' in config.json to 'http://{host_ip}:11434'"
+            "Use 'ollama_url': 'auto' to try loopback and detect the current Windows gateway."
         )
 
     def clear_run_artifacts(self):
@@ -1540,22 +1537,9 @@ class AgentOrchestrator:
 
     def get_windows_host_ip(self) -> str:
         """Finds the default route gateway (usually the Windows Host IP in WSL)."""
-        try:
-            result = subprocess.run(
-                ["ip", "route", "show"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
-            )
-            for line in result.stdout.splitlines():
-                if "default via" in line:
-                    parts = line.split()
-                    if len(parts) > 2:
-                        return parts[2]
-        except Exception:
-            pass
-        return "127.0.0.1"
+        from orchestrator.core.ollama_endpoint import get_windows_host_ip
+
+        return get_windows_host_ip() or "127.0.0.1"
 
     def agent_workspace(self) -> Path:
         """Return the workspace where agent commands are allowed to edit."""

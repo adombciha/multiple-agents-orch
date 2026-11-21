@@ -145,6 +145,7 @@ def call(
 ) -> str:
     from orchestrator.core.state import log_error, log_info
     from orchestrator.core.backends import ollama_post
+    from orchestrator.core import ollama_endpoint
     from pathlib import Path
     import base64
 
@@ -196,12 +197,12 @@ def call(
     if think and model not in no_think_models:
         payload["think"] = think
 
-    url = f"{orchestrator.config['ollama_url']}/api/chat"
     timeout = orchestrator.config.get("ollama_timeout", 1800)
     started = time.monotonic()
     mode = "json_sections" if section_mode else "json_files"
     log_info(f"GPT Ollama calling model: {model} mode={mode}")
     try:
+        url = f"{ollama_endpoint.resolve(orchestrator)}/api/chat"
         response = ollama_post(
             orchestrator, url, json=payload, timeout=timeout, role=role
         )

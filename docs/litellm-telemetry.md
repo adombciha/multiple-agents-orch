@@ -66,34 +66,34 @@ represents attempted calls, not only successful calls.
 Every record contains all fields below. A field whose value is `null` is still
 present; this is how unavailable values are represented.
 
-| Name | Type / format | Optional or required | Meaning | Example |
-| --- | --- | --- | --- | --- |
-| `timestamp` | string, timezone-aware ISO 8601 | Required | UTC time at which the record is created. | `"2026-07-14T03:21:45.123456+00:00"` |
-| `role` | string | Required | Workflow role that made the call. | `"developer_junior"` |
-| `backend` | string | Required | Backend selected for the call. | `"ollama"` |
-| `model` | string or `null` | Required; value nullable | Model name supplied to the call. | `"gemma4:latest"` |
-| `success` | boolean | Required | `true` when the callback returned; `false` when it raised. | `true` |
-| `error_category` | string or `null` | Required; value nullable | Classified failure: `timeout`, `quota`, `contract`, an exception class name, or `null` on success. | `null` |
-| `elapsed_ms` | number | Required | Callback duration in milliseconds, rounded to one decimal place. | `842.7` |
-| `input_characters` | integer | Required | Length of the prompt plus the system prompt, in characters. | `1280` |
-| `output_characters` | integer | Required | Length of returned output, or zero when there is no output. | `3560` |
-| `input_tokens` | integer or `null` | Required; value nullable | Count for system and user input, or provider-reported input count. | `412` |
-| `output_tokens` | integer or `null` | Required; value nullable | Count for assistant output, or provider-reported output count. | `986` |
-| `total_tokens` | integer or `null` | Required; value nullable | Sum of available input and output counts. | `1398` |
-| `token_status` | string | Required | How the token values were obtained. See below. | `"exact"` |
-| `image_count` | integer | Required | Number of image paths supplied to the call. | `1` |
+| Name                | Type / format                   | Optional or required     | Meaning                                                                                            | Example                              |
+| ------------------- | ------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `timestamp`         | string, timezone-aware ISO 8601 | Required                 | UTC time at which the record is created.                                                           | `"2026-07-14T03:21:45.123456+00:00"` |
+| `role`              | string                          | Required                 | Workflow role that made the call.                                                                  | `"developer_junior"`                 |
+| `backend`           | string                          | Required                 | Backend selected for the call.                                                                     | `"ollama"`                           |
+| `model`             | string or `null`                | Required; value nullable | Model name supplied to the call.                                                                   | `"gemma4:latest"`                    |
+| `success`           | boolean                         | Required                 | `true` when the callback returned; `false` when it raised.                                         | `true`                               |
+| `error_category`    | string or `null`                | Required; value nullable | Classified failure: `timeout`, `quota`, `contract`, an exception class name, or `null` on success. | `null`                               |
+| `elapsed_ms`        | number                          | Required                 | Callback duration in milliseconds, rounded to one decimal place.                                   | `842.7`                              |
+| `input_characters`  | integer                         | Required                 | Length of the prompt plus the system prompt, in characters.                                        | `1280`                               |
+| `output_characters` | integer                         | Required                 | Length of returned output, or zero when there is no output.                                        | `3560`                               |
+| `input_tokens`      | integer or `null`               | Required; value nullable | Count for system and user input, or provider-reported input count.                                 | `412`                                |
+| `output_tokens`     | integer or `null`               | Required; value nullable | Count for assistant output, or provider-reported output count.                                     | `986`                                |
+| `total_tokens`      | integer or `null`               | Required; value nullable | Sum of available input and output counts.                                                          | `1398`                               |
+| `token_status`      | string                          | Required                 | How the token values were obtained. See below.                                                     | `"exact"`                            |
+| `image_count`       | integer                         | Required                 | Number of image paths supplied to the call.                                                        | `1`                                  |
 
 Prompt, system prompt, output text, image bytes, and their contents are not
 fields in this record.
 
 ## `token_status` values
 
-| Value | Condition |
-| --- | --- |
-| `exact` | LiteLLM is importable and `token_counter` successfully counts the configured model and messages. |
-| `unsupported_model` | LiteLLM is available, but `token_counter` raises while counting the model/messages. The affected count is `null`; if another count succeeded, the status is still changed to this value. |
-| `litellm_unavailable` | Importing LiteLLM failed. Token counts are unavailable. |
-| `provider` | `provider_usage` was supplied as a dictionary. Provider `prompt_tokens`/`input_tokens` and `completion_tokens`/`output_tokens` take precedence, including `null` when the provider omits them. |
+| Value                 | Condition                                                                                                                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `exact`               | LiteLLM is importable and `token_counter` successfully counts the configured model and messages.                                                                                               |
+| `unsupported_model`   | LiteLLM is available, but `token_counter` raises while counting the model/messages. The affected count is `null`; if another count succeeded, the status is still changed to this value.       |
+| `litellm_unavailable` | Importing LiteLLM failed. Token counts are unavailable.                                                                                                                                        |
+| `provider`            | `provider_usage` was supplied as a dictionary. Provider `prompt_tokens`/`input_tokens` and `completion_tokens`/`output_tokens` take precedence, including `null` when the provider omits them. |
 
 `total_tokens` is computed when at least one input or output count is
 available, treating a missing side as zero for the sum. It is otherwise
@@ -150,4 +150,6 @@ all sensitive information.
 There is no telemetry-specific environment variable in this project. Backend
 authentication and service settings are separate: the repository does not
 define an extra Grok API-key environment variable, and Ollama uses the
-configured `ollama_url` rather than a telemetry environment variable.
+resolved `ollama_url` rather than a telemetry environment variable. Its default
+`auto` mode probes loopback and the current Windows/WSL gateway without saving
+the detected IP address.

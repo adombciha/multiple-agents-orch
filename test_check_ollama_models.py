@@ -232,6 +232,31 @@ class CheckOllamaModelsTests(unittest.TestCase):
         self.assertEqual(report["errors"], [])
         self.assertEqual(len(self.http.calls), 1)
 
+    def test_default_cli_resolves_auto_without_persisting_a_url(self):
+        with mock.patch.object(
+            diagnostic.ollama_endpoint, "available", return_value=True
+        ) as probe:
+            code, text = self.cli("--json")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(text)["url"], URL)
+        self.assertEqual(diagnostic.DEFAULT_CONFIG["ollama_url"], "auto")
+        probe.assert_called_once_with(URL)
+
+    def test_auto_detection_failure_is_a_json_error(self):
+        with mock.patch.object(
+            diagnostic.ollama_endpoint,
+            "available",
+            return_value=False,
+        ), mock.patch.object(
+            diagnostic.ollama_endpoint, "get_windows_host_ip", return_value=None
+        ):
+            code, text = self.cli("--json")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(text)["errors"][0]["scope"], "list")
+        self.assertEqual(self.http.calls, [])
+
     def test_reuses_backend_options_and_separates_router(self):
         self.http.install(
             {
@@ -418,6 +443,7 @@ class CheckOllamaModelsTests(unittest.TestCase):
         for arguments in (
             ("--url", "file:///tmp/service", "--json"),
             ("--url", "http://localhost:11434/api/chat", "--json"),
+            ("--url", "http://localhost:11434////", "--json"),
             ("--url", "http://user:password@localhost:11434", "--json"),
             ("--url", "http://localhost:invalid", "--json"),
             ("--url", URL + "?redirect=1", "--json"),

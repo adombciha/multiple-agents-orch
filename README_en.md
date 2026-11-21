@@ -39,7 +39,7 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 
 | Key                                                                     | 用途與預設行為                                                                                                     |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `ollama_url`、`ollama_model`                                            | Ollama endpoint 與預設 model（`http://localhost:11434`、`gemma4:latest`）。                                        |
+| `ollama_url`、`ollama_model`                                            | Ollama endpoint 與預設 model（`auto`、`gemma4:latest`）。                                                          |
 | `ollama_keep_alive`                                                     | Ollama model 在回覆後保留於記憶體的時間；預設 `0`，每次回覆後立即卸載以釋放 VRAM。                                 |
 | `test_command`、`max_revisions`                                         | QA command 與自動 plan/code revision 上限；預設值為 `python3 -m pytest -q` 和 `2`。                                |
 | `backends`                                                              | 分配給各 role 的 backend。                                                                                         |
@@ -48,6 +48,12 @@ PM 分析需求並安排可選 specialists。其結果會提供給 Architect 進
 | `use_ponytail`、`use_worktree`                                          | 極簡提示與 Git-worktree 隔離；預設分別為 `false` 和 `true`。                                                       |
 | `backend_escalation_path`、`staffing_limits`                            | backend 升級路徑及 RD/QA staffing 限制。                                                                           |
 | `telemetry_enabled`、`llm_usage_log`                                    | LiteLLM token metadata 記錄開關與 JSONL 路徑；預設記錄到 workflow 目錄的 `llm_usage.jsonl`，不保存 prompt/output。 |
+
+預設 `ollama_url: "auto"` 會先測試 loopback，失敗後即時讀取並測試 Windows／WSL 的預設閘道。偵測位址只保留在記憶體；連線失敗會清除位址與模型快取，後續呼叫會重新偵測。中斷的推論不會自動重送；手動指定網址仍使用原目的地。
+
+```bash
+python3 orchestrator.py set-ollama-url auto
+```
 
 ## 建議角色與模型路由
 

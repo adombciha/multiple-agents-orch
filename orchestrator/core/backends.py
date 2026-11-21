@@ -15,6 +15,7 @@ from pathlib import Path
 from contextlib import nullcontext
 
 from orchestrator.core.local_resources import LocalResourceBusy, foreground_slot
+from orchestrator.core import ollama_endpoint
 
 AGY_MODEL_ALIASES = {
     "gemini-3.5-flash": "auto:gemini-flash-medium",
@@ -90,7 +91,9 @@ def ollama_post(orchestrator, url, *, json, timeout, role):
                 orchestrator._ollama_chat_attempts = (
                     getattr(orchestrator, "_ollama_chat_attempts", 0) + 1
                 )
-            return requests.post(url, json=json, timeout=timeout)
+            return ollama_endpoint.request(
+                orchestrator, requests.post, url, json=json, timeout=timeout
+            )
     finally:
         _set_local_model_activity(orchestrator, None)
 
@@ -245,14 +248,22 @@ def discover_installed_ollama_models(
     """Discover installed models from Ollama /api/tags endpoint without pulling or deleting."""
     from orchestrator.core.state import log_info
 
+    try:
+        base = ollama_endpoint.resolve(orchestrator)
+    except requests.ConnectionError as exc:
+        log_info(str(exc))
+        return set()
     cached = getattr(orchestrator, "_installed_ollama_models_cache", None)
     if cached and not force_refresh and time.monotonic() - cached[0] < 60:
         return cached[1]
 
-    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/tags"
+    url = f"{base}/api/tags"
     try:
-        response = requests.get(
-            url, timeout=orchestrator.config.get("ollama_router_timeout", 5)
+        response = ollama_endpoint.request(
+            orchestrator,
+            requests.get,
+            url,
+            timeout=orchestrator.config.get("ollama_router_timeout", 5),
         )
         if response.status_code == 200:
             data = response.json()
@@ -262,7 +273,11 @@ def discover_installed_ollama_models(
     except Exception as exc:
         log_info(f"Could not discover Ollama installed models at {url}: {exc}")
 
-    if cached and not force_refresh:
+    if (
+        cached
+        and not force_refresh
+        and orchestrator.config.get("ollama_url", "auto") != "auto"
+    ):
         return cached[1]
     return set()
 
@@ -286,17 +301,25 @@ def discover_ollama_chat_models(
         return cached[2]
 
     router_model = orchestrator.config.get("ollama_router_model", "d3:4b")
-    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/api/show"
+    base = ollama_endpoint.resolve(orchestrator)
+    url = f"{base}/api/show"
     chat_models = {}
     for model in sorted(installed):
         if _ollama_model_matches(router_model, {model}):
             continue
         try:
-            response = requests.post(
+            response = ollama_endpoint.request(
+                orchestrator,
+                requests.post,
                 url,
                 json={"model": model},
                 timeout=orchestrator.config.get("ollama_router_timeout", 5),
             )
+            if (
+                orchestrator.config.get("ollama_url", "auto") == "auto"
+                and getattr(orchestrator, "_resolved_ollama_url", None) != base
+            ):
+                return {}
             if response.status_code != 200:
                 continue
             data = response.json()
@@ -327,6 +350,11 @@ def discover_ollama_chat_models(
             }
         except Exception as exc:
             log_info(f"Could not inspect Ollama model '{model}': {exc}")
+            if (
+                orchestrator.config.get("ollama_url", "auto") == "auto"
+                and getattr(orchestrator, "_resolved_ollama_url", None) != base
+            ):
+                return {}
 
     orchestrator._ollama_chat_models_cache = (
         time.monotonic(),
@@ -352,7 +380,11 @@ def route_ollama_model_with_tev1(
         return None
 
     router_model = orchestrator.config.get("ollama_router_model", "d3:4b")
-    url = f"{orchestrator.config.get('ollama_url', 'http://localhost:11434').rstrip('/')}/v1/systemone"
+    try:
+        url = f"{ollama_endpoint.resolve(orchestrator)}/v1/systemone"
+    except requests.ConnectionError as exc:
+        log_info(str(exc))
+        return None
     if time.monotonic() < _tev1_cooldowns.get(url, 0):
         return None
 
@@ -617,7 +649,6 @@ def call_ollama(
 ) -> str:
     from orchestrator.core.state import log_info, log_error
 
-    url = f"{orchestrator.config['ollama_url']}/api/chat"
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -654,6 +685,7 @@ def call_ollama(
         ]
 
     try:
+        url = f"{ollama_endpoint.resolve(orchestrator)}/api/chat"
         timeout = orchestrator.config.get("ollama_timeout", 1800)
         response = ollama_post(
             orchestrator, url, json=payload, timeout=timeout, role=role

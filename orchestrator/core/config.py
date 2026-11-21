@@ -1,7 +1,7 @@
 from copy import deepcopy
 
 DEFAULT_CONFIG = {
-    "ollama_url": "http://localhost:11434",
+    "ollama_url": "auto",
     "ollama_model": "gemma4:latest",
     "ollama_keep_alive": 0,
     "ollama_timeout": 1800,
