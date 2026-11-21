@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from orchestrator.core import acceptance
 from orchestrator.core.state import AgentOrchestrator, DeliveryRepairQueued, delivery_snapshot_id
 from orchestrator.main import (
     apply_approve,
@@ -368,6 +369,11 @@ class GuiService:
                 )
             ).name,
             "plan_requires_owner_approval": state.get("plan_requires_owner_approval"),
+            "plan_acceptance": (
+                acceptance.plan_rows(state)
+                if acceptance.awaiting_plan_review(state)
+                else []
+            ),
             "resume_state": state.get("resume_state"),
             "pass_state": state.get("pass_state"),
             "owner_acceptance_pending": AgentOrchestrator.owner_acceptance_required(
@@ -376,7 +382,13 @@ class GuiService:
             "owner_acceptance_preview": state.get("owner_acceptance_preview", {}),
             "delivery_artifacts_prepared": state.get("delivery_artifacts_prepared"),
             "workflow_mode": state.get("workflow_mode"),
-            "delivery": {"delivered": delivery.get("delivered")},
+            "delivery": {
+                "delivered": delivery.get("delivered"),
+                "acceptance": delivery.get("acceptance", []),
+                "acceptance_reason": state.get("acceptance_delivery", {}).get(
+                    "reason", ""
+                ),
+            },
             "progress": {
                 "plan_revisions": state.get("plan_revisions", 0),
                 "code_revisions": state.get("code_revisions", 0),
@@ -561,7 +573,9 @@ class GuiService:
                 raise RuntimeError("A workflow worker is already running.")
         return self.status()
 
-    def review(self, decision: str, snapshot_id: str = "") -> dict:
+    def review(
+        self, decision: str, snapshot_id: str = "", *, plan_feedback: str | None = None
+    ) -> dict:
         if decision not in {
             "pass",
             "revise",
@@ -570,6 +584,10 @@ class GuiService:
             "accept-existing",
         }:
             raise ValueError("Invalid review decision.")
+        if plan_feedback is not None and decision != "revise":
+            raise acceptance.AcceptanceError(
+                "Plan feedback requires the revise decision."
+            )
 
         def prepare():
             self._load()
@@ -586,6 +604,11 @@ class GuiService:
                     decision == "revise"
                     and self.orchestrator.state.get("code_revisions", 0)
                     >= self.orchestrator.config.get("max_revisions", 2),
+                    **(
+                        {"plan_feedback": plan_feedback}
+                        if plan_feedback is not None
+                        else {}
+                    ),
                 )
 
         with self._operation():
@@ -618,9 +641,53 @@ class GuiService:
                 self.orchestrator.save_state()
         return self.status()
 
-    def delivery(self, confirm: bool, snapshot_id: str | None = None) -> dict:
+    def acceptance_action(
+        self,
+        action: str,
+        snapshot_id: str,
+        *,
+        criterion_ids: list[str],
+        status: str,
+        reason: str,
+    ) -> dict:
+        def prepare():
+            self._load()
+            if self.orchestrator.state.get("state") != "WAITING_FOR_DELIVERY":
+                raise acceptance.AcceptanceError(
+                    "Workflow is not waiting for delivery."
+                )
+            if action == "verify":
+                if len(criterion_ids) != 1:
+                    raise acceptance.AcceptanceError(
+                        "Select exactly one manual criterion."
+                    )
+                acceptance.record_manual(
+                    self.orchestrator, snapshot_id, criterion_ids[0], status, reason
+                )
+            else:
+                acceptance.revise(self.orchestrator, snapshot_id, criterion_ids, reason)
+
+        if action not in {"verify", "revise"}:
+            raise ValueError("Invalid acceptance action.")
+        with self._operation():
+            if self._worker_is_running():
+                raise RuntimeError("A workflow worker is already running.")
+            if action == "verify":
+                with self.orchestrator.execution_lock():
+                    prepare()
+            elif not self._start_worker(prepare):
+                raise RuntimeError("A workflow worker is already running.")
+        return self.status()
+
+    def delivery(
+        self,
+        confirm: bool,
+        snapshot_id: str | None = None,
+        *,
+        acceptance_reason: str = "",
+    ) -> dict:
         try:
-            return self._delivery(confirm, snapshot_id)
+            return self._delivery(confirm, snapshot_id, acceptance_reason)
         except DeliveryRepairQueued:
             with self._operation():
                 if not self._start_worker(self._load):
@@ -653,7 +720,9 @@ class GuiService:
                 else:
                     self.orchestrator.execution_lock = lock_override
 
-    def _delivery(self, confirm: bool, snapshot_id: str | None = None) -> dict:
+    def _delivery(
+        self, confirm: bool, snapshot_id: str | None = None, acceptance_reason: str = ""
+    ) -> dict:
         with self._operation():
             if self._worker_is_running():
                 raise RuntimeError("A workflow worker is already running.")
@@ -702,8 +771,16 @@ class GuiService:
                         "Git impact changed; the confirmed snapshot does not match the displayed snapshot. Review it again."
                     )
                 try:
-                    self.orchestrator.confirm_delivery(preview, operation)
-                except DeliveryRepairQueued:
+                    self.orchestrator.confirm_delivery(
+                        preview,
+                        operation,
+                        **(
+                            {"acceptance_reason": acceptance_reason}
+                            if acceptance_reason
+                            else {}
+                        ),
+                    )
+                except (DeliveryRepairQueued, acceptance.AcceptanceError):
                     raise
                 except RuntimeError as error:
                     self.orchestrator.create_delivery_preview(operation)
@@ -943,13 +1020,14 @@ function updateAvailability() {
   updateDecisionCopy();
   controls().forEach(node => {
     const confirm = node.dataset.action === 'confirm-delivery';
+    const bound = !!node.dataset.snapshotId;
     node.className = latestStyles.get(node.dataset.action) || 'secondary';
     if (confirm && deliveryInvalid) node.className = 'secondary';
     if (node.dataset.action === 'deliver{}' && deliveryInvalid &&
         latestControls.get(node.dataset.action) === true) node.className = 'primary';
     node.disabled = actionPending || !statusCurrent ||
       latestControls.get(node.dataset.action) !== true ||
-      (confirm && (deliveryInvalid || node.dataset.snapshotId !== deliverySnapshotId));
+      (bound && (deliveryInvalid || node.dataset.snapshotId !== deliverySnapshotId));
   });
 }
 function invalidateDelivery() {
@@ -973,7 +1051,7 @@ async function refreshPage(afterAction) {
     const response = await fetch('/', {credentials:'same-origin', cache:'no-store'});
     if (!response.ok) throw new Error('Status request failed');
     const incoming = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports', 'reset-actions', 'delivery-actions', 'display-actions', 'decision-copy', 'current-review', 'evidence-summary'];
+    const ids = ['workflow-status', 'tasks', 'task-form', 'actions', 'git', 'reports', 'reset-actions', 'delivery-actions', 'display-actions', 'decision-copy', 'current-review', 'evidence-summary', 'plan-acceptance'];
     if (!ids.every(id => incoming.getElementById(id)) || !incoming.body.dataset.csrf ||
         !incoming.getElementById('state') ||
         !incoming.getElementById('task-form').querySelector('textarea'))
@@ -1013,6 +1091,7 @@ async function refreshPage(afterAction) {
     pendingWorkflow = incoming.getElementById('workflow-status');
     applyWorkflowUpdate();
     patchRegion(document.getElementById('evidence-summary'), incoming.getElementById('evidence-summary'));
+    patchRegion(document.getElementById('plan-acceptance'), incoming.getElementById('plan-acceptance'));
     const nextDecision = incoming.getElementById('decision-copy');
     decisionTitle = nextDecision.querySelector('h3').textContent;
     decisionExplanation = nextDecision.querySelector('p').textContent;
@@ -1054,14 +1133,46 @@ async function refreshPage(afterAction) {
     return false;
   }
 }
+async function promptAcceptance(kind, criterionId='', status='') {
+  const promptText = {
+    plan: '請輸入要調整的驗收項目與修訂內容。',
+    confirm: '驗收仍有待驗證項目。請輸入接受這些待驗證項目並交付的理由。',
+    verify: `請輸入 ${criterionId} 的實際觀察結果及驗證環境。`,
+    revise: '請輸入需要修訂的原因及預期結果。'
+  };
+  const criterionIds = kind === 'revise' ? Array.from(
+    document.querySelectorAll('input[name="acceptance-criterion"]:checked'), input => input.value
+  ) : [criterionId];
+  if (kind === 'revise' && !criterionIds.length) {
+    message('delivery-feedback', '請選取至少一個要修訂的驗收項目。');
+    return;
+  }
+  const reason = window.prompt(promptText[kind]);
+  if (reason === null) return;
+  if (!reason.trim() || reason.length > 2000) {
+    message('action-feedback', '請輸入 1 至 2000 字。');
+    return;
+  }
+  if (kind === 'plan') {
+    await post('/api/review', {decision:'revise', reason});
+  } else if (kind === 'confirm') {
+    await post('/api/deliver', {confirm:true, snapshot_id:deliverySnapshotId, reason});
+  } else {
+    await post('/api/acceptance', {action:kind, snapshot_id:deliverySnapshotId,
+      criterion_ids:criterionIds, status, reason});
+  }
+}
 async function post(url, body={}) {
   if (actionPending || !statusCurrent) return;
   const key = url === '/api/task' ? 'task{}' :
     url === '/api/deliver' && body.confirm ? 'confirm-delivery' :
+    url === '/api/acceptance' ? (body.action === 'verify' ?
+      `acceptance-${body.criterion_ids[0]}-${body.status}` : 'acceptance-revise') :
+    url === '/api/review' && body.reason ? 'review-plan-feedback' :
     url.slice('/api/'.length) + JSON.stringify(body, Object.keys(body).sort());
   const control = controls().find(node => node.dataset.action === key);
   if (!control || control.disabled || latestControls.get(key) !== true) return;
-  if (body.confirm && (deliveryInvalid || !deliverySnapshotId ||
+  if ((body.confirm || url === '/api/acceptance') && (deliveryInvalid || !deliverySnapshotId ||
       body.snapshot_id !== deliverySnapshotId || control.dataset.snapshotId !== deliverySnapshotId)) {
     invalidateDelivery();
     return;
@@ -1081,7 +1192,7 @@ async function post(url, body={}) {
     });
     const data = await response.json();
     if (!response.ok) {
-      if (url === '/api/deliver') invalidateDelivery();
+      if (url === '/api/deliver' || url === '/api/acceptance') invalidateDelivery();
       message('action-feedback', '操作未完成：' + (data.error || '伺服器拒絕操作，請檢查最新狀態。'));
       alert(data.error || '操作失敗');
     } else {
@@ -1095,10 +1206,15 @@ async function post(url, body={}) {
         deliveryRefreshRequested = true;
         invalidateDelivery();
       }
-      message('action-feedback', '操作已受理，請依最新狀態查看結果。');
+      if (url === '/api/acceptance' && body.action === 'verify') {
+        invalidateDelivery();
+        message('action-feedback', '已記錄人工驗證。請重新展示並檢視交付快照。');
+      } else {
+        message('action-feedback', '操作已受理，請依最新狀態查看結果。');
+      }
     }
   } catch(error) {
-    if (url === '/api/deliver') invalidateDelivery();
+    if (url === '/api/deliver' || url === '/api/acceptance') invalidateDelivery();
     message('action-feedback', '連線或回應異常，操作結果尚未確認；請先等待狀態更新。');
   } finally {
     await refresh(true);
@@ -1144,9 +1260,17 @@ def render_page(status: dict) -> str:
     runtime = status.get("worker_status", {})
     reason = str(review.get("reason", "")).strip()
     source = review.get("source", "")
-    git = status.get("git", {})
+    git = status.get("git") or {}
     snapshot_id = status.get("delivery_snapshot_id", "")
     presented = bool(status.get("delivery_preview_presented") and snapshot_id and git)
+    plan_acceptance = status.get("plan_acceptance", [])
+    criteria = (
+        status["delivery"].get("acceptance", [])
+        if delivered
+        else git.get("acceptance", [])
+    )
+    has_pending = any(row["status"] == "pending" for row in criteria)
+    has_failed = any(row["status"] == "failed" for row in criteria)
     can_submit = (
         not busy
         and current in {"PLANNING", "COMPLETED", "FAILED"}
@@ -1199,6 +1323,7 @@ def render_page(status: dict) -> str:
         enabled=True,
         target=None,
         identity=None,
+        prompt=None,
     ):
         payload = body or {}
         key = identity or action + json.dumps(
@@ -1207,13 +1332,23 @@ def render_page(status: dict) -> str:
         script = f"post('/api/{action}', {json.dumps(payload)})"
         if identity == "confirm-delivery":
             script = (
-                "post('/api/deliver', {confirm:true,snapshot_id:deliverySnapshotId})"
+                "promptAcceptance('confirm')"
+                if has_pending
+                else "post('/api/deliver', {confirm:true,snapshot_id:deliverySnapshotId})"
+            )
+            enabled = enabled and not has_failed
+            primary = primary and enabled
+        if prompt:
+            script = (
+                "promptAcceptance("
+                + ", ".join(json.dumps(part) for part in prompt)
+                + ")"
             )
         if confirmation:
             script = f"if(window.confirm({json.dumps(confirmation, ensure_ascii=False)})) {script}"
         attributes = (
             f' data-snapshot-id="{_safe_text(snapshot_id)}"'
-            if identity == "confirm-delivery"
+            if identity == "confirm-delivery" or action == "acceptance"
             else ""
         )
         (buttons if target is None else target).append(
@@ -1243,6 +1378,31 @@ def render_page(status: dict) -> str:
     ):
         for action in decision[key]:
             button(**action, target=target)
+
+    def acceptance_details(row):
+        kind = "人工驗證" if row["kind"] == "manual" else "pytest"
+        return (
+            f'<strong>{_safe_text(row["id"])} · {_safe_text(row["requirement"])}</strong>'
+            f'<p>驗證方式（{kind}）<br>{_report_html(row["check"])}</p>'
+            f'<p class="muted">對應任務 {_safe_text(", ".join(row["task_ids"]))}</p>'
+        )
+
+    plan_html = ""
+    if plan_acceptance:
+        rows_html = "".join(
+            f"<li>{acceptance_details(row)}</li>" for row in plan_acceptance
+        )
+        plan_html = (
+            f'<h3>提議的驗收項目</h3><ul class="acceptance-list">{rows_html}</ul>'
+        )
+        if not busy and not status.get("external_lock"):
+            button(
+                "要求調整驗收項目",
+                "review",
+                target=buttons,
+                identity="review-plan-feedback",
+                prompt=("plan",),
+            )
 
     stages = ["需求", "計畫", "核准", "實作", "測試", "審查", "交付"]
     delivery_complete = current == "COMPLETED" and delivered
@@ -1365,15 +1525,87 @@ def render_page(status: dict) -> str:
             ("review", "審核報告"),
         )
     )
+    acceptance_html = ""
+    if criteria:
+        row_items = []
+        waiting = current == "WAITING_FOR_DELIVERY"
+        ready = bool(
+            presented and waiting and not busy and not status.get("external_lock")
+        )
+        labels = {"passed": "通過", "failed": "未通過", "pending": "待驗證"}
+        for row in criteria:
+            row_buttons = []
+            criterion_id = row["id"]
+            if waiting and row["kind"] == "manual":
+                for result in ("passed", "failed"):
+                    button(
+                        f"{criterion_id} 記錄{labels[result]}",
+                        "acceptance",
+                        target=row_buttons,
+                        identity=f"acceptance-{criterion_id}-{result}",
+                        prompt=("verify", criterion_id, result),
+                        enabled=ready,
+                    )
+            choice = (
+                '<label><input type="checkbox" name="acceptance-criterion" '
+                f'value="{_safe_text(criterion_id)}"> 選取 {_safe_text(criterion_id)} 修訂</label>'
+                if waiting
+                else ""
+            )
+            row_items.append(
+                f'<li>{acceptance_details(row)}<p>結果 <strong>{labels[row["status"]]}</strong></p>'
+                f'<p>{_report_html(row["evidence"])}</p>'
+                + (
+                    "<p>上次未通過，需重新驗證。</p>"
+                    if row.get("needs_recheck")
+                    else ""
+                )
+                + choice
+                + f'<div class="actions">{"".join(row_buttons)}</div></li>'
+            )
+        notice = ""
+        if delivered:
+            exception_reason = status["delivery"].get("acceptance_reason", "")
+            if exception_reason:
+                notice = f"接受待驗證項目的理由：{exception_reason}"
+        elif has_failed:
+            notice = "請修訂未通過的項目後再交付。"
+        elif has_pending:
+            notice = "確認交付時須說明接受待驗證項目的理由。"
+        acceptance_html = (
+            "<h3>逐項驗收結果</h3>"
+            f'<ul class="acceptance-list">{"".join(row_items)}</ul>'
+            + (f'<p class="muted">{_safe_text(notice)}</p>' if notice else "")
+        )
+        if waiting:
+            button(
+                "提交所選項目的修訂",
+                "acceptance",
+                target=delivery_buttons,
+                identity="acceptance-revise",
+                prompt=("revise",),
+                enabled=ready,
+            )
+    elif presented and current == "WAITING_FOR_DELIVERY":
+        acceptance_html = '<p class="muted">此任務未建立驗收條件</p>'
     git_html = (
         '<details data-detail="git-impact" open><summary>Git 影響（Git impact）</summary>'
         "<pre>"
-        + _report_html(json.dumps(git, ensure_ascii=False, indent=2))
+        + _report_html(
+            json.dumps(
+                {key: value for key, value in git.items() if key != "acceptance"},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         + "</pre>"
         + f'<p class="muted">快照 ID：{_safe_text(snapshot_id or "尚無展示")}</p>'
+        + acceptance_html
         + f'<div id="delivery-actions" class="actions">{"".join(delivery_buttons)}</div>'
         + "</details>"
         if git
+        else acceptance_html + '<div id="delivery-actions" class="actions"></div>'
+        if delivered
         else '<div class="empty-state"><strong>尚未展示 Git 影響。</strong>'
         '<p class="muted">到達交付階段後，先展示並檢視變更，再另行確認交付。</p></div>'
         '<div id="delivery-actions" class="actions"></div>'
@@ -1408,6 +1640,7 @@ h2{{font-size:20px;margin:0 0 18px;letter-spacing:-.02em}}h3{{font-size:22px;lin
 button{{font:inherit;min-height:44px;padding:10px 18px;border:1px solid var(--border);border-radius:8px;cursor:pointer}}button:disabled{{opacity:.55;cursor:not-allowed}}.primary{{background:var(--primary);color:white;border-color:var(--primary);font-weight:650}}.secondary{{background:white;color:var(--text)}}button:hover:enabled{{box-shadow:0 0 0 2px #245BE530}}button.primary:hover:enabled{{background:#1D4ED8}}:focus-visible{{outline:3px solid #245BE5;outline-offset:3px}}
 .work-grid{{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(280px,1fr);gap:22px;align-items:start}}.task-list{{list-style:none;margin:0;padding:0}}.task-list>li{{padding:18px 0;border-top:1px solid var(--border)}}.task-list>li:first-child{{border:0;padding-top:0}}.task-heading{{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}}.task-list summary{{list-style-position:inside;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;min-height:44px;align-content:center}}.file-chips{{display:flex;gap:6px;flex-wrap:wrap}}.file-chips code{{font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);overflow-wrap:anywhere}}
 .evidence-list{{list-style:none;margin:0;padding:0}}.evidence-list li{{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--border)}}.evidence-list li:last-child{{border:0}}.evidence-list strong,.evidence-list span{{display:block}}.evidence-list a{{min-height:44px;align-content:center;font-size:14px;white-space:nowrap}}.evidence-note{{margin:14px 0 0}}
+.acceptance-list{{list-style:none;padding:0;overflow-wrap:anywhere}}.acceptance-list li{{padding:12px 0;border-top:1px solid var(--border)}}.acceptance-list p{{margin:6px 0}}.acceptance-list label{{display:inline-flex;align-items:center;gap:8px;min-height:44px}}
 pre{{font:14px/1.65 ui-monospace,"SFMono-Regular",Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg);padding:16px;border:1px solid var(--border);border-radius:8px;max-height:32rem;overflow:auto}}details{{margin:10px 0}}summary{{cursor:pointer;overflow-wrap:anywhere;min-height:44px;align-content:center}}#reports details{{border:1px solid var(--border);border-radius:8px;margin:10px 0}}#reports summary{{padding:10px 16px;font-weight:600}}#reports details[open] summary{{background:#EFF4FF;color:#1D4ED8}}#reports pre{{margin:12px;border:0}}.empty-state{{text-align:center;background:var(--bg);border:1px dashed var(--border);border-radius:8px;padding:28px 20px}}.empty-state p{{margin:8px 0 0}}
 textarea{{display:block;width:100%;min-height:130px;resize:vertical;font:inherit;border:1px solid var(--border);border-radius:8px;padding:12px;margin:10px 0}}label{{font-weight:650}}#task-form{{border-top:1px solid #E9DAB6;padding-top:20px;margin-top:20px}}.feedback{{color:var(--muted);overflow-wrap:anywhere;font-size:14px}}.feedback:empty,.error:empty{{display:none}}.error{{color:var(--error);overflow-wrap:anywhere}}#task-management>summary{{font-weight:650}}#reset-area .secondary{{color:var(--error);border-color:#E8C3BD}}[hidden]{{display:none!important}}
 @media(max-width:1100px){{body{{grid-template-columns:180px minmax(0,1fr)}}main{{padding:24px}}.brand{{font-size:16px}}.work-grid{{grid-template-columns:1fr}}}}
@@ -1445,6 +1678,7 @@ textarea{{display:block;width:100%;min-height:130px;resize:vertical;font:inherit
 <section class="card next-card" aria-labelledby="next-title">
 <h2 id="next-title">下一步</h2>
 <div id="decision-copy"><h3>{_safe_text(title)}</h3><p>{_safe_text(explanation)}</p></div>
+<div id="plan-acceptance">{plan_html}</div>
 <p id="decision-status" class="feedback" role="status"></p>
 <div class="action-row"><div id="actions" class="actions">{''.join(buttons)}</div>
 <div id="display-actions" class="actions">{''.join(display_buttons)}</div>
@@ -1607,6 +1841,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             "/api/continue",
             "/api/approve",
             "/api/review",
+            "/api/acceptance",
             "/api/reset",
             "/api/reject",
             "/api/deliver",
@@ -1634,18 +1869,63 @@ class RequestHandler(BaseHTTPRequestHandler):
                 result = self.service.approve()
             elif path == "/api/review":
                 decision = str(body.get("decision", ""))
-                result = (
-                    self.service.review(decision, str(body.get("snapshot_id", "")))
-                    if decision == "accept-existing"
-                    else self.service.review(decision)
+                if "reason" in body:
+                    if not isinstance(body["reason"], str):
+                        raise ValueError("Plan feedback must be text.")
+                    result = self.service.review(decision, plan_feedback=body["reason"])
+                elif decision == "accept-existing":
+                    result = self.service.review(
+                        decision, str(body.get("snapshot_id", ""))
+                    )
+                else:
+                    result = self.service.review(decision)
+            elif path == "/api/acceptance":
+                action, snapshot_id, status, reason = (
+                    body.get(key, "")
+                    for key in ("action", "snapshot_id", "status", "reason")
+                )
+                criterion_ids = body.get("criterion_ids")
+                if (
+                    any(
+                        not isinstance(value, str)
+                        for value in (action, snapshot_id, status, reason)
+                    )
+                    or not isinstance(criterion_ids, list)
+                    or len(criterion_ids) > 30
+                    or any(
+                        not isinstance(criterion_id, str)
+                        for criterion_id in criterion_ids
+                    )
+                ):
+                    raise ValueError(
+                        "Acceptance actions require text and a list of criterion IDs."
+                    )
+                result = self.service.acceptance_action(
+                    action,
+                    snapshot_id,
+                    criterion_ids=criterion_ids,
+                    status=status,
+                    reason=reason,
                 )
             elif path == "/api/reset":
                 result = self.service.reset()
             elif path == "/api/reject":
                 result = self.service.reset(keep_request=True)
             else:
+                confirm = body.get("confirm", False)
+                reason = body.get("reason", "")
+                if (
+                    not isinstance(confirm, bool)
+                    or not isinstance(reason, str)
+                    or (reason and not confirm)
+                ):
+                    raise ValueError(
+                        "A delivery reason requires explicit confirmation."
+                    )
                 result = self.service.delivery(
-                    bool(body.get("confirm", False)), body.get("snapshot_id")
+                    confirm,
+                    body.get("snapshot_id"),
+                    **({"acceptance_reason": reason} if reason else {}),
                 )
             self._send_json(self._result(result))
         except (ValueError, RuntimeError, OSError, json.JSONDecodeError) as error:

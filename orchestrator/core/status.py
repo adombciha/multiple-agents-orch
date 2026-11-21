@@ -235,6 +235,9 @@ def workflow_decision(
     )
     presented = bool(state.get("delivery_preview_presented") and snapshot_id and git)
     valid_preview = presented and prepared
+    criteria = (git or {}).get("acceptance", [])
+    acceptance_failed = any(row.get("status") == "failed" for row in criteria)
+    acceptance_pending = any(row.get("status") == "pending" for row in criteria)
     status = {
         **state,
         "pause_requested": pause_requested,
@@ -421,6 +424,12 @@ def workflow_decision(
             explanation = (
                 "展示前會先完成最終報告、CHANGELOG 與既有交付成果；準備完成後才可確認。"
             )
+        elif valid_preview and acceptance_failed:
+            title = "有驗收項目失敗"
+            explanation = "請選取項目退回修訂，並完成再次驗證。"
+        elif valid_preview and acceptance_pending:
+            title = "有驗收項目待驗證"
+            explanation = "請補錄驗證結果，或在確認交付時填寫接受理由。"
         elif valid_preview:
             title = "已展示 Git 影響，等待二次確認"
             explanation = "請檢視下方展示內容與快照 ID。明確確認後，系統仍會重新驗證，再執行既有 Git 交付。"
@@ -468,8 +477,8 @@ def workflow_decision(
         button(
             "確認二次交付",
             "deliver",
-            primary=not busy and current == "WAITING_FOR_DELIVERY" and valid_preview,
-            enabled=not busy and current == "WAITING_FOR_DELIVERY" and valid_preview,
+            primary=not busy and valid_preview and not acceptance_failed,
+            enabled=not busy and valid_preview and not acceptance_failed,
             target=delivery_buttons,
             identity="confirm-delivery",
         )
@@ -550,6 +559,7 @@ def write_snapshot(orchestrator) -> None:
                 "pass_state",
                 "human_review_kind",
                 "plan_requires_owner_approval",
+                "acceptance_criteria",
                 "owner_acceptance_pending",
                 "owner_acceptance_preview",
                 "delivery_artifacts_prepared",

@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 import json
 import re
 import tempfile
 from pathlib import Path
-from orchestrator.roles.base_agent import BaseAgent
-from orchestrator.core import scoring, brain
+
+from orchestrator.core import acceptance, brain, scoring
+from orchestrator.core.config import DEFAULT_CONFIG
 from orchestrator.core.local_resources import LocalResourceBusy
+from orchestrator.roles.base_agent import BaseAgent
 
 
 def _extract_marker(qa_reports, marker: str) -> str | None:
@@ -289,6 +292,7 @@ class QAAgent(BaseAgent):
         docs_only = bool(target_files) and all(
             Path(path).suffix.lower() == ".md" for path in target_files
         )
+        before = acceptance.qa_revision(self.orchestrator)
         document_contents = []
         if docs_only:
             test_cmd = "Document-scope Markdown review"
@@ -315,6 +319,15 @@ class QAAgent(BaseAgent):
             )
         else:
             test_cmd = self.orchestrator.config.get("test_command", "git diff --stat")
+            if (
+                before is not None
+                and test_cmd == DEFAULT_CONFIG["test_command"]
+                and any(
+                    item["kind"] == "pytest"
+                    for item in self.orchestrator.state["acceptance_criteria"]
+                )
+            ):
+                test_cmd = test_cmd.removesuffix(" -q") + " -v"
             log_info(f"Running test command: {test_cmd}")
             code, output = self.orchestrator.run_command(
                 ["bash", "-c", test_cmd],
@@ -325,6 +338,7 @@ class QAAgent(BaseAgent):
 
         with open(self.orchestrator.test_results_path, "w", encoding="utf-8") as f:
             f.write(f"Command: {test_cmd}\nExit Code: {code}\nOutput:\n{output}")
+        acceptance.record_qa(self.orchestrator, test_cmd, code, output, before=before)
 
         log_info(f"Test exit code: {code}")
 

@@ -43,6 +43,33 @@ python3 orchestrator.py review pass --run
 
 不要直接編輯 `.ai-company/state.json` 來模擬狀態轉換；請使用上述 CLI 或 GUI 操作。
 
+## 逐項驗收
+
+計畫等待擁有者核准時，Chairman 會顯示各驗收項目的需求、驗證方式與對應任務。核准前可按「要求調整驗收項目」並輸入修訂內容。CLI 提供相同操作。
+
+```bash
+python3 orchestrator.py review preview-plan
+python3 orchestrator.py review revise --reason '請調整 AC-01 的驗證步驟' --run
+python3 orchestrator.py approve --run
+```
+
+到達交付階段後，先按「展示 Git 影響」。展示內容會列出每個驗收項目的結果和證據。人工項目可記錄通過或未通過，並填入觀察結果與驗證環境。每次記錄後都要重新展示快照。
+
+核准的驗收項目包含 pytest 時，內建預設 `pytest -q` 會改用 `pytest -v`，以記錄具名測試結果。自訂測試命令須輸出對應 pytest 測試項目的名稱與結果，才能作為逐項驗收證據。
+
+有未通過項目時，請勾選要處理的項目並按「提交所選項目的修訂」。系統會將所選項目對應的核准檔案送回實作，再執行驗證和審查。只剩待驗證項目時，擁有者可在確認交付時說明接受理由。交付紀錄會保留各項結果及理由。
+
+核准範圍內的檔案變更後，舊的通過結果需要重驗。已知失敗會持續阻擋交付，直到同一項目有新的通過證據。
+
+```bash
+python3 orchestrator.py deliver --verify AC-01 passed --snapshot <SNAPSHOT_ID> --reason '記錄觀察結果與驗證環境'
+python3 orchestrator.py deliver
+python3 orchestrator.py deliver --revise AC-02 --revise AC-03 --snapshot <SNAPSHOT_ID> --reason '描述所選項目的修訂內容'
+python3 orchestrator.py continue
+```
+
+若展示結果仍有待驗證項目，可使用 `python3 orchestrator.py deliver --confirm <SNAPSHOT_ID> --reason '接受待驗證項目的理由'`。有逐項驗收資料時，以快照列出的各項證據判斷交付；沒有逐項驗收資料的既有執行沿用原本的交付流程。
+
 ## CLI 交付命令
 
 除了通過 GUI 操作，您也可以使用 Orchestrator CLI 建立交付預覽，檢視 Git 影響後再以人工二次確認交付：

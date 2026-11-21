@@ -494,6 +494,8 @@ Be specific: name changed files, cite available test evidence, and distinguish c
         delivery = self.orchestrator.state.setdefault("delivery", {})
         delivery["delivered"] = True
         delivery["delivered_at"] = datetime.now(timezone.utc).isoformat()
+        if preview.get("acceptance"):
+            delivery["acceptance"] = preview["acceptance"]
         self.orchestrator.state["state"] = "COMPLETED"
         for key in (
             "presented_delivery_snapshot",
@@ -546,6 +548,7 @@ Be specific: name changed files, cite available test evidence, and distinguish c
             )
 
     def step_completed(self):
+        from orchestrator.core import acceptance
         from orchestrator.core.state import (
             log_header,
             log_info,
@@ -565,6 +568,11 @@ Be specific: name changed files, cite available test evidence, and distinguish c
         )
         if delivery.get("delivered"):
             log_success("Project already delivered; no further work is needed.")
+            return
+        if acceptance.plan_rows(self.orchestrator.state):
+            self.orchestrator.state["state"] = "WAITING_FOR_DELIVERY"
+            self.orchestrator.save_state()
+            self.step_waiting_for_delivery()
             return
         require_confirmation = self.orchestrator.config.get(
             "require_delivery_confirmation", True

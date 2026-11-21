@@ -48,6 +48,13 @@ class ArchitectAgent(BaseAgent):
         specialist_notes = self.orchestrator.consult_specialists(requirements, plan)
 
         prompt = f"""Review the implementation plan against the requirements.\n\nRequirements:\n{requirements}\n\nImplementation Plan:\n{plan}\n\nSpecialist Reviews:\n{specialist_notes or "None selected for this project."}\n\nCheck for architectural issues, requirement gaps, scope violations, and safety. Return the verdict and concise feedback using the supplied JSON schema."""
+        criteria = self.orchestrator.state.get("acceptance_criteria")
+        if criteria:
+            prompt += (
+                "\nCheck that every owner requirement has a measurable acceptance criterion, "
+                "mapped to the relevant implementation tasks. Pytest checks need exact node IDs, "
+                "and manual checks need an environment, steps, and observable pass conditions."
+            )
 
         review_json = self.call_agent(
             "architect",
@@ -70,11 +77,15 @@ class ArchitectAgent(BaseAgent):
 
         if is_approved:
             log_success("Implementation plan APPROVED by Architect!")
-            if self.orchestrator.state.get("plan_requires_owner_approval"):
+            if criteria or self.orchestrator.state.get("plan_requires_owner_approval"):
+                reason = (
+                    "Owner approval of the acceptance criteria is required before implementation."
+                    if criteria
+                    else "The original request requires owner approval before implementation."
+                )
                 self.orchestrator.pause_for_human_review(
                     "Architect",
-                    "Architect approved the plan. The original request requires owner approval before implementation.\n\n"
-                    + plan,
+                    f"Architect approved the plan. {reason}\n\n{plan}",
                     "IMPLEMENTING",
                     "IMPLEMENTING",
                     decision_kind="approve_plan",

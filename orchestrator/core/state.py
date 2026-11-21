@@ -17,6 +17,7 @@ from copy import deepcopy
 from pathlib import Path
 import requests
 
+from orchestrator.core import acceptance
 from orchestrator.core.config import DEFAULT_CONFIG
 from orchestrator.core.local_resources import LocalResourceBusy
 
@@ -512,6 +513,8 @@ class AgentOrchestrator:
             matches
             and not scope_error
             and record.get("target_files") == scope
+            and record.get("acceptance_criteria", [])
+            == acceptance.plan_rows(self.state)
             and (
                 record.get("decision") != "request_and_architect"
                 or not self.state.get("plan_requires_owner_approval")
@@ -629,15 +632,16 @@ class AgentOrchestrator:
             raise ImplementationApprovalError(
                 "Unsupported implementation approval decision."
             )
-        if decision == "request_and_architect" and self.state.get(
-            "plan_requires_owner_approval"
-        ):
-            raise ImplementationApprovalError(
-                "This request requires explicit owner approval."
-            )
         if not self.request_path.is_file() or not self.plan_path.is_file():
             return
         with self.execution_lock():
+            criteria = acceptance.plan_rows(self.state)
+            if decision == "request_and_architect" and (
+                self.state.get("plan_requires_owner_approval") or criteria
+            ):
+                raise ImplementationApprovalError(
+                    "This request requires explicit owner approval."
+                )
             scope = self.writable_implementation_file_scope()
             baseline = self.existing_changes_snapshot(include_baseline=True)
             evidence = self.implementation_approval_evidence()
@@ -647,6 +651,15 @@ class AgentOrchestrator:
                 or record.get("baseline") == baseline
             ):
                 return
+            criterion_targets = (
+                acceptance.criterion_targets(criteria, self.state.get("tasks", []))
+                if criteria
+                else {}
+            )
+            if any(not paths for paths in criterion_targets.values()):
+                raise ImplementationApprovalError(
+                    "An acceptance criterion has no approved target files."
+                )
             previous = deepcopy(self.state)
             self.revoke_implementation_approval()
             self.state["implementation_approval"] = {
@@ -667,6 +680,11 @@ class AgentOrchestrator:
             }
             if decision != "request_and_architect":
                 self.state["implementation_approval"]["approved_at"] = time.time()
+            if criteria:
+                self.state["implementation_approval"]["acceptance_criteria"] = criteria
+                self.state["implementation_approval"][
+                    "acceptance_target_files"
+                ] = criterion_targets
             try:
                 self.save_state()
             except Exception:
@@ -876,6 +894,7 @@ class AgentOrchestrator:
             "delivery_preview_presented",
             "presented_delivery_snapshot",
             "delivery_confirmed",
+            "acceptance_delivery",
         ):
             values.pop(key, None)
         payload = json.dumps(
@@ -917,6 +936,8 @@ class AgentOrchestrator:
         return self.workspace
 
     def delivery_operation(self) -> str:
+        if not self.has_git and acceptance.plan_rows(self.state):
+            return "confirm_without_merge"
         if self.config.get("use_worktree", True):
             return "merge"
         if (self.ai_dir / "worktree").exists() or (
@@ -959,6 +980,25 @@ class AgentOrchestrator:
         operation = operation.strip()
         if not operation:
             raise ValueError("Delivery operation is required.")
+
+        if not self.has_git and acceptance.plan_rows(self.state):
+            if (
+                operation != "confirm_without_merge"
+                or (self.ai_dir / "worktree").exists()
+                or (self.ai_dir / "worktree").is_symlink()
+            ):
+                raise RuntimeError(
+                    "An existing worktree cannot be delivered without Git."
+                )
+            revision, criteria = acceptance.preview_rows(self)
+            return {
+                "acceptance": criteria,
+                "acceptance_revision": revision,
+                "scheduled_operation": operation,
+                "diff_stat": "No Git merge is scheduled.",
+                "workflow_state": self.state.get("state"),
+                "state_fingerprint": self._delivery_state_fingerprint(),
+            }
 
         source_cwd = self._delivery_workspace()
         source_commit = self._checked_git_output(
@@ -1012,7 +1052,7 @@ class AgentOrchestrator:
         untracked_files = self._delivery_file_contents(
             source_cwd, [path for path in untracked_paths if path]
         )
-        return {
+        preview = {
             "tracked_files": tracked_files,
             "untracked_files": untracked_files,
             "source_commit": source_commit,
@@ -1026,6 +1066,11 @@ class AgentOrchestrator:
             "workflow_state": self.state.get("state"),
             "state_fingerprint": self._delivery_state_fingerprint(),
         }
+        revision, criteria = acceptance.preview_rows(self)
+        if criteria:
+            preview["acceptance"] = criteria
+            preview["acceptance_revision"] = revision
+        return preview
 
     def queue_delivery_content_repair(self, error: Exception) -> bool:
         message = str(error)
@@ -1127,7 +1172,8 @@ class AgentOrchestrator:
             ):
                 self.state.pop(key, None)
             self.save_state()
-        self.prepare_delivery_formatting()
+        if self.has_git or not acceptance.plan_rows(self.state):
+            self.prepare_delivery_formatting()
         preview = self._build_delivery_preview(operation)
         self.state["delivery_preview"] = deepcopy(preview)
         self.state["delivery_preview_presented"] = False
@@ -1229,7 +1275,22 @@ class AgentOrchestrator:
         current = self._build_delivery_preview(self.delivery_operation())
         expected = deepcopy(stored)
         if current != expected:
-            raise RuntimeError("Git delivery state changed since delivery preview.")
+            raise RuntimeError(
+                "Git or acceptance evidence changed since delivery preview."
+            )
+        if self.state.get("delivery_confirmed") and stored.get("acceptance"):
+            decision = self.state.get("acceptance_delivery") or {}
+            expected_decision = acceptance.delivery_decision(
+                stored, decision.get("reason", "")
+            )
+            if expected_decision and (
+                decision
+                != {**expected_decision, "snapshot_id": delivery_snapshot_id(stored)}
+                or persisted_state.get("acceptance_delivery") != decision
+            ):
+                raise acceptance.AcceptanceError(
+                    "The pending criteria acknowledgement is stale."
+                )
         return True
 
     def validate_delivery(
@@ -1238,11 +1299,29 @@ class AgentOrchestrator:
         return self.validate_delivery_preview(preview, operation)
 
     def confirm_delivery(
-        self, preview: dict | None = None, operation: str | None = None
+        self,
+        preview: dict | None = None,
+        operation: str | None = None,
+        *,
+        acceptance_reason: str = "",
     ) -> bool:
         self.validate_delivery_preview(preview, operation)
+        stored = self.state["delivery_preview"]
+        decision = acceptance.delivery_decision(stored, acceptance_reason)
+        previous = deepcopy(self.state)
+        if decision:
+            self.state["acceptance_delivery"] = {
+                **decision,
+                "snapshot_id": delivery_snapshot_id(stored),
+            }
+        else:
+            self.state.pop("acceptance_delivery", None)
         self.state["delivery_confirmed"] = True
-        self.save_state()
+        try:
+            self.save_state()
+        except Exception:
+            self.state = previous
+            raise
         return True
 
     def has_undelivered_worktree(self) -> bool:
@@ -1797,13 +1876,18 @@ class AgentOrchestrator:
         response_validator=None,
         response_schema: dict | None = None,
     ) -> str:
-        return self.call_agent(
+        response = self.call_agent(
             "manager",
             prompt,
             system_prompt,
             response_validator=response_validator,
             response_schema=response_schema,
         )
+        if response_validator is not None and not response_validator(response):
+            raise ResponseContractError(
+                "Manager response failed the task output contract."
+            )
+        return response
 
     def call_agy_quota_fallback(
         self, role: str, prompt: str, system_prompt: str | None = None

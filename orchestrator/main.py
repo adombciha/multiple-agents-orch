@@ -19,8 +19,13 @@ from orchestrator.core.state import (
     log_error,
     log_header,
 )
-from orchestrator.core import scoring, ollama_endpoint
-from orchestrator.core.status import continue_decision, next_actions, owner_action_target, STAGE_LABELS
+from orchestrator.core import acceptance, scoring, ollama_endpoint
+from orchestrator.core.status import (
+    continue_decision,
+    next_actions,
+    owner_action_target,
+    STAGE_LABELS,
+)
 
 REFERENCE_BLOCK_START = (
     "<!-- REFERENCE-ONLY:START (context, not a file to create or edit) -->"
@@ -124,6 +129,13 @@ def clear_run_state(
     orchestrator.state.pop("owner_acceptance_preview", None)
     orchestrator.state.pop("owner_acceptance_pending", None)
     orchestrator.state.pop("human_review_kind", None)
+    for key in (
+        "acceptance_criteria",
+        "acceptance_verification",
+        "acceptance_history",
+        "acceptance_delivery",
+    ):
+        orchestrator.state.pop(key, None)
 
 
 def archive_previous_run(orchestrator: AgentOrchestrator) -> bool:
@@ -399,12 +411,20 @@ def apply_review_decision(
     decision: str,
     reset_revisions: bool = False,
     snapshot_id: str = "",
+    *,
+    plan_feedback: str | None = None,
 ) -> None:
     """Apply a review or explicit content acceptance decision to an owner pause.
     `reset_revisions` (revise only, non-Architect/Manager source): clear
     code_revisions first so the auto-revise loop gets a fresh budget instead
     of immediately re-pausing if it was already at max_revisions."""
     next_state = owner_action_target(orchestrator.state, decision)
+    if plan_feedback is not None:
+        if decision != "revise":
+            raise acceptance.AcceptanceError(
+                "Plan feedback requires the revise decision."
+            )
+        acceptance.update_plan_feedback(orchestrator, plan_feedback)
     if decision == "preview-existing":
         preview = orchestrator.present_existing_changes()
         log_info(json.dumps(preview, ensure_ascii=False, indent=2))
@@ -520,15 +540,34 @@ def _show_waiting_delivery_preview(
     orchestrator.save_state()
     snapshot_id = delivery_snapshot_id(preview)
     print(json.dumps(preview, ensure_ascii=False, indent=2))
+    criteria = preview.get("acceptance", [])
+    if not criteria:
+        log_info("此任務未建立驗收條件")
+    if any(row["kind"] == "manual" for row in criteria):
+        log_info(
+            "Record manual evidence with: python3 orchestrator.py deliver "
+            f"--verify CRITERION passed --snapshot {snapshot_id} --reason 'Observed result and environment'"
+        )
+    if any(row["status"] == "failed" for row in criteria):
+        log_info(
+            "Request revisions with: python3 orchestrator.py deliver "
+            f"--revise CRITERION --snapshot {snapshot_id} --reason 'Revision instructions'"
+        )
+        return snapshot_id
+    pending_reason = (
+        " --reason 'Why this pending evidence is acceptable'"
+        if any(row["status"] == "pending" for row in criteria)
+        else ""
+    )
     log_info(
         "Review this Git impact, then confirm with: "
-        f"python3 orchestrator.py deliver --confirm {snapshot_id}"
+        f"python3 orchestrator.py deliver --confirm {snapshot_id}{pending_reason}"
     )
     return snapshot_id
 
 
 def _deliver_waiting_workflow(
-    orchestrator: AgentOrchestrator, confirm_id: str | None
+    orchestrator: AgentOrchestrator, confirm_id: str | None, acceptance_reason: str = ""
 ) -> int:
     from orchestrator.core.state import log_warning
     from orchestrator.core.state import DeliveryRepairQueued
@@ -554,8 +593,16 @@ def _deliver_waiting_workflow(
             return 1
 
         try:
-            orchestrator.confirm_delivery(preview, operation)
-        except DeliveryRepairQueued:
+            orchestrator.confirm_delivery(
+                preview,
+                operation,
+                **(
+                    {"acceptance_reason": acceptance_reason}
+                    if acceptance_reason
+                    else {}
+                ),
+            )
+        except (DeliveryRepairQueued, acceptance.AcceptanceError):
             raise
         except RuntimeError:
             fresh_preview = orchestrator.get_delivery_preview()
@@ -681,7 +728,29 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     deliver_parser = subparsers.add_parser(
         "deliver", help="Preview or confirm delivery of a completed workflow"
     )
-    deliver_parser.add_argument("--confirm", help="Previously displayed delivery token")
+    delivery_action = deliver_parser.add_mutually_exclusive_group()
+    delivery_action.add_argument(
+        "--confirm", help="Previously displayed delivery token"
+    )
+    delivery_action.add_argument(
+        "--verify",
+        nargs=2,
+        metavar=("CRITERION", "STATUS"),
+        help="Record a manual acceptance result (passed or failed)",
+    )
+    delivery_action.add_argument(
+        "--revise",
+        action="append",
+        metavar="CRITERION",
+        help="Request revisions for a criterion; repeat to select multiple criteria",
+    )
+    deliver_parser.add_argument(
+        "--snapshot", help="Displayed snapshot ID for verification or revisions"
+    )
+    deliver_parser.add_argument(
+        "--reason",
+        help="Observed evidence, revision instructions, or reason to accept pending criteria",
+    )
     gui_parser = subparsers.add_parser("gui", help="Open the local workflow dashboard")
     gui_parser.add_argument("--port", type=int, help="HTTP port (defaults to config)")
     continue_parser = subparsers.add_parser(
@@ -713,7 +782,17 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     review_parser = subparsers.add_parser("review", help="Decide a paused human review")
     review_parser.add_argument(
         "decision",
-        choices=["pass", "revise", "reject", "preview-existing", "accept-existing"],
+        choices=[
+            "pass",
+            "revise",
+            "reject",
+            "preview-plan",
+            "preview-existing",
+            "accept-existing",
+        ],
+    )
+    review_parser.add_argument(
+        "--reason", help="Owner feedback for revising acceptance criteria in the plan"
     )
     review_parser.add_argument(
         "--snapshot", default="", help="Snapshot ID shown by review preview-existing"
@@ -940,8 +1019,46 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
     elif args.command == "deliver":
         try:
             orchestrator.load_config_and_state()
+            if args.verify or args.revise:
+                if orchestrator.state.get("state") != "WAITING_FOR_DELIVERY":
+                    raise acceptance.AcceptanceError(
+                        "Workflow is not waiting for delivery."
+                    )
+                if args.verify:
+                    acceptance.record_manual(
+                        orchestrator,
+                        args.snapshot or "",
+                        *args.verify,
+                        args.reason or "",
+                    )
+                    log_success(
+                        "Manual result recorded. Run deliver to review a new snapshot."
+                    )
+                else:
+                    acceptance.revise(
+                        orchestrator,
+                        args.snapshot or "",
+                        args.revise,
+                        args.reason or "",
+                    )
+                    log_success(
+                        "Acceptance revisions queued. Run continue to start implementation."
+                    )
+                return 0
+            if args.snapshot is not None or (
+                args.reason is not None and args.confirm is None
+            ):
+                raise acceptance.AcceptanceError(
+                    "Use --snapshot with --verify or --revise, and --reason with an acceptance action."
+                )
             if orchestrator.state.get("state") == "WAITING_FOR_DELIVERY":
-                return _deliver_waiting_workflow(orchestrator, args.confirm)
+                return _deliver_waiting_workflow(
+                    orchestrator, args.confirm, args.reason or ""
+                )
+            if args.reason is not None:
+                raise acceptance.AcceptanceError(
+                    "Acceptance confirmation requires a current delivery preview."
+                )
             from orchestrator.core.delivery import deliver
 
             delivery = orchestrator.state.get("delivery", {})
@@ -955,7 +1072,11 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                     0 if deliver(orchestrator) is False and delivery.get("token") else 1
                 )
             return 0 if deliver(orchestrator, args.confirm) else 1
-        except (FileNotFoundError, json.JSONDecodeError) as error:
+        except (
+            FileNotFoundError,
+            json.JSONDecodeError,
+            acceptance.AcceptanceError,
+        ) as error:
             log_error(f"Project is not ready for delivery: {error}")
             return 1
     elif args.command == "gui":
@@ -1022,6 +1143,10 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                 snapshot, busy=bool(holder), pause_requested=pause_pending
             ):
                 print(f" - {action['command']}: {action['description']}")
+            if acceptance.awaiting_plan_review(snapshot) and acceptance.plan_rows(
+                snapshot
+            ):
+                print(" - review preview-plan: Show the proposed acceptance criteria")
             delivery_preview = snapshot.get("delivery", {}).get("preview")
             if delivery_preview:
                 print(f"\n{delivery_preview}")
@@ -1053,8 +1178,25 @@ def _run_cli(orchestrator: AgentOrchestrator | None = None):
                     f"Cannot review from state: {orchestrator.state.get('state')}"
                 )
                 return
+            if args.decision == "preview-plan":
+                if args.reason is not None or not acceptance.awaiting_plan_review(
+                    orchestrator.state
+                ):
+                    raise acceptance.AcceptanceError(
+                        "The workflow is not waiting for acceptance criteria approval."
+                    )
+                criteria = acceptance.plan_rows(orchestrator.state)
+                if criteria:
+                    print(json.dumps(criteria, ensure_ascii=False, indent=2))
+                else:
+                    log_info("This plan has no per-requirement acceptance criteria.")
+                return 0
             apply_review_decision(
-                orchestrator, args.decision, args.reset_revisions, args.snapshot
+                orchestrator,
+                args.decision,
+                args.reset_revisions,
+                args.snapshot,
+                **({"plan_feedback": args.reason} if args.reason is not None else {}),
             )
             if args.run and args.decision not in {"reject", "preview-existing"}:
                 run_workflow(orchestrator)

@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import ast
 import difflib
 import json
 import re
 import sys
 from pathlib import Path
+
+from orchestrator.core import acceptance, brain, roster, scoring
 from orchestrator.roles.base_agent import (
     BaseAgent,
     declared_request_files,
@@ -12,7 +15,6 @@ from orchestrator.roles.base_agent import (
     is_strict_json_response,
     missing_request_files,
 )
-from orchestrator.core import scoring, roster, brain
 from orchestrator.roles.qa import qa_excerpt, qa_test_excerpt
 
 # Must match orchestrator.main's REFERENCE_BLOCK_START/END: auto-inlined
@@ -93,6 +95,26 @@ TASK_PLAN_SCHEMA = {
         "tasks": {"type": "array", "items": {"type": "object"}},
         "staffing": {"type": "object"},
         "specialists": {"type": "array", "items": {"type": "object"}},
+        "acceptance_criteria": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "requirement": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["pytest", "manual"]},
+                    "check": {"type": "string"},
+                    "task_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["requirement", "kind", "check", "task_ids"],
+                "additionalProperties": False,
+            },
+        },
         "plan_notes": {
             "type": "object",
             "properties": {
@@ -115,16 +137,27 @@ TASK_PLAN_SCHEMA = {
             "additionalProperties": False,
         },
     },
-    "required": ["tasks", "staffing", "specialists", "plan_notes"],
+    "required": [
+        "tasks",
+        "staffing",
+        "specialists",
+        "plan_notes",
+        "acceptance_criteria",
+    ],
     "additionalProperties": True,
 }
 
 
-def is_task_plan_response(response: str) -> bool:
+def is_task_plan_response(response: str, *, require_acceptance: bool = False) -> bool:
     try:
         parsed = json.loads(response.strip())
-        return isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("tasks"), list):
+            return False
+        criteria = acceptance.parse_criteria(
+            parsed.get("acceptance_criteria"), parsed["tasks"]
+        )
+        return bool(criteria) or not require_acceptance
+    except (AttributeError, KeyError, TypeError, ValueError):
         return False
 
 
@@ -212,9 +245,10 @@ class DeveloperAgent(BaseAgent):
 
     def step_developing_plan(self):
         from orchestrator.core.state import (
+            ResponseContractError,
             log_header,
-            log_success,
             log_info,
+            log_success,
             log_warning,
         )
 
@@ -400,13 +434,32 @@ class DeveloperAgent(BaseAgent):
             "within an implementation task, not a separate read-only task. Include concrete "
             "targeted and full regression commands using the existing project environment, "
             "required failure/recovery cases, and verification limitations. Do not invent test results."
+            "\nReturn acceptance_criteria with one item for each owner requirement. Each item contains "
+            "requirement (a measurable outcome from the original request), kind ('pytest' or 'manual'), "
+            "check, and task_ids (a non-empty list of matching implementation task IDs). Every task "
+            "must be covered. Use 'pytest' only with an exact relative pytest node ID "
+            "(including the parameter ID when applicable) that the configured QA command can report. "
+            "The check is a node ID, not a command. For 'manual', specify the environment, steps, "
+            "and observable pass condition for the owner. Keep each requirement and check under "
+            "500 characters. Use manual checks for Markdown-only plans, where QA reviews the "
+            "documents without running pytest. The system assigns criterion IDs. The default QA "
+            "command uses verbose output when a pytest criterion is approved."
+            f"\nConfigured QA command: {self.orchestrator.config.get('test_command', 'git diff --stat')}"
         )
-        parsed_items_raw = self.call_manager(
-            parse_prompt,
-            "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
-            is_task_plan_response,
-            TASK_PLAN_SCHEMA,
-        )
+        try:
+            parsed_items_raw = self.call_manager(
+                parse_prompt,
+                "You are a Project Manager. Output exactly one valid JSON object, with no Markdown fences, comments, explanation, headings, or prose. The first character must be { and the last character must be }.",
+                lambda response: is_task_plan_response(
+                    response, require_acceptance=True
+                ),
+                TASK_PLAN_SCHEMA,
+            )
+        except ResponseContractError as error:
+            self.orchestrator.pause_for_human_review(
+                "Manager", str(error), "DEVELOPING_PLAN", "DEVELOPING_PLAN"
+            )
+            return
 
         # Clean potential markdown wrapping
         clean_json = parsed_items_raw.strip()
@@ -414,6 +467,9 @@ class DeveloperAgent(BaseAgent):
         try:
             parsed = json.loads(clean_json)
             tasks = parsed if isinstance(parsed, list) else parsed["tasks"]
+            raw_criteria = (
+                parsed.get("acceptance_criteria") if isinstance(parsed, dict) else None
+            )
             if not isinstance(tasks, list):
                 raise ValueError("tasks must be a JSON array")
             if not tasks:
@@ -455,6 +511,10 @@ class DeveloperAgent(BaseAgent):
                     for task in tasks:
                         targets = task.get("target_files")
                         if targets[0] in markdown_allowed:
+                            if raw_criteria is not None and targets[0] in by_file:
+                                raise ValueError(
+                                    f"Use one task for {targets[0]} so acceptance criteria have a clear task mapping."
+                                )
                             task.pop("section_heading", None)
                             by_file.setdefault(targets[0], task)
                         else:
@@ -597,6 +657,7 @@ class DeveloperAgent(BaseAgent):
                             if legacy_level in {"junior", "middle", "senior"}
                             else "senior"
                         )
+            criteria = acceptance.parse_criteria(raw_criteria, tasks)
             roster.reassign_unavailable_levels(
                 tasks,
                 roster_data,
@@ -642,7 +703,17 @@ class DeveloperAgent(BaseAgent):
                 ):
                     raise ValueError(f"plan_notes.{key} requires non-empty strings")
                 plan += f"\n## {title}\n" + "".join(f"- {item}\n" for item in items)
-            requires_owner_approval = bool(
+            if criteria:
+                plan += "\n## Per-Requirement Acceptance\n"
+                for item in criteria:
+                    task_ids = ", ".join(item["task_ids"])
+                    plan += (
+                        f"\n### {item['id']}\n"
+                        f"- Requirement: {item['requirement']}\n"
+                        f"- Tasks: {task_ids}\n"
+                        f"- Check ({item['kind']}): {item['check']}\n"
+                    )
+            requires_owner_approval = bool(criteria) or bool(
                 re.search(
                     r"(?:經|等|待)[^\n。]{0,40}(?:owner|我|人工|使用者)[^\n。]{0,20}(?:核准|批准|同意)|(?:owner|user|human) approval|wait for (?:my|owner) approval",
                     request_text,
@@ -695,6 +766,10 @@ class DeveloperAgent(BaseAgent):
                 if task_signature(t) in existing_completed:
                     t["status"] = "completed"
             self.orchestrator.state["tasks"] = tasks
+            if criteria:
+                self.orchestrator.state["acceptance_criteria"] = criteria
+            else:
+                self.orchestrator.state.pop("acceptance_criteria", None)
             self.orchestrator.state["plan_requires_owner_approval"] = (
                 requires_owner_approval
             )
@@ -709,7 +784,10 @@ class DeveloperAgent(BaseAgent):
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             log_warning(f"Could not create file-change tasks. Error: {e}")
             self.orchestrator.pause_for_human_review(
-                "Manager", parsed_items_raw, "DEVELOPING_PLAN", "DEVELOPING_PLAN"
+                "Manager",
+                f"Invalid implementation plan: {e}\n\n{parsed_items_raw}",
+                "DEVELOPING_PLAN",
+                "DEVELOPING_PLAN",
             )
             return
 

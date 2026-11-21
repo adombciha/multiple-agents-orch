@@ -229,11 +229,17 @@ def save_preview(orchestrator, payload: dict) -> str:
 
 
 def deliver(orchestrator, confirm_token: str | None = None) -> bool:
+    from orchestrator.core import acceptance
     from orchestrator.core.state import log_error, log_info, log_success, log_warning
 
     delivery = orchestrator.state.setdefault("delivery", {})
     if orchestrator.state.get("state") != "COMPLETED" or delivery.get("delivered"):
         log_error("Delivery is only available for a completed, undelivered workflow.")
+        return False
+    if acceptance.plan_rows(orchestrator.state):
+        log_error(
+            "Resume the workflow to present and confirm per-requirement acceptance."
+        )
         return False
     try:
         current = delivery_preview(orchestrator)
